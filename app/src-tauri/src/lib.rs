@@ -1222,10 +1222,11 @@ fn state_view(
             .location(&state.location)
             .map(|l| l.title.clone())
             .unwrap_or_default(),
-        // 上段の「所持品」は主人公の物 (NPC の所持物は登場人物ブロックに出る)。
+        // 上段の「所持品」は **viewer 本人の物** (spec 23: マルチではゲストは自分の操作キャラの
+        // 所持品を見る。単騎は viewer=player で従来どおり)。他 entity の所持は登場人物ブロックに出る。
         inventory: state
             .inventory
-            .get(PLAYER)
+            .get(viewer)
             .map(|s| s.iter().cloned().collect())
             .unwrap_or_default(),
         flags: state
@@ -4033,6 +4034,32 @@ mod tests {
                 "hidden 属性はどの宛先にも出ない"
             );
         }
+    }
+
+    /// 【spec 23 上段所持品】状態タブ上段の「所持品」は viewer 本人の物 — 仲間を操作する
+    /// ゲストは自分の操作キャラの所持品を見る (単騎は viewer=player で従来どおり)。
+    #[test]
+    fn state_view_top_inventory_follows_viewer() {
+        let sc = gm_core::Scenario::from_yaml(concat!(
+            "title: t\nstart: v\n",
+            "party: [alice]\n",
+            "initial_inventory: [地図]\n",
+            "characters:\n",
+            "  alice: { name: アリス, inventory: [鍵] }\n",
+            "locations: { v: { description: d, present: [alice], items: {}, exits: [] } }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        assert!(sc.validate().is_empty(), "{:?}", sc.validate());
+        let s = sc.initial_state(1);
+
+        // viewer = 主人公: 上段は主人公の所持品 (単騎の従来挙動の回帰)。
+        let for_player = super::state_view(&s, &sc, &[], gm_core::PLAYER);
+        assert_eq!(for_player.inventory, vec!["地図".to_string()]);
+
+        // viewer = alice を操作するゲスト: 上段は alice 自身の所持品 (PLAYER 固定なら「地図」で落ちる)。
+        let for_alice = super::state_view(&s, &sc, &[], "alice");
+        assert_eq!(for_alice.inventory, vec!["鍵".to_string()]);
     }
 
     /// 【spec 23 Phase B participants の門番】宣言の検証: 重複 peer/entity・幻 entity・
