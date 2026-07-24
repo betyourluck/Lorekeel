@@ -567,7 +567,23 @@ Phase D 実装後、ユーザーが 2 台のリリースビルドで通した結
 - ただし**音声で話せる卓に投票 UI が要るか**は実測してから決めたい。Phase E で
   「意見が割れて困ったか」を観察項目に足す。
 
-### 仲間の所持品と `has_item` gate の食い違い
+### 仲間の所持品と `has_item` gate の食い違い — ✅解決 (b)、2026-07-24
+
+**✅解決 (spec 23 (b)、2026-07-24)**: 作者宣言 `Scenario.party`（companion ロスター）を
+`GameState.party` に seed し、`HasItem`/`HasSkill` の **`entity: "party"` sentinel**
+（`gm_core::PARTY`）が主人公 + ロスターの誰か一人でも満たせば真、とした。下の設計空間のうち
+**1（authored 列挙）の精神**だが、新 gate variant を足さず既存の `HasItem`/`HasSkill` を
+sentinel で再利用し、**ロスターを GameState に置く**ことで下記「eval は Scenario を見ない」
+制約を signature 改修なしで回避した（2 の「state の誰か」よりスコープが締まり、敵の所持は
+拾わない）。核心は **所持を集約せず問い方だけを集団化**した点で、袋モデル（共有インベントリ）が
+生む**プレイヤーの持ち替え作業**（「〇〇がない→私が持ってる→共有へ渡して→再挑戦」＝冒険が
+物流管理になる）を避ける（ユーザー決定 2026-07-24）。**埋まらない席は GM が声を当てる NPC
+仲間として party に残る**（人間の頭数と無関係＝ロスター固定）。`validate`（`party ⊆ characters`
+/ 予約語 "party"）+ app `validate_participants` を party に締め直し（villain/merchant を割り当て
+られる穴も同時に塞ぐ）。gate は `entity: "party"` を「パーティの誰か」と `gate_brief` が展開し、
+`state_brief` は元々全 entity の所持を surface 済み（GM は誰が持つか見える）。gm_core PoC 2 本
+Red→Green。**HasSkill も同じ sentinel で解決**（下記「HasSkill にも同じ穴」を同時に回収）。
+以下は解決前の設計空間（歴史的経緯として残す）。
 
 状態パネルは仲間の所持品も主人公と同じ形で並べるが、**gate は既定で主人公だけを見る**
 （`Gate::HasItem { entity = player, item }`）。仲間が鍵を持っている卓では、

@@ -27,6 +27,13 @@ pub const DEFAULT_GOAL: &str = "goal";
 /// 主人公の規約的 EntityId。op/gate が entity を省略した時の既定。
 pub const PLAYER: &str = "player";
 
+/// パーティ (冒険を共にする仲間の集合) を指す規約的 sentinel (spec 23 (b))。gate の
+/// `entity: "party"` で使うと [`GameState::party`] のメンバー (主人公 + ロスター) の
+/// 誰か一人でも条件を満たせば真になる (所持/能力を集団で問う)。実在の EntityId ではない —
+/// inventory/skills のキーにはならず、accessor が roster 走査に分岐する。キャラ id として
+/// "party" を宣言することは [`crate::Scenario::validate`] が禁じる (予約語)。
+pub const PARTY: &str = "party";
+
 /// **authored 専権 op の serde タグ** ── LLM が提案すると [`crate::adjudicate`] が必ず却下する op。
 /// これらは authored トリガーの効果 (`apply_ops` 直行) でのみ実行される。`emit_delta` の schema から
 /// これらを除外して LLM に**そもそも提案させない** (構造的遮断)。露出したままだと LLM が使い続け、
@@ -108,6 +115,14 @@ pub struct GameState {
     /// 空でない間、上位 (app) は次のターンを回さない。
     #[serde(default)]
     pub pending_decisions: Vec<PendingDecision>,
+    /// **パーティのロスター** (spec 23 (b))。冒険を共にする仲間 (主人公を除く companion 群) の集合。
+    /// `initial_state`/`transition` で作者宣言 [`crate::Scenario::party`] から seed される (authored
+    /// データ)。gate の `entity: "party"` はこれ + 主人公を走査し「パーティの誰かが持つ/できるか」を
+    /// 集団で問う (所持を物理的にプールせず、問い方だけを集団化 = プレイヤーの持ち替え作業が要らない)。
+    /// 埋まらない席は GM が声を当てる NPC 仲間として party に居続ける (人間の頭数と無関係)。
+    /// **セーブ対象** (serde default = 旧セーブ互換 — 空 party では party gate は主人公のみに縮退)。
+    #[serde(default)]
+    pub party: BTreeSet<EntityId>,
 }
 
 /// 進行中の対決の帳簿 (spec 18 Phase C)。ラウンドの積算だけを持つ (振り方・帰結は
@@ -201,7 +216,14 @@ impl GameState {
             taken_items: BTreeMap::new(),
             pending_contest: None,
             pending_decisions: Vec::new(),
+            party: BTreeSet::new(),
         }
+    }
+
+    /// パーティの実効メンバー = **主人公 + ロスター** ([`Self::party`])。gate `entity: "party"` の
+    /// 走査対象。主人公は常に含める (party が空/未 seed でも「主人公が持つか」には縮退する)。
+    pub fn party_members(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(PLAYER).chain(self.party.iter().map(|s| s.as_str()))
     }
 
     /// `take: once` アイテムを既にその場所から持ち去ったか。
@@ -218,7 +240,13 @@ impl GameState {
     }
 
     /// 指定キャラが能力を獲得済みか (閉世界: 宣言/開花した能力のみ true)。
+    /// `entity == "party"` ([`PARTY`]) はパーティの誰か (主人公 + ロスター) が持てば真 (spec 23 (b))。
     pub fn has_skill(&self, entity: &str, skill: &str) -> bool {
+        if entity == PARTY {
+            return self
+                .party_members()
+                .any(|m| self.skills.get(m).is_some_and(|s| s.contains(skill)));
+        }
         self.skills.get(entity).is_some_and(|s| s.contains(skill))
     }
 
@@ -231,7 +259,13 @@ impl GameState {
     }
 
     /// 指定キャラが item を所持しているか。`entity` 省略経路 (Gate/op) は既定で `"player"`。
+    /// `entity == "party"` ([`PARTY`]) はパーティの誰か (主人公 + ロスター) が持てば真 (spec 23 (b))。
     pub fn has_item(&self, entity: &str, item: &str) -> bool {
+        if entity == PARTY {
+            return self
+                .party_members()
+                .any(|m| self.inventory.get(m).is_some_and(|s| s.contains(item)));
+        }
         self.inventory.get(entity).is_some_and(|s| s.contains(item))
     }
 

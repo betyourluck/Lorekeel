@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::{
     default_entity, AttrKey, ChallengeId, EntityId, FlagKey, GameState, GoalId, ItemId, LocationId,
-    RngState, SkillId, StateOp, StatKey, TriggerId, DEFAULT_GOAL, PLAYER,
+    RngState, SkillId, StateOp, StatKey, TriggerId, DEFAULT_GOAL, PARTY, PLAYER,
 };
 
 /// state に対して評価される条件。
@@ -799,6 +799,14 @@ pub enum ScenarioError {
     HiddenFlagUndeclared { flag: FlagKey },
     /// `internal_flags` のキーが `allowed_flags` に宣言されていない (幻フラグの帳簿指定)。
     InternalFlagUndeclared { flag: FlagKey },
+    /// `party` (パーティのロスター) に挙げた entity が `characters` に宣言されていない (spec 23 (b))。
+    /// 幻の仲間の遮断 (閉世界)。主人公は常に party なので列挙しない — `"player"` を書いた場合も
+    /// characters に無いのでこれで弾かれる。
+    PartyMemberUnknown { entity: EntityId },
+    /// `characters` が予約語 `"party"` ([`crate::PARTY`]) を id に使っている (spec 23 (b))。
+    /// gate の `entity: "party"` はロスター走査の sentinel なので、同名キャラは
+    /// `has_item(entity=party)` で到達不能になる。別の id を付ける。
+    ReservedPartyEntity,
     /// トリガーの `set_attribute` が宣言されていない属性キーに書こうとしている (幻属性遮断)。
     /// player は `initial_attributes`、NPC は `CharacterDef::attributes` でキーを宣言する。
     AttributeKeyUndeclared {
@@ -1096,6 +1104,14 @@ pub struct Scenario {
     /// 登場人物 (player 以外)。inline 宣言 + `cast` で指定した外部 `characters/*.yaml` の注入。
     #[serde(default)]
     pub characters: BTreeMap<EntityId, CharacterDef>,
+    /// **パーティのロスター** (spec 23 (b))。人間 (ゲスト) が embody できる仲間 = 冒険を共にする
+    /// companion 群 (`characters` の部分集合・主人公は含めない = 常に party)。`initial_state`/
+    /// `transition` で [`GameState::party`] に seed され gate `entity: "party"` の走査対象になる。
+    /// 埋まらない席は GM が声を当てる NPC 仲間として party に居続ける (人間の頭数と無関係)。
+    /// `validate` が `party ⊆ characters` と "party" 予約語を検査。**空 = 非 co-op** (party gate は
+    /// 主人公のみに縮退・後方互換)。app の `validate_participants` はゲストの割り当てをこの集合に締める。
+    #[serde(default)]
+    pub party: BTreeSet<EntityId>,
     /// 反応ビート (Phase C)。`when` 成立で `effects` を原子適用し `narration` を注入する。
     #[serde(default)]
     pub triggers: Vec<Trigger>,
@@ -1343,6 +1359,16 @@ impl Scenario {
     /// 未宣言フラグを許すと閉世界が破れる。apply 中の panic でなく load 時に弾く。
     pub fn validate(&self) -> Vec<ScenarioError> {
         let mut errs = Vec::new();
+        // パーティのロスター (spec 23 (b)): メンバーは characters 宣言済み (幻仲間 / "player" 誤記を弾く) /
+        // 予約語 "party" をキャラ id にしない (gate sentinel と衝突し同名キャラが到達不能になる)。
+        for e in &self.party {
+            if !self.characters.contains_key(e) {
+                errs.push(ScenarioError::PartyMemberUnknown { entity: e.clone() });
+            }
+        }
+        if self.characters.contains_key(PARTY) {
+            errs.push(ScenarioError::ReservedPartyEntity);
+        }
         for (cid, def) in &self.challenges {
             // 判定様式の形 (spec 16): additive は sides 必須 (serde default 0 の欠落を弾く) /
             // percentile は stat 必須・sides/dc 禁止 (加算式との混同を名指し)・tiers 禁止
@@ -1934,6 +1960,10 @@ impl Scenario {
                 s.set_attribute(eid, k, v);
             }
         }
+        // パーティのロスター (spec 23 (b))。作者宣言をそのまま GameState.party へ (主人公は
+        // party_members が走査時に足すので roster〔companion 群〕だけを持つ)。transition も
+        // これを経由するので遷移先モジュールのロスターに再 seed される。
+        s.party = self.party.clone();
         // 役職のランダム割り当て (spec 06 Phase A)。seed 派生の専用ストリームで shuffle し、
         // 本流 s.rng は消費しない (配役の有無でプレイ中のダイス列が変わらない)。
         if let Some(ra) = &self.role_assignment {

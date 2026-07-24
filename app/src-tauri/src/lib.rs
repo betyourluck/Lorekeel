@@ -96,6 +96,9 @@ struct StateView {
     goals: Vec<GoalView>,
     /// 到達した goal の id (一覧のハイライト用)。未到達なら None。
     reached_goal: Option<String>,
+    /// パーティのロスター (spec 23 (b)。作者宣言 `Scenario.party` = 人間が embody できる仲間)。
+    /// 卓の席割りでゲストに割り当て可能な entity の候補。単騎/非 co-op では空。
+    party: Vec<String>,
 }
 
 /// フラグ一覧の 1 エントリ。title は表示名 (flag_titles、空なら frontend が key へフォールバック)、
@@ -761,7 +764,8 @@ impl RevealView {
 /// - 空でない / peer_id・entity_id とも重複なし
 /// - **主人公スロット (entity_id = player) がちょうど 1 行**、かつ **ホストがそれを操作する**
 ///   (2026-07-24 決定 3 改訂: ホスト=player 固定。ゲストが主人公を執って落ちると中心 entity が彫像化するため)
-/// - 仲間の entity は scenario.characters に宣言済み (幻 entity の遮断 = 閉世界)
+/// - 仲間の entity は scenario.party に宣言済み (spec 23 (b): 操作可能なのはロスターの仲間だけ。
+///   全 characters を許すと villain/merchant のような GM 専用 NPC まで割り当てられる穴を塞ぐ)
 /// - host_peer_id は participants の 1 行
 fn validate_participants(
     parts: &[Participant],
@@ -780,9 +784,9 @@ fn validate_participants(
         if !entities.insert(p.entity_id.as_str()) {
             return Err(format!("同じ entity を複数人が操作しています: {}", p.entity_id));
         }
-        if p.entity_id != PLAYER && !scenario.characters.contains_key(&p.entity_id) {
+        if p.entity_id != PLAYER && !scenario.party.contains(&p.entity_id) {
             return Err(format!(
-                "未知の entity です: {} (シナリオに宣言されたキャラクターだけが操作できます)",
+                "パーティ外の entity です: {} (party に宣言された仲間だけがプレイヤーに割り当てられます)",
                 p.entity_id
             ));
         }
@@ -1255,6 +1259,7 @@ fn state_view(
             .map(|g| GoalView { id: g.id.clone(), title: g.title.clone(), hint: g.hint.clone() })
             .collect(),
         reached_goal: reached,
+        party: scenario.party.iter().cloned().collect(),
     }
 }
 
@@ -4037,6 +4042,7 @@ mod tests {
         let sc = gm_core::Scenario::from_yaml(concat!(
             "title: t\nstart: v\n",
             "characters: { alice: { name: アリス } }\n",
+            "party: [alice]\n",
             "locations: { v: { description: d, items: {}, exits: [] } }\n",
             "goal: { kind: always }\n"
         ))
@@ -4068,7 +4074,7 @@ mod tests {
         );
         assert!(
             super::validate_participants(&[p("h", "player"), p("g", "bob")], "h", &sc).is_err(),
-            "シナリオに宣言の無い幻 entity は拒否 (閉世界)"
+            "party に無い entity は拒否 (閉世界 = ロスター外は割り当て不可)"
         );
         assert!(
             super::validate_participants(&[p("g", "alice")], "g", &sc).is_err(),

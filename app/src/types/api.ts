@@ -45,6 +45,8 @@ export interface StateView {
   goals: GoalView[];
   /** 到達した goal の id (一覧のハイライト用)。未到達なら null。 */
   reached_goal: string | null;
+  /** パーティのロスター (spec 23 (b)。人間が embody できる仲間 = 席割りの割り当て候補)。単騎/非 co-op では空。 */
+  party: string[];
 }
 
 /** 目標一覧の 1 エントリ。title は人間向け表示名 (空なら id へフォールバック)、

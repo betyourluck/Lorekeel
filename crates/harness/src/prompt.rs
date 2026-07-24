@@ -276,6 +276,9 @@ pub fn party_note(party: &[PartyMember]) -> String {
 fn gate_brief(gate: &Gate) -> String {
     match gate {
         Gate::Always => "条件なし".to_string(),
+        Gate::HasItem { entity, item } if entity == gm_core::PARTY => {
+            format!("パーティの誰か (主人公か仲間) が「{item}」を所持していること")
+        }
         Gate::HasItem { entity, item } => format!("{entity} が「{item}」を所持していること"),
         Gate::FlagIs { key, value } => format!("状態「{key}」が {value} であること"),
         Gate::LocationIs { at } => format!("「{at}」にいること"),
@@ -284,6 +287,9 @@ fn gate_brief(gate: &Gate) -> String {
         }
         Gate::StatAtMost { entity, key, value } => {
             format!("{entity} の能力「{key}」が {value} 以下であること")
+        }
+        Gate::HasSkill { entity, skill } if entity == gm_core::PARTY => {
+            format!("パーティの誰か (主人公か仲間) が能力「{skill}」を持っていること")
         }
         Gate::HasSkill { entity, skill } => format!("{entity} が能力「{skill}」を持っていること"),
         Gate::AttributeIs { entity, key, value } => {

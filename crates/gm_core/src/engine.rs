@@ -3803,6 +3803,79 @@ goal: { kind: always }
         );
     }
 
+    /// 【spec 23 (b) party gate】パーティのロスターの誰か (主人公 + companion) が持てば
+    /// `has_item entity=party` は真。所持を集約せず問いを集団化する = プレイヤーの持ち替え作業が要らない。
+    #[test]
+    fn party_gate_resolves_across_roster() {
+        let yaml = r#"
+title: t
+start: room
+party: [alice]
+characters:
+  alice:
+    name: アリス
+    inventory: [鍵]
+allowed_flags: []
+locations:
+  room: { description: d, items: {}, exits: [] }
+goal: { kind: has_item, entity: party, item: 鍵 }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "{:?}", sc.validate());
+        let s = sc.initial_state(1);
+        // ロスターが seed される (companion 群だけ・主人公は走査時に足す)。
+        assert_eq!(s.party.iter().map(|e| e.as_str()).collect::<Vec<_>>(), vec!["alice"]);
+        // 仲間アリスが鍵を持つ → party gate は真 (集団で問う)。
+        assert!(crate::Gate::HasItem { entity: "party".into(), item: "鍵".into() }.eval(&s));
+        // 主人公は持っていない → player 既定の gate は偽 (「仲間の鍵が gate に見えない」穴の再現)。
+        assert!(!crate::Gate::HasItem { entity: "player".into(), item: "鍵".into() }.eval(&s));
+        // goal (has_item entity=party) は既に成立 = 扉が開く (持ち替え無し)。
+        assert!(is_goal(&s, &sc));
+    }
+
+    /// 【spec 23 (b) party 検査】幻の仲間 (characters 未宣言) と予約語 "party" を validate が弾く。
+    #[test]
+    fn validate_rejects_phantom_party_member_and_reserved_name() {
+        let phantom = Scenario::from_yaml(
+            r#"
+title: t
+start: room
+party: [bob]
+characters: { alice: { name: アリス } }
+allowed_flags: []
+locations: { room: { description: d, items: {}, exits: [] } }
+goal: { kind: always }
+"#,
+        )
+        .unwrap();
+        assert!(
+            phantom.validate().iter().any(|e| matches!(e,
+                crate::spine::ScenarioError::PartyMemberUnknown { entity } if entity == "bob")),
+            "幻の party メンバーを弾く: {:?}",
+            phantom.validate()
+        );
+
+        let reserved = Scenario::from_yaml(
+            r#"
+title: t
+start: room
+characters: { party: { name: パーティ } }
+allowed_flags: []
+locations: { room: { description: d, items: {}, exits: [] } }
+goal: { kind: always }
+"#,
+        )
+        .unwrap();
+        assert!(
+            reserved
+                .validate()
+                .iter()
+                .any(|e| matches!(e, crate::spine::ScenarioError::ReservedPartyEntity)),
+            "予約語 party を id にしたキャラを弾く: {:?}",
+            reserved.validate()
+        );
+    }
+
     /// 【整合性】goal も goals も無いシナリオ (勝利条件不在) は validate で弾く。
     #[test]
     fn validate_rejects_scenario_with_no_goal() {

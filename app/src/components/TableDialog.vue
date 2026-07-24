@@ -47,13 +47,9 @@ const timerSecs = ref(timerSeconds());
 const showCode = ref(false);
 
 const multi = computed(() => game.multi);
-/** ゲストの割り当て候補 entity (盤面の仲間群)。主人公はホスト固定 (決定 3 改訂) ゆえ除く。 */
-const entityOptions = computed(() => {
-  const ids = new Set<string>();
-  for (const e of game.state?.entities ?? []) ids.add(e.id);
-  ids.delete("player");
-  return [...ids];
-});
+/** ゲストの割り当て候補 entity = パーティのロスター (spec 23 (b))。主人公はホスト固定 (決定 3 改訂)。
+ *  作者が party に宣言した仲間だけを出す (villain/merchant のような GM 専用 NPC は候補に出さない)。 */
+const entityOptions = computed(() => game.state?.party ?? []);
 
 function persistInputs() {
   setTableName(name.value);
