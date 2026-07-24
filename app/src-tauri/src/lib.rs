@@ -689,7 +689,8 @@ struct GameSession {
     /// セーブ非対象** (卓は揮発 — 再開時はホストが join フローで張り直す。契約 participants)。
     participants: Vec<Participant>,
     /// ホスト自身の peer_id (participants の 1 行)。ホストの画面に出す view の viewer 解決に
-    /// 使う — 主人公スロットはホストとは限らない (決定 3)。None = 単騎 (viewer は主人公)。
+    /// 使う。ホスト=player 固定 (2026-07-24 決定 3 改訂) ゆえ実効的に viewer は常に主人公だが、
+    /// 解決経路は host_peer→entity の一般形のまま (単騎の None も主人公に落ちる)。
     host_peer: Option<String>,
     /// 入力窓 (spec 23 決定 4)。peer_id → 提出済みの行動文。締切 (三系統ともホスト frontend が
     /// 判断) で play_party_turn が束ねて消費する。未提出者は「黙っている」で合成される。
@@ -758,7 +759,8 @@ impl RevealView {
 
 /// participants の宣言を検証する (set_participants の門番)。
 /// - 空でない / peer_id・entity_id とも重複なし
-/// - **主人公スロット (entity_id = player) がちょうど 1 行** (契約: 主人公はホストとは限らない)
+/// - **主人公スロット (entity_id = player) がちょうど 1 行**、かつ **ホストがそれを操作する**
+///   (2026-07-24 決定 3 改訂: ホスト=player 固定。ゲストが主人公を執って落ちると中心 entity が彫像化するため)
 /// - 仲間の entity は scenario.characters に宣言済み (幻 entity の遮断 = 閉世界)
 /// - host_peer_id は participants の 1 行
 fn validate_participants(
@@ -791,8 +793,19 @@ fn validate_participants(
             "主人公 (entity_id=player) の枠はちょうど 1 人が必要です (現在 {players} 人)"
         ));
     }
-    if !parts.iter().any(|p| p.peer_id == host_peer_id) {
-        return Err(format!("ホスト ({host_peer_id}) が参加者に居ません"));
+    // ホストは常に主人公を操作する (2026-07-24 決定 3 改訂)。ゲストが主人公を執って落ちると
+    // 中心 entity (AddItem→player / gate 既定 / 所持表示の既定) が「黙っている」彫像になる。
+    // ホストは正本/AI/決断を握る最安定 peer なので、主人公をそこに結ぶと故障モードが
+    // 「卓が生きている = 主人公は操作されている / ホスト断 = 卓ごと消える」の二択に畳める。
+    match parts.iter().find(|p| p.peer_id == host_peer_id) {
+        None => return Err(format!("ホスト ({host_peer_id}) が参加者に居ません")),
+        Some(host) if host.entity_id != PLAYER => {
+            return Err(format!(
+                "ホスト ({host_peer_id}) は主人公 (entity_id=player) を操作してください (現在 {})",
+                host.entity_id
+            ));
+        }
+        Some(_) => {}
     }
     Ok(())
 }
@@ -4034,11 +4047,14 @@ mod tests {
             display_name: peer.to_uppercase(),
         };
 
-        // 正常形: 主人公 1 + 仲間 1、ホストは在籍。
+        // 正常形: ホスト=主人公 + 仲間 1。
         let ok = vec![p("h", "player"), p("g", "alice")];
         assert!(super::validate_participants(&ok, "h", &sc).is_ok());
-        // ホストが仲間を操作する卓も合法 (主人公スロット ≠ ホスト)。
-        assert!(super::validate_participants(&ok, "g", &sc).is_ok());
+        // ホスト=player 固定 (2026-07-24 決定 3 改訂): ホストが仲間を執る卓は拒否。
+        assert!(
+            super::validate_participants(&ok, "g", &sc).is_err(),
+            "ホストは主人公固定 — 仲間を操作する卓は拒否"
+        );
 
         // 空 / peer 重複 / entity 重複 / 幻 entity / 主人公 0 or 2 / ホスト不在。
         assert!(super::validate_participants(&[], "h", &sc).is_err(), "空は拒否");

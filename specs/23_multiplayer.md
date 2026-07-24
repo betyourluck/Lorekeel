@@ -115,8 +115,13 @@ LLM を叩くのはホストだけ。ホストの鍵・ホストのモデル設�
 **rev2 追記（矛盾 12）— 帰属マッピングは契約に載せる**: 「誰がどの entity を操作するか」を
 `participants: [{peer_id, entity_id, display_name}]` として Phase 0 の contract に凍結する。
 これが無いと合成 prompt の発話者名も「ops の entity を正しく振れ」の接地も宙に浮く。
-主人公スロット（= ホストとは限らない。ホスト以外が主人公を執る卓も許す）も
-participants の 1 行として表現し、entity_id = `player` で区別する。
+主人公スロットも participants の 1 行として表現し、entity_id = `player` で区別する。
+**（2026-07-24 決定 3 改訂）主人公はホストが操作する（ホスト=player 固定）**。当初は
+「ホストとは限らない」としたが、ゲストが主人公を執って落ちると中心 entity（`AddItem`→player /
+gate 既定 / 所持表示の既定）が「黙っている」彫像になる degraded 状態が生まれる。ホストは
+正本・AI・決断を握る最安定 peer なので、主人公をそこに結ぶと故障モードが「卓が生きている＝
+主人公は操作されている / ホスト断＝卓ごと消える」の二択に畳める。`validate_participants` が
+「host_peer の entity_id == player」を門番として課す（+ GUI の席割りでホスト席を player に固定）。
 
 ### 決定 4: ターンの形 — 入力窓 + 締切 + 合成 prompt
 
@@ -357,11 +362,12 @@ TURN 無しでは 3 人卓の 1 人がモバイルなだけで卓ごと成立し
   - **`state_view(..., viewer)` の宛先別化**: spec 06 の「本人」を引数化。secret 属性は
     viewer 本人の分だけ DTO に通す（フィルタはホスト側 DTO 段階 = ネットに乗る前）。
     hidden（本人未知）は viewer が誰でも全員分落ちたまま。ホスト画面の viewer は
-    `GameSession::viewer_entity()`（host_peer→entity。**ホストが仲間を操作する卓では
-    ホスト画面も本人の秘密だけ** — 正本とセーブでは全知だが画面はプレイヤー視界に揃える）。
+    `GameSession::viewer_entity()`（host_peer→entity。ホスト=player 固定〔決定 3 改訂〕ゆえ
+    実効的に viewer は常に主人公だが、解決経路は host_peer→entity の一般形のまま — 正本と
+    セーブでは全知だが画面はプレイヤー視界に揃える）。
   - **`participants` 導入**: `GameSession.participants` + `set_participants(participants,
     host_peer_id)`（門番 `validate_participants` = 空/peer 重複/entity 二重操作/幻 entity/
-    主人公スロット≠1/ホスト不在を拒否）。**セーブ非対象**（卓は揮発 — 再開時は join フローで
+    主人公スロット≠1/ホスト不在/**ホストの entity≠player**〔2026-07-24 決定 3 改訂〕を拒否）。**セーブ非対象**（卓は揮発 — 再開時は join フローで
     張り直す）。ゲスト向け fan-out の原料は `state_view_for(peer_id)`（TurnView の他欄は共有、
     差があるのは state だけ）。
   - **入力窓**: `submit_turn_input(peer_id, action)`（再提出は上書き・空は拒否）+

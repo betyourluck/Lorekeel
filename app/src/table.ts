@@ -145,7 +145,7 @@ function syncSeats() {
       displayName: tableName(),
       packageMatch: "ok",
       connected: true,
-      entityId: store.multi.seats.find((s) => s.peerId === "host")?.entityId ?? "player",
+      entityId: "player", // ホスト=player 固定 (2026-07-24 決定 3 改訂)。席 UI でも変更不可。
     },
   ];
   for (const seat of hostTable.seats.values()) {

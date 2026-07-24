@@ -47,10 +47,11 @@ const timerSecs = ref(timerSeconds());
 const showCode = ref(false);
 
 const multi = computed(() => game.multi);
-/** 割り当て候補 entity (主人公 + 現在の盤面に居る entity 群)。 */
+/** ゲストの割り当て候補 entity (盤面の仲間群)。主人公はホスト固定 (決定 3 改訂) ゆえ除く。 */
 const entityOptions = computed(() => {
-  const ids = new Set<string>(["player"]);
+  const ids = new Set<string>();
   for (const e of game.state?.entities ?? []) ids.add(e.id);
+  ids.delete("player");
   return [...ids];
 });
 
@@ -227,7 +228,18 @@ const leave = confirmAndLeave;
         <div v-for="s in multi.seats" :key="s.peerId" class="mb-1 flex items-center gap-2 text-sm">
           <span class="w-2 shrink-0" :class="s.connected ? 'text-green-400' : 'text-parchment/40'">●</span>
           <span class="min-w-[7rem]">{{ s.displayName }}</span>
-          <select v-model="s.entityId" class="rounded border border-ash bg-ash/30 px-1 py-0.5 text-xs" :disabled="multi.started">
+          <span
+            v-if="s.peerId === 'host'"
+            class="rounded border border-ash bg-ash/20 px-1 py-0.5 text-xs text-parchment/70"
+            :title="t('table.hostFixedPlayer')"
+            >player</span
+          >
+          <select
+            v-else
+            v-model="s.entityId"
+            class="rounded border border-ash bg-ash/30 px-1 py-0.5 text-xs"
+            :disabled="multi.started"
+          >
             <option value="">{{ t("table.unassigned") }}</option>
             <option v-for="id in entityOptions" :key="id" :value="id">{{ id }}</option>
           </select>
