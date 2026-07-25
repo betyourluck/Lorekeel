@@ -82,6 +82,10 @@ pub enum Gate {
     All { of: Vec<Gate> },
     /// いずれかの子条件が通る (OR)。
     Any { of: Vec<Gate> },
+    /// 子条件の**否定** (NOT)。`all`(AND)/`any`(OR) に対して否定を与え、ブール代数を閉じる。
+    /// 「鍵を持っていない」= `{ kind: not, of: { kind: has_item, item: 鍵 } }`。has_item/has_skill/
+    /// attribute_is/location_is など**任意の gate を否定**でき、フラグでの二重管理が要らない。
+    Not { of: Box<Gate> },
 }
 
 impl Gate {
@@ -103,6 +107,7 @@ impl Gate {
             Gate::HasVoted { entity } => s.votes.contains_key(entity),
             Gate::All { of } => of.iter().all(|g| g.eval(s)),
             Gate::Any { of } => of.iter().any(|g| g.eval(s)),
+            Gate::Not { of } => !of.eval(s),
         }
     }
 
@@ -1328,6 +1333,7 @@ impl Scenario {
                         scan_gate(sub, origin, known, out);
                     }
                 }
+                Gate::Not { of } => scan_gate(of, origin, known, out),
                 _ => {}
             }
         }

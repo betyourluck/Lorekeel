@@ -307,6 +307,7 @@ fn gate_brief(gate: &Gate) -> String {
             let parts: Vec<String> = of.iter().map(gate_brief).collect();
             format!("いずれか満たす({})", parts.join(" / "))
         }
+        Gate::Not { of } => format!("「{}」でないこと", gate_brief(of)),
     }
 }
 

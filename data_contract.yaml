@@ -258,6 +258,7 @@ Gate:                               # 内部タグ "kind" 付き列挙。エン�
   - { kind: has_voted, entity: EntityId }  # ✅#38 (2026-07-05): entity の票が現在の票箱 (state.votes) に入っている。「プレイヤーが投票したら開票」のイベント駆動 — resolve_vote が票をリセットするので開票後に自然と偽へ戻り repeatable トリガーが再武装。turns_since と any で束ねれば「票が入るか N ターンで強制開票」。entity 省略時 player
   - { kind: all, of: [Gate] }
   - { kind: any, of: [Gate] }
+  - { kind: not, of: Gate }  # ✅(2026-07-24) 否定 (NOT)。all(AND)/any(OR) に対しブール代数を閉じる。任意の gate を否定でき、has_item/has_skill/attribute_is に無かった「〜でない」を書ける (フラグでの二重管理が不要)。例: 「鍵を持っていない」= { kind: not, of: { kind: has_item, item: 鍵 } }。scan_gate は not の中も再帰で lint。unmet の catch-all がそのまま拾う
 
 # --- LLM ナレーター脚 (crate llm_client。提案はするが裁定はしない) ------------
 # 三権分立の「LLM=提案」。OpenAI 互換 chat/completions を base_url+api_key で抽象化し、

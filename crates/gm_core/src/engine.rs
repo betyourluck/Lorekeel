@@ -3876,6 +3876,57 @@ goal: { kind: always }
         );
     }
 
+    /// 【not gate】否定の組み合わせ子。任意の gate を否定でき、all/any とネストできる。
+    /// ユーザー実ケース: player_room にいて、かつライブチケットを持っていない。
+    #[test]
+    fn not_gate_negates_inner_and_nests() {
+        let yaml = r#"
+title: t
+start: player_room
+allowed_flags: []
+locations:
+  player_room: { description: d, items: {}, exits: [] }
+goal:
+  kind: all
+  of:
+    - { kind: location_is, at: player_room }
+    - { kind: not, of: { kind: has_item, entity: player, item: ライブチケット } }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "{:?}", sc.validate());
+        let mut s = sc.initial_state(1);
+        // チケット未所持 → not(has_item)=true → all=true → goal 到達。
+        assert!(is_goal(&s, &sc), "未所持なら goal (player_room ∧ ¬チケット)");
+        // チケットを持つと not=false → goal から外れる。
+        s.add_to_inventory("player", "ライブチケット");
+        assert!(!is_goal(&s, &sc), "所持で not=false → goal から外れる");
+    }
+
+    /// 【not gate lint】scan_gate は not の中の幻 location も再帰で拾う。
+    #[test]
+    fn lint_recurses_into_not_gate() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: []
+locations:
+  room: { description: d, items: {}, exits: [] }
+challenges:
+  c:
+    sides: 6
+    dc: 3
+    requires: { kind: not, of: { kind: location_is, at: 幻の間 } }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(
+            sc.lints().iter().any(|e| matches!(e,
+                crate::spine::ScenarioError::UnknownLocationInGate { at, .. } if at == "幻の間")),
+            "not の中の幻 location を lint が拾う: {:?}",
+            sc.lints()
+        );
+    }
+
     /// 【整合性】goal も goals も無いシナリオ (勝利条件不在) は validate で弾く。
     #[test]
     fn validate_rejects_scenario_with_no_goal() {

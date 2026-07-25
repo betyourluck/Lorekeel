@@ -150,6 +150,7 @@ fn gate_ja(gate: &Gate) -> String {
             let parts: Vec<String> = of.iter().map(gate_ja).collect();
             format!("いずれか満たす({})", parts.join(" / "))
         }
+        Gate::Not { of } => format!("「{}」でないこと", gate_ja(of)),
     }
 }
 
@@ -181,6 +182,7 @@ fn gate_en(gate: &Gate) -> String {
             let parts: Vec<String> = of.iter().map(gate_en).collect();
             format!("any of ({})", parts.join(" / "))
         }
+        Gate::Not { of } => format!("NOT ({})", gate_en(of)),
     }
 }
 
