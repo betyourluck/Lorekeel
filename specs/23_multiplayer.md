@@ -361,7 +361,10 @@ TURN 無しでは 3 人卓の 1 人がモバイルなだけで卓ごと成立し
 - **Phase B — 多人数ターンループ（ネット無しで検証）(✅2026-07-23 実装 = Done)**:
   - **`state_view(..., viewer)` の宛先別化**: spec 06 の「本人」を引数化。secret 属性は
     viewer 本人の分だけ DTO に通す（フィルタはホスト側 DTO 段階 = ネットに乗る前）。
-    hidden（本人未知）は viewer が誰でも全員分落ちたまま。ホスト画面の viewer は
+    hidden（本人未知）は viewer が誰でも全員分落ちたまま。**（2026-07-24 追補）状態タブ
+    上段の「所持品」も `PLAYER` 固定から viewer へ**（仲間を操作するゲストにホストの所持品が
+    並んでいた＝単騎前提の名残。監査の結果 viewer 化すべきはこの 1 箇所だけと確定 — entities
+    ブロックは既に per-entity + viewer 対応済み）。ホスト画面の viewer は
     `GameSession::viewer_entity()`（host_peer→entity。ホスト=player 固定〔決定 3 改訂〕ゆえ
     実効的に viewer は常に主人公だが、解決経路は host_peer→entity の一般形のまま — 正本と
     セーブでは全知だが画面はプレイヤー視界に揃える）。
