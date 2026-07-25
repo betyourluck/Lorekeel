@@ -797,8 +797,11 @@ onMounted(async () => {
             <!-- 登録モデル (localStorage)。選ぶと下のフォームに即反映 → 「保存」で .env へ書込。 -->
             <div class="space-y-2">
               <div class="flex items-center gap-1">
+                <!-- min-w-0 + truncate: flex アイテムは既定 min-width:auto = **最長 option より
+                     細くなれない**ので、長いモデル名 (「Claude-sonnet-5（claude-sonnet-5）」等) が
+                     select を押し広げ、右ペインごと横スクロールしていた。 -->
                 <select v-model="selectedProfileId" @change="onSelectProfile"
-                  class="flex-1 rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none">
+                  class="min-w-0 flex-1 truncate rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none">
                   <option value="" disabled>{{ t("settings.model.selectPlaceholder") }}</option>
                   <option v-for="p in profiles" :key="p.id" :value="p.id">
                     {{ p.name }}（{{ p.model || t("settings.model.modelUnset") }}）
@@ -820,7 +823,7 @@ onMounted(async () => {
               <!-- 追加: 表示名だけ入力 (設定は下のフォームの現在値を使う)。 -->
               <div v-if="showAddForm" class="flex items-center gap-1">
                 <input v-model="draftName" :placeholder="t('settings.model.draftPlaceholder')"
-                  class="flex-1 rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none"
+                  class="min-w-0 flex-1 rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none"
                   @keydown.enter="saveDraft" />
                 <button class="rounded bg-ember/80 hover:bg-ember px-3 py-1 text-sm text-ink font-bold"
                   @click="saveDraft">{{ t("settings.model.register") }}</button>
