@@ -18,7 +18,8 @@ GameState:
   fired: [TriggerId]            # 発火済みトリガー集合 (Phase C)。edge-triggered once の latch。セーブ対象
   skills: { EntityId: [SkillId] }  # キャラ別の獲得済み能力 (閉世界)。初期=宣言集合、開花は authored トリガーのみ
   attributes: { EntityId: { AttrKey: string } }  # キャラ別の文字列属性(クラス/職業/種族 等。第4の可変状態)。初期=宣言集合、書き換えは authored トリガーの set_attribute のみ(LLM 却下)。未宣言キーは load 時 validate で弾く。値は authored 自由文字列。セーブ対象
-  present_overrides: { EntityId: bool }  # 画面上の登場/退場のオーバーライド(第5の可変状態, spec 04)。true=強制登場/false=強制退場。Location.present に重ねて実効 presence を決める。書き換えは authored トリガーの set_presence のみ(LLM 却下)。transition で持ち越し(仲間が同行)。セーブ対象
+  present_overrides: { EntityId: PresenceOverride }  # 画面上の登場/退場のオーバーライド(第5の可変状態, spec 04)。Location.present に重ねて実効 presence を決める。書き換えは authored トリガーの set_presence のみ(LLM 却下)。セーブ対象
+  PresenceOverride: "**二様式** (untagged・2026-07-25)。Persistent(bool) = 旧形式 = **同行者**: 場所を持たずモジュール全域に効き transition で持ち越す / Volatile{present,at:LocationId} = **来訪者**: 立てた場所に居るときだけ効き、Move でその場所を離れた瞬間に破棄され transition でも捨てる。旧セーブ (bool) は untagged で Persistent として読める (LocationItem / StatInit と同じ後方互換パターン)"
 
 # --- LLM が毎ターン返す構造化出力 (これ以外の形を出せない) -------------------
 StateDelta:
@@ -44,7 +45,7 @@ StateOp:                        # 内部タグ "op" 付き列挙
   - { op: grant_skill,  entity: EntityId, skill: SkillId }   # スキル開花。validate_ops は常に却下、apply_ops(trigger effects)のみ実行
   - { op: set_attribute, entity: EntityId, key: AttrKey, value: string }  # 文字列属性の書き換え(クラス転職 等)。validate_ops は常に却下(クラス捏造遮断)、apply_ops(trigger effects)のみ実行。未宣言キーは load 時 validate で弾く
   - { op: record_turn,  entity: EntityId, key: StatKey }  # 現在ターンを stat に刻む(タイムスタンプ)。validate_ops は常に却下(タイマー詐称遮断)、apply_ops(trigger effects)のみ実行。生値で書く(clamp なし)。Gate::turns_since と対で遅延イベント
-  - { op: set_presence, entity: EntityId, present: bool }  # 画面上の登場(true)/退場(false)。validate_ops は常に却下(キャラ勝手登場の捏造遮断)、apply_ops(trigger effects)のみ実行。GameState.present_overrides に書き transition で持ち越す(spec 04)
+  - { op: set_presence, entity: EntityId, present: bool, volatile: bool }  # 画面上の登場(true)/退場(false)。validate_ops は常に却下(キャラ勝手登場の捏造遮断)、apply_ops(trigger effects)のみ実行。volatile(既定 false)が様式を選ぶ: false=同行者(従来・transition 持ち越し) / true=来訪者(適用時の現在地に紐づき、離れた瞬間に破棄。退場トリガーを書かずに「その場限りの登場」が書ける、2026-07-25)
   - { op: roll_stat, entity: EntityId, key: StatKey, count: u32, sides: u32, bonus: i64, negate: bool }  # 可変量ダイス (spec 16)。engine が count×d(sides)+bonus を振り negate に応じて ± を stat へ clamp 適用 (SAN 1d6 減少・1d8 ダメージ)。validate_ops は常に却下 (StatRollNotAllowed=ダメージ量捏造遮断、AUTHORED_ONLY_OPS 第6例)、apply_ops(trigger/challenge effects)のみ実行。出目は rolls に surface (「SAN -4 (1d6=4)」)。本流 RNG・apply 時確定 (帰結非射影は spec 09 準拠)。count/sides=0 は load 時 RollStatShapeInvalid
 
 # --- 裁定の不変条件 (engine::adjudicate / apply が守る掟) --------------------
@@ -330,10 +331,12 @@ Capability:
 # --- 登場/退場 (presence の可変化, spec 04) ---------------------------------
 Presence:
   base:        "Location.present = authored の場所ベース (**明示宣言**・2026-07-02 改訂: 空/未宣言なら誰もいない。旧『空なら全 characters』は廃止 — 無人の場所に全キャラ set_presence false が要る逆転を断つ)。これは静的"
-  override:    "GameState.present_overrides{EntityId:bool} = 可変オーバーライド (true=強制登場/false=強制退場)。第5の可変状態・セーブ対象"
-  effective:   "Scenario::present_at(state) = 場所ベース ± override、既知 characters に retain (純粋関数)。app present_characters がこれを使い主人公を先頭に解決"
+  override:    "GameState.present_overrides{EntityId: PresenceOverride} = 可変オーバーライド (present=true 強制登場/false 強制退場)。第5の可変状態・セーブ対象"
+  volatility:  "**二様式** (2026-07-25)。**同行者** (volatile:false・旧形式 bool = 既定): 場所を持たずモジュール全域に効き transition で持ち越す / **来訪者** (volatile:true): 適用時の現在地 (at) に紐づき、Move でその場所を離れた瞬間に**破棄**され transition でも捨てる。破棄後の実効 presence は Location.present の土台へ戻る (再訪しても蘇らない)。動機: 旧 override は**場所を持たなかった**ので一度登場させるとどこへ行っても付いてきて、『その瞬間だけ居させる』には退場トリガーを別途書く必要があった (spec 04 が per-location override をスコープ外に置いた分の請求書)。破棄は apply_deterministic_op の Move 適用点 = **裁定の逐次射影と実適用が共有** (spec 09)"
+  effective:   "Scenario::present_at(state) = 場所ベース ± override、既知 characters に retain (純粋関数)。揮発分は at == 現在地のときだけ重ねる。app present_characters がこれを使い主人公を先頭に解決"
   control:     "登場/退場は Trigger.effects の set_presence のみ (authored 専権)。LLM 提案の set_presence は RejectReason::PresenceSetNotAllowed で却下 (grant_skill 同型・第4例)"
-  carry:       "transition が present_overrides を持ち越す (登場させた仲間が次の画面に同行)。未注入キャラへの force-present は present_at の retain でそのモジュールでは黙って落ち、override は state に残り次のモジュールで現れる"
+  carry:       "transition が present_overrides の**永続分だけ**持ち越す (登場させた仲間が次の画面に同行。揮発は前モジュールの場所に紐づくので捨てる)。未注入キャラへの force-present は present_at の retain でそのモジュールでは黙って落ち、override は state に残り次のモジュールで現れる"
+  death:       "ResolveVote の死亡投影は**永続**で書く (揮発だと場所を変えた瞬間に処刑された者が蘇る)"
 
 # --- 反応機構: 禁忌(Phase B) と トリガー(Phase C) は双対 ---------------------
 # 両者とも「delta 適用後に Gate を評価する」同じ機構を使う。Phase B が機構を作り、

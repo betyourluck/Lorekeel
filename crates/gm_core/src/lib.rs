@@ -32,6 +32,7 @@ pub use spine::{
 };
 pub use state::{
     default_entity, AttrKey, ChallengeId, EntityId, FlagKey, GameState, GoalId, ItemId, LocationId,
-    PendingContest, PendingDecision, RngState, SkillId, StatKey, StateDelta, StateOp, TriggerId,
+    PendingContest, PendingDecision, PresenceOverride, RngState, SkillId, StatKey, StateDelta,
+    StateOp, TriggerId,
     AUTHORED_ONLY_OPS, DEFAULT_GOAL, PARTY, PLAYER,
 };

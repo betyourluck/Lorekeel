@@ -954,7 +954,7 @@ mod tests {
         state.turn = 7;
         state.flags.insert("door_open".into(), true);
         state.votes.insert("mira".into(), "yuren".into());
-        state.present_overrides.insert("alice".into(), false);
+        state.present_overrides.insert("alice".into(), gm_core::PresenceOverride::Persistent(false));
         let _ = state.rng.roll(20); // rng カーソルを進める (出目まで再現の証拠)
 
         let save = SessionSave {
@@ -2051,14 +2051,14 @@ mod tests {
         assert!(!brief.contains("ボブ"), "居ない bob は出ない: {brief}");
 
         // 退場/登場の override が反映される (静的な説明文と食い違っても一覧が真実)。
-        s.present_overrides.insert("alice".into(), false);
-        s.present_overrides.insert("bob".into(), true);
+        s.present_overrides.insert("alice".into(), gm_core::PresenceOverride::Persistent(false));
+        s.present_overrides.insert("bob".into(), gm_core::PresenceOverride::Persistent(true));
         let brief = prompt::state_brief(&s, &sc);
         assert!(brief.contains("ボブ"), "登場した bob が出る: {brief}");
         assert!(!brief.contains("アリス"), "退場した alice は出ない: {brief}");
 
         // 誰もいない場合はその旨を明示 (空欄でなく)。
-        s.present_overrides.insert("bob".into(), false);
+        s.present_overrides.insert("bob".into(), gm_core::PresenceOverride::Persistent(false));
         let brief = prompt::state_brief(&s, &sc);
         assert!(brief.contains("誰もいない"), "無人はその旨を明示: {brief}");
 

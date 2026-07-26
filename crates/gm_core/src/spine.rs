@@ -1220,8 +1220,14 @@ impl Scenario {
             .location(&state.location)
             .map(|loc| loc.present.clone())
             .unwrap_or_default();
-        for (entity, &present) in &state.present_overrides {
-            if present {
+        for (entity, ov) in &state.present_overrides {
+            // 揮発 override は**立てた場所に居るときだけ**効く (来訪者)。永続は場所を持たない
+            // (同行者)。揮発分は Move で破棄されるので通常ここには残らないが、セーブ跨ぎや
+            // 破棄前の評価でも土台 (Location.present) を侵さないよう二重に守る。
+            if ov.at().is_some_and(|at| at != &state.location) {
+                continue;
+            }
+            if ov.present() {
                 set.insert(entity.clone());
             } else {
                 set.remove(entity);
@@ -1942,8 +1948,15 @@ impl Scenario {
                 s.set_attribute(entity, key, value);
             }
         }
-        // 登場/退場のオーバーライド: 丸ごと持ち越し (登場させた仲間が次の画面にも同行する、spec 04)。
-        s.present_overrides = prev.present_overrides.clone();
+        // 登場/退場のオーバーライド: **永続 (同行者) だけ**持ち越す (登場させた仲間が次の画面にも
+        // 同行する、spec 04)。揮発 (来訪者) は前モジュールの場所に紐づいており、location は
+        // 遷移先の start へリセットされるので捨てる (2026-07-25)。
+        s.present_overrides = prev
+            .present_overrides
+            .iter()
+            .filter(|(_, ov)| ov.at().is_none())
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         // フラグ: source が global と宣言したものだけ運ぶ (局所は捨てる)。
         for key in &prev_scenario.global_flags {
             if let Some(value) = prev.flags.get(key) {

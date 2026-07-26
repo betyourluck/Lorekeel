@@ -1389,6 +1389,12 @@ fn apply_deterministic_op(state: &mut GameState, scenario: &Scenario, op: &State
         }
         StateOp::Move { to } => {
             state.location = to.clone();
+            // 揮発 presence (来訪者) は**立てた場所を離れた瞬間に破棄**する — 実効 presence は
+            // `Location.present` の土台へ戻る (2026-07-25)。永続 (同行者) は場所を持たないので残る。
+            // ここは `validate_ops` の逐次射影と実適用が共有するので、裁定のドライランと実行が
+            // 構造的に一致する (spec 09)。
+            // (MSRV 1.80 ゆえ `is_none_or` は使えない — `map_or` で書く)
+            state.present_overrides.retain(|_, ov| ov.at().map_or(true, |at| at == to));
             true
         }
         // --- 算術はエンジンが行う。LLM は意図だけ提案、値は持てない ---
@@ -1747,9 +1753,18 @@ fn apply_ops(
                 // ここに到達するのは authored トリガーの effect のみ (LLM 提案は adjudicate で却下済)。
                 state.set_attribute(entity, key, value);
             }
-            StateOp::SetPresence { entity, present } => {
+            StateOp::SetPresence { entity, present, volatile } => {
                 // ここに到達するのは authored トリガーの effect のみ (LLM 提案は adjudicate で却下済)。
-                state.present_overrides.insert(entity.clone(), *present);
+                // 揮発は**適用時の現在地**に紐づけ、そこを離れた時点で破棄する (来訪者)。
+                let ov = if *volatile {
+                    crate::state::PresenceOverride::Volatile {
+                        present: *present,
+                        at: state.location.clone(),
+                    }
+                } else {
+                    crate::state::PresenceOverride::Persistent(*present)
+                };
+                state.present_overrides.insert(entity.clone(), ov);
             }
             StateOp::ResolveVote => {
                 // ここに到達するのは authored トリガーの effect のみ (LLM 提案は adjudicate で却下済)。
@@ -1801,7 +1816,10 @@ fn resolve_vote(state: &mut GameState, scenario: &Scenario) {
 
     // 死亡の原子適用: 正本 (生存 stat) + 表示への投影 (presence)。
     state.set_stat(&victim, "生存", 0);
-    state.present_overrides.insert(victim.clone(), false);
+    // 死亡は**永続** — 処刑された者はどこにも現れない (揮発にすると場所を変えて蘇る)。
+    state
+        .present_overrides
+        .insert(victim.clone(), crate::state::PresenceOverride::Persistent(false));
 
     // 役職カウンタ・優位 stat の再計算 (role_assignment 盤面のみ)。
     if let Some(ra) = &scenario.role_assignment {
@@ -3386,7 +3404,7 @@ goal: { kind: always }
         apply(&mut s, &sc, &d(ops)).unwrap();
 
         assert_eq!(s.stat_of(&wolf, "生存"), 0, "最多得票の人狼が死亡 (正本)");
-        assert_eq!(s.present_overrides.get(&wolf), Some(&false), "presence へ投影 (退場)");
+        assert_eq!(s.present_overrides.get(&wolf).map(|o| o.present()), Some(false), "presence へ投影 (退場)");
         assert_eq!(s.stat_of(PLAYER, "生存人狼数"), 0, "役職カウンタ再計算");
         assert_eq!(s.stat_of(PLAYER, "生存者数"), 3);
         assert_eq!(s.stat_of(PLAYER, "人狼優位"), -3, "優位 = 2×生存人狼数 − 生存者数");
@@ -4578,8 +4596,105 @@ locations:
         let present = sc.present_at(&s);
         assert!(present.contains("alice") && !present.contains("bob"), "宣言した alice だけ");
         // override は空の場所にも登場させられる (トリガー専権の経路は不変)。
-        s.present_overrides.insert("bob".into(), true);
+        s.present_overrides.insert("bob".into(), crate::state::PresenceOverride::Persistent(true));
         assert!(sc.present_at(&s).contains("bob"), "override true は base が空でも登場");
+    }
+
+    /// 【揮発 presence = 来訪者 (2026-07-25)】従来 override は**場所を持たなかった**ので、
+    /// 一度登場させるとモジュール中どこへ行っても付いてきた (「その瞬間だけ居させたい」が
+    /// 書けず、退場トリガーを別途書く運用負担になっていた)。`volatile: true` は適用時の
+    /// 現在地に紐づき、そこを離れた瞬間に破棄される → 実効 presence は `Location.present` の
+    /// **土台へ戻る**。永続 (同行者) との対比も同時に固定する。
+    #[test]
+    fn volatile_presence_expires_on_leaving_and_falls_back_to_location_set() {
+        let yaml = r#"
+title: t
+start: tavern
+allowed_flags: [使者到着]
+goal: { kind: always }
+characters:
+  master: { name: 主人 }
+  messenger: { name: 早馬の使者 }
+  ally: { name: 相棒 }
+locations:
+  tavern: { description: 酒場, present: [master], exits: [{ to: road }] }
+  road: { description: 街道, present: [], exits: [{ to: tavern }] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let mut s = sc.initial_state(1);
+        assert_eq!(sc.present_at(&s), ["master".to_string()].into_iter().collect());
+
+        // set_presence は authored 専権 (LLM 提案は却下) なので、トリガー効果と同じ
+        // apply_ops 直行経路で入れる。
+        let authored = |s: &mut GameState, ops: Vec<StateOp>| {
+            apply_ops(
+                s,
+                &sc,
+                &StateDelta::new("", ops),
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut Vec::new(),
+            );
+        };
+
+        // 来訪者 (揮発) と同行者 (永続) を同じ場所で登場させる。
+        authored(
+            &mut s,
+            vec![
+                StateOp::SetPresence {
+                    entity: "messenger".into(),
+                    present: true,
+                    volatile: true,
+                },
+                StateOp::SetPresence { entity: "ally".into(), present: true, volatile: false },
+            ],
+        );
+        let here = sc.present_at(&s);
+        assert!(here.contains("messenger") && here.contains("ally") && here.contains("master"));
+
+        // 場所を離れる → 揮発だけ破棄。同行者は付いてくる。
+        apply(&mut s, &sc, &d(vec![StateOp::Move { to: "road".into() }])).unwrap();
+        assert!(
+            !s.present_overrides.contains_key("messenger"),
+            "揮発 override は Move で破棄される (state に残らない): {:?}",
+            s.present_overrides
+        );
+        let road = sc.present_at(&s);
+        assert!(!road.contains("messenger"), "来訪者は付いてこない: {road:?}");
+        assert!(road.contains("ally"), "同行者は付いてくる (従来どおり): {road:?}");
+
+        // 戻っても復活しない = 実効 presence は Location.present の土台へ戻っている。
+        apply(&mut s, &sc, &d(vec![StateOp::Move { to: "tavern".into() }])).unwrap();
+        let back = sc.present_at(&s);
+        assert!(!back.contains("messenger"), "再訪で来訪者が蘇らない: {back:?}");
+        assert!(back.contains("master"), "土台 (Location.present) はそのまま生きている: {back:?}");
+
+        // 揮発の「不在」も同じ様式で書ける (この訪問の間だけ席を外している)。
+        authored(
+            &mut s,
+            vec![StateOp::SetPresence { entity: "master".into(), present: false, volatile: true }],
+        );
+        assert!(!sc.present_at(&s).contains("master"), "揮発の退場も効く");
+        apply(&mut s, &sc, &d(vec![StateOp::Move { to: "road".into() }])).unwrap();
+        apply(&mut s, &sc, &d(vec![StateOp::Move { to: "tavern".into() }])).unwrap();
+        assert!(sc.present_at(&s).contains("master"), "出直せば土台へ戻る");
+    }
+
+    /// 【旧セーブ互換】`present_overrides` の旧形式 (`entity: bool`) は untagged で
+    /// `Persistent` として読める (`LocationItem` / `StatInit` と同じ後方互換パターン)。
+    #[test]
+    fn old_saves_parse_bool_presence_overrides_as_persistent() {
+        let s: GameState = serde_yaml::from_str(
+            "location: hall\nrng: { seed: 1, cursor: 0 }\npresent_overrides: { alice: true, bob: false }\n",
+        )
+        .expect("旧形式が読める");
+        assert_eq!(
+            s.present_overrides.get("alice").map(|o| o.present()),
+            Some(true)
+        );
+        assert!(s.present_overrides["alice"].at().is_none(), "旧形式は場所を持たない = 永続");
+        assert_eq!(s.present_overrides.get("bob").map(|o| o.present()), Some(false));
     }
 
     /// 【登場/退場 (spec 04)】authored トリガーの set_presence で entity が登場/退場し、
@@ -4629,7 +4744,7 @@ triggers:
         ))
         .unwrap();
         let s = sc.initial_state(1);
-        let delta = d(vec![StateOp::SetPresence { entity: "alice".into(), present: true }]);
+        let delta = d(vec![StateOp::SetPresence { entity: "alice".into(), present: true, volatile: false }]);
         match adjudicate(&s, &sc, &delta) {
             Verdict::Reject { reasons } => assert!(
                 reasons
@@ -4659,11 +4774,11 @@ triggers:
         ))
         .unwrap();
         let mut s = a.initial_state(1);
-        s.present_overrides.insert("bob".into(), true);
-        s.present_overrides.insert("alice".into(), false);
+        s.present_overrides.insert("bob".into(), crate::state::PresenceOverride::Persistent(true));
+        s.present_overrides.insert("alice".into(), crate::state::PresenceOverride::Persistent(false));
         let next = b.transition(&s, &a);
-        assert_eq!(next.present_overrides.get("bob"), Some(&true), "登場が次モジュールへ持ち越し");
-        assert_eq!(next.present_overrides.get("alice"), Some(&false), "退場も持ち越し");
+        assert_eq!(next.present_overrides.get("bob").map(|o| o.present()), Some(true), "登場が次モジュールへ持ち越し");
+        assert_eq!(next.present_overrides.get("alice").map(|o| o.present()), Some(false), "退場も持ち越し");
         // B は bob を cast に持つので、持ち越した仲間が次の画面でも同行する。
         assert!(b.present_at(&next).contains("bob"), "持ち越した登場が次の画面の presence に出る");
     }

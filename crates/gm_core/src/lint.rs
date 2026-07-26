@@ -207,7 +207,7 @@ fn op_samples() -> Vec<StateOp> {
         StateOp::GrantSkill { entity: e(), skill: "s".into() },
         StateOp::SetAttribute { entity: e(), key: "a".into(), value: "v".into() },
         StateOp::RecordTurn { entity: e(), key: "s".into() },
-        StateOp::SetPresence { entity: e(), present: true },
+        StateOp::SetPresence { entity: e(), present: true, volatile: false },
         StateOp::RollStat { entity: e(), key: "s".into(), count: 1, sides: 6, bonus: 0, negate: false },
         StateOp::CastVote { voter: e(), target: e() },
         StateOp::ResolveVote,

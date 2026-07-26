@@ -52,6 +52,46 @@ pub fn default_entity() -> EntityId {
     PLAYER.to_string()
 }
 
+/// presence オーバーライドの様式 — **同行者と来訪者を分ける** (2026-07-25)。
+///
+/// 従来 override は `bool` 一枚で、**場所を持たなかった** — `Location.present` が場所ごとの
+/// 宣言なのに、それを上書きする層だけが場所非依存だったので、一度登場させると
+/// そのモジュールのどこへ行っても付いてきた (「その瞬間だけ居させたい」が書けず、
+/// 退場トリガーを別途書く運用負担になっていた。spec 04 が per-location override を
+/// スコープ外に置いた分の請求書)。
+///
+/// 旧形式 (`bool`) は untagged でそのまま読める = **旧セーブ無改修** ([`crate::LocationItem`] の
+/// 旧/新形式両受け・[`crate::StatInit`] の素の数値/境界つき宣言と同じ後方互換パターン)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PresenceOverride {
+    /// **同行者** (旧形式 = 既定)。モジュール内の全 location に効き、`transition` で持ち越す。
+    /// 消すには明示的に `set_presence` を書く。仲間になった/永久に去った、を表す。
+    Persistent(bool),
+    /// **来訪者** (`set_presence { volatile: true }`)。`at` (立てた場所) に**居るときだけ**効き、
+    /// そこを離れた瞬間に破棄される (Move 適用点)。破棄後の実効 presence は
+    /// `Location.present` の土台へ戻る。`transition` では持ち越さない。
+    Volatile { present: bool, at: LocationId },
+}
+
+impl PresenceOverride {
+    /// 在 (`true`) / 不在 (`false`)。様式によらない中身。
+    pub fn present(&self) -> bool {
+        match self {
+            PresenceOverride::Persistent(p) => *p,
+            PresenceOverride::Volatile { present, .. } => *present,
+        }
+    }
+
+    /// 揮発なら「立てた場所」。永続なら `None` (場所を持たない = どこでも効く)。
+    pub fn at(&self) -> Option<&LocationId> {
+        match self {
+            PresenceOverride::Persistent(_) => None,
+            PresenceOverride::Volatile { at, .. } => Some(at),
+        }
+    }
+}
+
 /// ゲームの唯一の真実。エンジンだけが [`crate::apply`] 経由で変更できる。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameState {
@@ -81,12 +121,15 @@ pub struct GameState {
     /// 存在しない (閉世界、load 時 validate)。値は authored な自由文字列。**セーブ対象**。
     #[serde(default)]
     pub attributes: BTreeMap<EntityId, BTreeMap<AttrKey, String>>,
-    /// **画面上の在/不在のオーバーライド** (登場/退場。第5の可変状態。spec 04)。`entity → true`
-    /// は強制登場、`entity → false` は強制退場。`Location.present` (場所ベース) に重ねて実効 presence を
-    /// 決める。書き換えは authored トリガーの set_presence のみ (LLM は提案しても却下)。**セーブ対象**・
-    /// `transition` で持ち越す (仲間が同行する)。
+    /// **画面上の在/不在のオーバーライド** (登場/退場。第5の可変状態。spec 04)。`true`
+    /// は強制登場、`false` は強制退場。`Location.present` (場所ベース) に重ねて実効 presence を
+    /// 決める。書き換えは authored トリガーの set_presence のみ (LLM は提案しても却下)。**セーブ対象**。
+    ///
+    /// **二つの様式** ([`PresenceOverride`], 2026-07-25): 永続 = 同行者 (`transition` で持ち越す =
+    /// ある画面で登場させた仲間が次の画面にも同行する) / 揮発 = 来訪者 (立てた場所を離れた瞬間に
+    /// 破棄され、実効 presence は `Location.present` の土台へ戻る)。
     #[serde(default)]
-    pub present_overrides: BTreeMap<EntityId, bool>,
+    pub present_overrides: BTreeMap<EntityId, PresenceOverride>,
     /// **投票の器** (spec 06 Phase C)。voter → target。一人一票 (再投票は上書き)、
     /// BTreeMap = 集計順も決定論。**セーブ対象**・`transition` では持ち越さない (票は
     /// フェーズ内の一時状態)。書き込みは CastVote、読み出し+リセットは ResolveVote。
@@ -513,11 +556,19 @@ pub enum StateOp {
     /// **画面上の登場/退場** (presence のオーバーライド)。**authored トリガーの専権** — LLM が提案すると
     /// `adjudicate` が却下する (キャラ勝手登場の捏造遮断、GrantSkill/SetAttribute と同型)。trigger effects は
     /// `apply_ops` 直行なので登場/退場させられる。`present=true` で強制登場・`false` で強制退場。
-    /// `transition` で持ち越すので、ある画面で登場させた仲間が次の画面にも同行する。`entity` 省略時は主人公。
+    /// `entity` 省略時は主人公。
+    ///
+    /// `volatile` (既定 false) が**様式**を選ぶ ([`PresenceOverride`], 2026-07-25):
+    /// - `false` = **同行者**。モジュール全域に効き `transition` で持ち越す (従来どおり)。
+    /// - `true` = **来訪者**。適用時の現在地に紐づき、そこを離れた瞬間に破棄される。
+    ///   「使者が駆け込んでくる」のような**その場限りの登場**を、退場トリガーを書かずに済ませる。
     SetPresence {
         #[serde(default = "default_entity")]
         entity: EntityId,
         present: bool,
+        /// 揮発 (この場限り) にするか。既定 false = 従来の永続 override。
+        #[serde(default)]
+        volatile: bool,
     },
     /// **可変量ダイス** (spec 16)。エンジンが `count × d(sides) + bonus` を振り、`negate` に
     /// 応じて ± を stat へ clamp 適用する (SAN 1d6 減少・1d8 ダメージ)。**authored 専権** —
