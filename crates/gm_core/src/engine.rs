@@ -2983,6 +2983,126 @@ goal: { kind: always }
         assert!(hits[0].0.contains("equip"), "どこの Gate かを名指しする: {:?}", hits[0].0);
     }
 
+    /// 【トリガーから判定を起こす】トリガー効果の `attempt_challenge` は `apply_ops` 直行なので
+    /// **ダイスがその場で振られ、帰結スロットまで適用される** — 「罠が発動して回避判定」
+    /// 「時間経過で襲撃判定」を筋書き側から起こせる (LLM の提案を待たない)。
+    ///
+    /// engine の改修ゼロで既に成立していた経路だが、台帳に無く誰も固定していなかったので
+    /// ここで恒久化する (将来 fire_triggers の効果適用を絞ったときに静かに壊れないように)。
+    /// 併せて **`requires` は評価されない**ことも固定する — トリガー効果は authored 信頼済で
+    /// 検証を通らないため。同じ challenge を LLM が選べば `ChallengeLocked` で却下される。
+    #[test]
+    fn trigger_effects_can_run_a_challenge_bypassing_requires() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: [踏んだ, 回避, 被弾, 解禁]
+initial_stats:
+  敏捷: 3
+challenges:
+  trap_dodge:
+    requires: { kind: flag_is, key: 解禁, value: true }
+    sides: 20
+    dc: 10
+    stat: 敏捷
+    on_success: { flag: 回避, narration: "身をひねって躱した" }
+    on_failure: { flag: 被弾, narration: "矢が肩をかすめた" }
+triggers:
+  - id: trap
+    when: { kind: flag_is, key: 踏んだ, value: true }
+    narration: "床板が沈んだ"
+    effects:
+      - op: attempt_challenge
+        entity: player
+        challenge: trap_dodge
+locations:
+  room: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "{:?}", sc.validate());
+        assert!(sc.lints().is_empty(), "既知 id なので lint は出ない: {:?}", sc.lints());
+
+        // LLM が直接選ぶ経路は requires 未達で却下される (authored 専権との対比)。
+        let mut s = sc.initial_state(7);
+        assert!(
+            matches!(
+                adjudicate(
+                    &s,
+                    &sc,
+                    &d(vec![StateOp::AttemptChallenge {
+                        entity: PLAYER.into(),
+                        challenge: "trap_dodge".into(),
+                    }])
+                ),
+                Verdict::Reject { .. }
+            ),
+            "解禁前は LLM から挑めない"
+        );
+
+        // トリガー経由なら requires を通らずに振られ、帰結まで確定する。
+        let out = apply(&mut s, &sc, &d(vec![StateOp::SetFlag { key: "踏んだ".into(), value: true }]))
+            .expect("受理");
+        assert_eq!(out.checks.len(), 1, "トリガーからダイスが振られる: {:?}", out.checks);
+        assert!(out.fired.iter().any(|f| f.id == "trap"), "ビートも載る");
+        assert!(
+            s.flags.get("回避").copied().unwrap_or(false)
+                || s.flags.get("被弾").copied().unwrap_or(false),
+            "成否どちらかの帰結フラグが立つ: {:?}",
+            s.flags
+        );
+    }
+
+    /// 【lint: authored effects の死んだ参照】トリガー効果は検証を通らない (信頼済で apply_ops
+    /// 直行) ので、`attempt_challenge` の id を typo すると**エラーも警告もなく判定が起きない** —
+    /// トリガー自身は発火して narration だけ出るため、作者には「たまに判定が出ない」としか見えない。
+    /// 未知フィールド lint の射程外でもある (キーも値も文字列として正しく、参照先が無いだけ)。
+    ///
+    /// `attempt_contest` 版は実害が重い: id 未検証のまま pending_contest に入るので、幻の対決が
+    /// 居座って以後の対決が全部 `ContestInProgress` で却下される。どちらも **lint** (load 拒否に
+    /// すると、この typo を含む配布済み content が受領側で開けなくなる = 沈黙より悪い)。
+    #[test]
+    fn lints_dangling_challenge_and_contest_refs_in_authored_effects() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: [踏んだ, 回避]
+challenges:
+  trap_dodge:
+    sides: 20
+    dc: 10
+    on_success: { flag: 回避 }
+triggers:
+  - id: trap
+    when: { kind: flag_is, key: 踏んだ, value: true }
+    effects:
+      - op: attempt_challenge
+        entity: player
+        challenge: trap_dodgeX
+      - op: attempt_contest
+        contest: brawlX
+locations:
+  room: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "lint は load を拒否しない: {:?}", sc.validate());
+        let lints = sc.lints();
+        assert!(
+            lints.iter().any(|l| matches!(l,
+                crate::ScenarioError::UnknownChallengeInEffects { origin, challenge }
+                    if challenge == "trap_dodgeX" && origin.contains("trap"))),
+            "幻 challenge を出所つきで名指しする: {lints:?}"
+        );
+        assert!(
+            lints.iter().any(|l| matches!(l,
+                crate::ScenarioError::UnknownContestInEffects { contest, .. }
+                    if contest == "brawlX")),
+            "幻 contest も名指しする: {lints:?}"
+        );
+        assert_eq!(lints.len(), 2, "既知 id (trap_dodge) には出ない = 偽陽性なし: {lints:?}");
+    }
+
     /// 【challenge effects の再帰禁止】effects に attempt_challenge を書くと A→A の無限再帰が
     /// 組めてしまうため validate が load 時に弾く (連鎖したければ従来どおり flag→トリガー経由)。
     #[test]

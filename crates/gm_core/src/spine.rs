@@ -830,6 +830,21 @@ pub enum ScenarioError {
     /// challenge の effects に `attempt_challenge` が入っている (A→A の無限再帰の芽)。
     /// 判定の連鎖は flag→トリガー経由で書く。
     ChallengeEffectRecursive { challenge: ChallengeId },
+    /// authored effects の `attempt_challenge` が**存在しない challenge** を指している。
+    ///
+    /// トリガー効果は信頼済ゆえ `apply_ops` 直行 (検証を通らない) なので、id を typo すると
+    /// **エラーも警告もなく、ただ判定が起きない** — トリガー自身は発火して narration だけ出るため、
+    /// 作者の目には「たまに判定が出ない」としか映らない。未知フィールド lint の射程外でもある
+    /// (キーも値も文字列として正しく、参照先が無いだけ)。**lint** — 壊れた盤面でもプレイは
+    /// 続くので load は拒否しない ([`ScenarioError::UnknownLocationInGate`] と同じ「死んだ参照」の一族)。
+    /// `origin` は `trigger:{id}` / `challenge:{id}` / `contest:{id}`。
+    UnknownChallengeInEffects { origin: String, challenge: ChallengeId },
+    /// authored effects の `attempt_contest` が**存在しない contest** を指している。
+    ///
+    /// challenge 版より実害が重い: `apply_ops` は id を検証せず [`crate::PendingContest`] に入れるので、
+    /// 幻の対決が pending に居座り、以後の `attempt_contest` が全部 `ContestInProgress` で
+    /// 却下されるようになる (沈黙でなく盤面の停止)。こちらも **lint** (load は拒否しない)。
+    UnknownContestInEffects { origin: String, contest: String },
     /// challenge の authored 判定主体 (`ChallengeDef::entity`) が、判定に使う stat を宣言して
     /// いない (幻主体/幻ステータス)。player は `initial_stats`、NPC は `CharacterDef::stats` で宣言。
     ChallengeStatUndeclared {
@@ -1355,6 +1370,43 @@ impl Scenario {
         for (from, loc) in &self.locations {
             for ex in &loc.exits {
                 scan_gate(&ex.gate, &format!("exit:{from}->{}", ex.to), &known, &mut warns);
+            }
+        }
+        // authored effects の中の「死んだ参照」— attempt_challenge / attempt_contest が
+        // 存在しない id を指していないか。**トリガー効果は検証を通らない** (信頼済ゆえ
+        // apply_ops 直行) ので、typo が沈黙する唯一の経路がここに開いていた。
+        let mut scan_refs = |effects: &[StateOp], origin: String| {
+            for op in effects {
+                match op {
+                    StateOp::AttemptChallenge { challenge, .. }
+                        if self.challenge(challenge).is_none() =>
+                    {
+                        warns.push(ScenarioError::UnknownChallengeInEffects {
+                            origin: origin.clone(),
+                            challenge: challenge.clone(),
+                        });
+                    }
+                    StateOp::AttemptContest { contest } if self.contest(contest).is_none() => {
+                        warns.push(ScenarioError::UnknownContestInEffects {
+                            origin: origin.clone(),
+                            contest: contest.clone(),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        };
+        for t in &self.triggers {
+            scan_refs(&t.effects, format!("trigger:{}", t.id));
+        }
+        for (cid, def) in &self.challenges {
+            for effects in def.tiers.values().map(|t| &t.effects).chain(def.all_outcomes().map(|(_, o)| &o.effects)) {
+                scan_refs(effects, format!("challenge:{cid}"));
+            }
+        }
+        for (cid, def) in &self.contests {
+            for outcome in [&def.on_win, &def.on_lose, &def.on_tie].into_iter().flatten() {
+                scan_refs(&outcome.effects, format!("contest:{cid}"));
             }
         }
         warns

@@ -381,6 +381,18 @@ fn scenario_warnings(scenario: &Scenario) -> Vec<String> {
                  この条件は永久に成立しません（挑戦なら一度も選べず、出口なら通れません）。\
                  locations に無い名前です — 所持品を対象にするなら has_item を使ってください"
             ),
+            // authored effects の死んだ参照。トリガー効果は検証を通らない (信頼済で apply_ops
+            // 直行) ので、typo は「エラーも警告もなく判定が起きない」形で沈黙していた。
+            ScenarioError::UnknownChallengeInEffects { origin, challenge } => format!(
+                "{origin} の attempt_challenge が、存在しない挑戦「{challenge}」を指しています。\
+                 このトリガー/帰結は発火しても判定を起こしません（エラーも出ません）。\
+                 challenges に定義された id を確認してください"
+            ),
+            ScenarioError::UnknownContestInEffects { origin, contest } => format!(
+                "{origin} の attempt_contest が、存在しない対決「{contest}」を指しています。\
+                 幻の対決が進行中のまま居座り、以後の対決がすべて「対決の最中」で却下されます。\
+                 contests に定義された id を確認してください"
+            ),
             other => format!("{other:?}"),
         })
         .collect()
