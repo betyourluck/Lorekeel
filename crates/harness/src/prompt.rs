@@ -725,9 +725,50 @@ pub fn state_brief(state: &GameState, scenario: &Scenario) -> String {
         }
         _ => String::new(),
     };
+    // いま **まだ立てられない** フラグと、その前提 (#42 の系・現在形接地の第四例)。
+    //
+    // 語彙節 (`scenario_brief`) は使えるフラグを**全部**静的に列挙する — 静的 system ブロック =
+    // キャッシュの安定プレフィックスなので、state 依存にはできない (毎ターン失効する)。結果、
+    // GM は「まだ条件が揃っていないフラグ」も一覧で見て、機が熟す前に set_flag を出し、
+    // flag_rules に却下される (1 ターン分の self-repair = 丸ごと 1 往復の無駄。放置すると #42 の
+    // 回避学習 — set_flag 自体を出さなくなり、状態が語りだけに漏れる)。
+    //
+    // 隠す (語彙から落とす) 案は採らない: そのフラグの `flag_hints`「どうすれば立つか」も道連れに
+    // なり、**前提を満たしに行かせるための情報が、前提未達だから消える**という循環になる。
+    // 代わりに #42 の処方をそのまま適用する — 「何がダメか」でなく「何をすれば通るか」を、
+    // 可変側 (user ブロック) で毎ターン言う。真になれば行から消える = 立ててよい合図。
+    let blocked_flags: Vec<String> = scenario
+        .usable_flags()
+        .into_iter()
+        // 語彙節と同じ除外 (帳簿は触らせない / 秘匿は casually 立てさせない)。
+        .filter(|f| !scenario.hidden_flags.contains(f) && !scenario.internal_flags.contains(f))
+        // 既に true のものは「立てる」話ではない。gate 無し (=いつでも立つ) も出さない。
+        .filter(|f| !state.flag(f))
+        .filter_map(|f| {
+            let gate = scenario.flag_rules.get(&f)?;
+            (!gate.eval(state)).then(|| {
+                let title = scenario
+                    .flag_titles
+                    .get(&f)
+                    .filter(|t| !t.trim().is_empty())
+                    .map(|t| format!("（{}）", t.trim()))
+                    .unwrap_or_default();
+                format!("{f}{title} → 必要: {}", gate_brief(gate))
+            })
+        })
+        .collect();
+    let blocked_now = if blocked_flags.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n- いまはまだ立てられないフラグ: {} (この前提が満たされるまで set_flag は却下される。\
+             先回りで立てず、前提の方を物語で満たしにいくこと)",
+            blocked_flags.join(" / ")
+        )
+    };
     format!(
-        "# 現在の状態 (turn {})\n- 現在地: {}{}{}\n- この場にいる: {}\n- 所持品: {}\n- 立っている状態: {}\n- 能力値: {}\n- 使える能力: {}\n- 属性: {}{}",
-        state.turn, state.location, exits_now, takeable_now, present, inv, flags, entities, skills, attributes, open_votes,
+        "# 現在の状態 (turn {})\n- 現在地: {}{}{}\n- この場にいる: {}\n- 所持品: {}\n- 立っている状態: {}{}\n- 能力値: {}\n- 使える能力: {}\n- 属性: {}{}",
+        state.turn, state.location, exits_now, takeable_now, present, inv, flags, blocked_now, entities, skills, attributes, open_votes,
     )
 }
 

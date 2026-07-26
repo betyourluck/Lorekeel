@@ -1944,6 +1944,58 @@ mod tests {
         );
     }
 
+    /// 【フラグ前提の接地 (#42 の系・現在形接地の第四例)】語彙節 (`scenario_brief`) は使える
+    /// フラグを**全部**静的に列挙する (静的 system = キャッシュの安定プレフィックスなので
+    /// state 依存にできない) → GM は機が熟す前に set_flag を出し `flag_rules` に却下される
+    /// (1 往復の無駄。放置すれば #42 の回避学習で set_flag 自体を出さなくなる)。
+    ///
+    /// 対策は「隠す」ではなく **可変側で前提を毎ターン言う** — 隠すと `flag_hints`
+    /// 「どうすれば立つか」も道連れになり、前提を満たしに行かせる情報が前提未達だから
+    /// 消えるという循環になる。gate が真になれば行から消える = 立ててよい合図。
+    #[test]
+    fn state_brief_surfaces_blocked_flags_with_their_requirement() {
+        let sc = Scenario::from_yaml(concat!(
+            "title: t\nstart: stage\n",
+            "allowed_flags: [ネットを見る, ライブで盛り上げる, いつでも可]\n",
+            "flag_titles: { ライブで盛り上げる: ユイファンを盛り上げる }\n",
+            "flag_rules:\n",
+            "  ライブで盛り上げる:\n",
+            "    kind: all\n",
+            "    of:\n",
+            "      - { kind: location_is, at: stage }\n",
+            "      - { kind: flag_is, key: ネットを見る, value: true }\n",
+            "locations: { stage: { description: d, items: {}, exits: [] } }\n",
+            "goal: { kind: always }\n"
+        ))
+        .unwrap();
+        let mut s = sc.initial_state(1);
+
+        // 前提未達: フラグ名 + 表示名 + **何をすれば通るか**が出る (#42「何がダメか」でなく)。
+        let sb = prompt::state_brief(&s, &sc);
+        assert!(sb.contains("いまはまだ立てられないフラグ"), "前提未達の節が出る: {sb}");
+        assert!(sb.contains("ライブで盛り上げる"), "フラグ id が出る (ops 用): {sb}");
+        assert!(sb.contains("ユイファンを盛り上げる"), "表示名も添える: {sb}");
+        assert!(sb.contains("ネットを見る"), "未達の前提を名指しする: {sb}");
+        assert!(
+            !sb.contains("いつでも可"),
+            "flag_rules を持たないフラグは出さない (常に立てられるのでノイズ): {sb}"
+        );
+
+        // 前提成立 → 行から消える = 「いま立ててよい」の合図。
+        s.flags.insert("ネットを見る".into(), true);
+        let sb = prompt::state_brief(&s, &sc);
+        assert!(
+            !sb.contains("いまはまだ立てられないフラグ"),
+            "gate が真になったら消える: {sb}"
+        );
+
+        // 既に立っているフラグは「立てる」話ではないので、gate が偽に戻っても出さない。
+        s.flags.insert("ライブで盛り上げる".into(), true);
+        s.flags.insert("ネットを見る".into(), false);
+        let sb = prompt::state_brief(&s, &sc);
+        assert!(!sb.contains("いまはまだ立てられないフラグ"), "既 true は対象外: {sb}");
+    }
+
     /// 【拾得の接地 + op 順序の接地 (spec 09-C)】(a) `state_brief` が**この場でいま拾える
     /// アイテム**を毎ターン動的 surface (#37 投票/#42 出口に続く現在形接地の第三例 —
     /// narration だけの拾得 (#23 型、mujinto T14) の抑止)。取得不能 (fixed/持ち去り済み/
