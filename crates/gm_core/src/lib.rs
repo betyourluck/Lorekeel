@@ -34,5 +34,5 @@ pub use state::{
     default_entity, AttrKey, ChallengeId, EntityId, FlagKey, GameState, GoalId, ItemId, LocationId,
     PendingContest, PendingDecision, PresenceOverride, RngState, SkillId, StatKey, StateDelta,
     StateOp, TriggerId,
-    AUTHORED_ONLY_OPS, DEFAULT_GOAL, PARTY, PLAYER,
+    AUTHORED_ONLY_OPS, DEFAULT_GOAL, PARTY, PLAYER, WILDCARD,
 };

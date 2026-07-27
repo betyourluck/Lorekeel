@@ -124,7 +124,7 @@ Voting:
   initial_skills: [SkillId]         # "player" の初期スキル糖衣 (閉世界宣言)。NPC は CharacterDef.skills
   initial_inventory: [ItemId]       # "player" の初期所持品。initial_state が seed (場所拾い/譲渡/持ち越し以外の「最初から所持」)。NPC は CharacterDef.inventory
   initial_attributes: { AttrKey: string }  # "player" の初期文字列属性 (クラス/職業/種族 等)。宣言キーが player 属性の閉世界許可集合。NPC は CharacterDef.attributes
-  cast: [EntityId]                  # このシナリオに登場する外部キャラの宣言。**空なら外部注入なし** (全シナリオ共有の混入を防ぐ)。harness::inject_cast が characters/{id}.yaml から cast 分だけ注入 (inline 優先)
+  cast: [EntityId]                  # このシナリオに登場する外部キャラの宣言。**空なら外部注入なし** (全シナリオ共有の混入を防ぐ)。harness::inject_cast が characters/{id}.yaml から cast 分だけ注入 (inline 優先)。**cast: ["*"] = characters/ に在るファイル全員**(✅2026-07-28、ジオラマ template = 場所と雰囲気だけ書いたシナリオにキャラファイルを足せば動く)。明示 id と併記可(その場合 typo った id は従来どおり load エラーで大きな声で落ちる)
   characters: { EntityId: CharacterDef }  # 登場人物(player以外)。inline 宣言 + cast 指定の外部 characters/*.yaml 注入
   triggers: [Trigger]               # 反応ビート (Phase C)。when 成立で effects 原子適用 + narration 注入
   challenges: { ChallengeId: ChallengeDef }  # authored challenge (技能判定の素性と帰結)。LLM は AttemptChallenge で選ぶだけ
@@ -222,7 +222,7 @@ Location:
   description: string
   image: String?                    # 背景画像のアセット ID (images/ 配下のファイル名)。engine は不解釈の不透明 string。提示層が resolve_asset で背景に (spec 01 Phase 1)
   bgm: String?                      # ループ BGM のアセット ID (audios/ 配下)。engine 不解釈の不透明 string。提示層が <audio loop> で再生 (spec 01 Phase 3)
-  present: [EntityId]                # この場に居る NPC の authored 場所ベース。**明示宣言** (2026-07-02 改訂): 空 (未宣言含む) なら誰もいない — 旧「空なら全 characters」は廃止 (無人の場所を作るのに全キャラを set_presence false する羽目になるため)。NPC を出す場所には必ず書く。実効 presence = これ ± GameState.present_overrides (spec 04)。Scenario::present_at(state) が解決し提示層が顔アイコン行に出す
+  present: [EntityId]                # この場に居る NPC の authored 場所ベース。**明示宣言** (2026-07-02 改訂): 空 (未宣言含む) なら誰もいない — 旧「空なら全 characters」は廃止 (無人の場所を作るのに全キャラを set_presence false する羽目になるため)。NPC を出す場所には必ず書く。実効 presence = これ ± GameState.present_overrides (spec 04)。Scenario::present_at(state) が解決し提示層が顔アイコン行に出す。**present: ["*"] = このシナリオが知る登場人物全員**(✅2026-07-28)。2026-07-02 に廃した「**空なら**全 characters」の暗黙フォールバックとは別物 — **明示宣言**なので書かない場所は今までどおり無人(あの問題は戻らない)。土台なので override は上に重なる(全員 - 一人が書ける)。キャラ id に "*" は使えない(validate ReservedWildcardEntity)
   items: { ItemId: LocationItem }   # 場所のアイテム → 取得条件 + 取得様式 (2026-07-02 拡張)
   exits: [Exit]
 

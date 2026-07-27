@@ -61,7 +61,18 @@ pub fn inject_cast(scenario: &mut Scenario, dir: &Path) -> Result<(), HarnessErr
     let available = load_characters(dir)?;
     // cast を先に clone して scenario への可変借用と衝突させない。
     let cast: Vec<EntityId> = scenario.cast.iter().cloned().collect();
+    // `cast: ["*"]` = characters/ に在るファイル**全員** (2026-07-28、ジオラマ template)。
+    // ファイルを置くだけで登場人物が増え、シナリオ側の編集が要らない。明示 id と併記もでき
+    // (その場合 typo った id は従来どおり大きな声で落ちる)、inline 定義は引き続き優先される。
+    if cast.iter().any(|id| id == gm_core::WILDCARD) {
+        for (id, def) in &available {
+            scenario.characters.entry(id.clone()).or_insert_with(|| def.clone());
+        }
+    }
     for id in cast {
+        if id == gm_core::WILDCARD {
+            continue; // sentinel は上で処理済み (実在の EntityId ではない)
+        }
         if scenario.characters.contains_key(&id) {
             continue; // inline 優先
         }
@@ -110,6 +121,26 @@ mod tests {
         assert!(sc.characters.is_empty(), "注入前は登場人物が居ない");
         inject_cast(&mut sc, &repo_chars_dir()).expect("cast の注入が成功する");
         assert!(sc.characters.contains_key("alice"), "cast の alice が注入される");
+    }
+
+    /// 【cast: ["*"] = 居るファイル全員 (2026-07-28, ジオラマ template)】場所と雰囲気だけ書いた
+    /// シナリオに、`characters/` へ yaml を置くだけで登場人物が増える。個別に id を書き足す
+    /// 編集が要らなくなる (それが「キャラファイルを足せば動く」の実体)。
+    #[test]
+    fn cast_wildcard_injects_every_character_file() {
+        let yaml = "
+title: t
+start: room
+cast: [\"*\"]
+goal: { kind: always }
+locations:
+  room: { description: d }
+";
+        let mut sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.characters.is_empty(), "注入前は空");
+        inject_cast(&mut sc, &repo_chars_dir()).expect("ワイルドカードの注入が成功する");
+        assert!(sc.characters.contains_key("alice"), "ファイルに在る全員が入る");
+        assert!(!sc.characters.contains_key("*"), "sentinel 自身は登場人物にならない");
     }
 
     /// 【混入しない】cast を宣言しないシナリオには、外部キャラが一切注入されない

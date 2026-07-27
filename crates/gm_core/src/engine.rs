@@ -4648,6 +4648,53 @@ locations:
         assert!(sc.present_at(&s).contains("bob"), "override true は base が空でも登場");
     }
 
+    /// 【present: ["*"] = この場に全員 (2026-07-28, ジオラマ template)】「場所と雰囲気だけ書いた
+    /// シナリオに、キャラファイルを足せば動く」を文字どおりにするための明示宣言。
+    ///
+    /// 2026-07-02 に廃した「**空なら**全 characters」の暗黙フォールバックとは別物 — あれは無人の
+    /// 場所を作るのに全キャラを `set_presence false` する羽目になったから消した。**明示宣言なら
+    /// 書かない場所は今までどおり無人**なので、その問題は戻らない。
+    #[test]
+    fn present_wildcard_means_everyone_here() {
+        let yaml = r#"
+title: t
+start: 居間
+allowed_flags: []
+goal: { kind: always }
+characters:
+  yui: { name: ユイ }
+  kon: { name: コン }
+locations:
+  居間: { description: 居間, present: ["*"], exits: [{ to: 物置 }] }
+  物置: { description: 物置, exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert_eq!(sc.validate(), Vec::new(), "{:?}", sc.validate());
+        let mut s = sc.initial_state(1);
+        let here = sc.present_at(&s);
+        assert!(here.contains("yui") && here.contains("kon"), "全員いる: {here:?}");
+        assert!(!here.contains("*"), "sentinel 自身は登場人物にならない: {here:?}");
+
+        // 宣言しない場所は今までどおり無人 (暗黙フォールバックの復活ではない)。
+        apply(&mut s, &sc, &d(vec![StateOp::Move { to: "物置".into() }])).unwrap();
+        assert!(sc.present_at(&s).is_empty(), "present 未宣言は誰もいないまま");
+
+        // override は土台の上に重なる = 全員から一人だけ退場、が書ける。
+        let mut s2 = sc.initial_state(1);
+        s2.present_overrides.insert("kon".into(), crate::state::PresenceOverride::Persistent(false));
+        let left = sc.present_at(&s2);
+        assert!(left.contains("yui") && !left.contains("kon"), "全員 - 一人: {left:?}");
+
+        // "*" をキャラ id にはできない (sentinel と衝突して到達不能なキャラになる)。
+        let bad = yaml.replace("  yui: { name: ユイ }", "  \"*\": { name: 罠 }");
+        let sc2 = Scenario::from_yaml(&bad).unwrap();
+        assert!(
+            sc2.validate().iter().any(|e| matches!(e, crate::ScenarioError::ReservedWildcardEntity)),
+            "予約語を弾く: {:?}",
+            sc2.validate()
+        );
+    }
+
     /// 【presence_is (2026-07-28, ユーザー要望「いないキャラを『〇〇が帰った』と出したくない」)】
     /// 「誰々がこの場にいるか」を条件にできる。実効 presence は `Location.present` (scenario 側の
     /// 土台) と `present_overrides` (state 側) の合成なので、**state だけを見る gate からは

@@ -34,6 +34,17 @@ pub const PLAYER: &str = "player";
 /// "party" を宣言することは [`crate::Scenario::validate`] が禁じる (予約語)。
 pub const PARTY: &str = "party";
 
+/// 「そこに居る全員」を指す規約的 sentinel (2026-07-28、ジオラマ template)。
+///
+/// - `Scenario.cast: ["*"]` = `characters/` に在るファイル**全員**を注入する (harness)。
+/// - `Location.present: ["*"]` = その場所に**このシナリオが知る登場人物全員**が居る。
+///
+/// 狙いは「場所と雰囲気だけ書いたシナリオに、キャラファイルを足せば動く」を文字どおりにすること
+/// (個別に id を書き足す編集を要らなくする)。2026-07-02 に廃した「**空なら**全 characters」の
+/// 暗黙フォールバックとは別物 — **明示宣言**なので、書かない場所は今までどおり無人のまま。
+/// キャラ id として "*" を宣言することは [`crate::Scenario::validate`] が禁じる (予約語)。
+pub const WILDCARD: &str = "*";
+
 /// **authored 専権 op の serde タグ** ── LLM が提案すると [`crate::adjudicate`] が必ず却下する op。
 /// これらは authored トリガーの効果 (`apply_ops` 直行) でのみ実行される。`emit_delta` の schema から
 /// これらを除外して LLM に**そもそも提案させない** (構造的遮断)。露出したままだと LLM が使い続け、

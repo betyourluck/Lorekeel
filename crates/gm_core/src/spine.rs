@@ -934,6 +934,9 @@ pub enum ScenarioError {
     RoleAssignmentUnknownEntity { entity: EntityId },
     /// `role_assignment.among` に同じ entity が二度居る (重複配布)。
     RoleAssignmentDuplicateEntity { entity: EntityId },
+    /// キャラ id に予約語 `"*"` を使っている ([`crate::WILDCARD`] sentinel と衝突し、
+    /// `cast`/`present` の「全員」と区別できなくなる = そのキャラが到達不能になる)。
+    ReservedWildcardEntity,
     /// 勝利条件が無い (`goal` も `goals` も未指定)。到達不能なシナリオ。
     NoGoal,
 }
@@ -1251,10 +1254,14 @@ impl Scenario {
     /// 旧「空なら全 characters」フォールバックは廃止 — 無人の場所を作るのに全キャラを
     /// set_presence false する羽目になるため。NPC を出す場所には present を必ず書く。
     pub fn present_at(&self, state: &GameState) -> BTreeSet<EntityId> {
-        let mut set: BTreeSet<EntityId> = self
-            .location(&state.location)
-            .map(|loc| loc.present.clone())
-            .unwrap_or_default();
+        let declared = self.location(&state.location).map(|loc| &loc.present);
+        // `present: ["*"]` = このシナリオが知る登場人物全員 (2026-07-28)。**明示宣言**なので、
+        // present を書かない場所は従来どおり無人のまま (暗黙フォールバックの復活ではない)。
+        let mut set: BTreeSet<EntityId> = match declared {
+            Some(p) if p.contains(crate::state::WILDCARD) => self.characters.keys().cloned().collect(),
+            Some(p) => p.clone(),
+            None => BTreeSet::new(),
+        };
         for (entity, ov) in &state.present_overrides {
             // 揮発 override は**立てた場所に居るときだけ**効く (来訪者)。永続は場所を持たない
             // (同行者)。揮発分は Move で破棄されるので通常ここには残らないが、セーブ跨ぎや
@@ -1490,6 +1497,9 @@ impl Scenario {
         }
         if self.characters.contains_key(PARTY) {
             errs.push(ScenarioError::ReservedPartyEntity);
+        }
+        if self.characters.contains_key(crate::state::WILDCARD) {
+            errs.push(ScenarioError::ReservedWildcardEntity);
         }
         for (cid, def) in &self.challenges {
             // 判定様式の形 (spec 16): additive は sides 必須 (serde default 0 の欠落を弾く) /
