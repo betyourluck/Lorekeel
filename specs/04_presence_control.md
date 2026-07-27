@@ -77,7 +77,64 @@ Scenario::present_at(&self, &GameState) -> BTreeSet<EntityId>  # 純粋: 実効 
 ## スコープ外
 
 - 立ち絵・差分表情（presence は顔アイコン行の在/不在のみ）。
-- presence の per-location override（現状は override がモジュール内全 location に効く）。
+- ~~presence の per-location override（現状は override がモジュール内全 location に効く）。~~
+  → **揮発 override として 2026-07-25 に解消**（下記追補）。恒久的な per-location override
+  （フラグが立ってからその場所に住み着く）は依然スコープ外。静的な常駐は `Location.present` で書く。
+
+---
+
+## 追補: 揮発 presence — 来訪者と同行者（2026-07-25）
+
+上の「スコープ外」に置いた per-location override が、実プレイで請求書になって戻ってきた。
+ユーザーの言葉では「`set_presence` にさせちゃうとずっと着いてきてしまう。その瞬間だけその場に
+いさせたいときとか、またわざわざセットし直さないといけない。それは面倒だ」。
+
+### 真因は層の非対称
+
+`Location.present` は**場所ごとの** authored 宣言なのに、それを上書きする `present_overrides` は
+`EntityId → bool` で**場所を持たなかった**。土台が場所で索かれ、上書き層が場所を持たなければ、
+上書きは必然的にモジュール全域に効く。つまりこの層は最初から「同行者」専用で、「来訪者」を
+表現する語彙が存在しなかった。機能が無いのではなく、**回避策で書けるが面倒**という形の負債
+（退場トリガーを来訪者ごとに 1 本、書き忘れれば永久同行）だったため、要望として上がりにくかった。
+
+### 機構
+
+`StateOp::SetPresence` に `volatile: bool`（serde default false ＝既存 YAML 無改修・挙動不変）を
+足し、`present_overrides` の値を untagged 両受けの `PresenceOverride` へ:
+
+| | 値 | 意味 | 消え方 |
+|---|---|---|---|
+| 同行者 | `Persistent(bool)`（旧形式 `bool` がこれとして読める） | 場所を持たない | 明示的に `set_presence`。`transition` で持ち越す |
+| 来訪者 | `Volatile { present, at: LocationId }` | 立てた場所でだけ効く | その場所を離れた瞬間に**破棄**。`transition` では捨てる |
+
+- `present_at` は揮発分を `at == state.location` のときだけ重ねる。破棄後の実効 presence は
+  `Location.present` の土台へ戻る（**再訪しても蘇らない**＝「その訪問限り」）。
+- 破棄は `apply_deterministic_op` の `Move` 適用点に置いた。ここは spec 09 の逐次射影と実適用が
+  **共有する**ので、裁定のドライランと実行が構造的に一致する。
+- `present: false` 側も揮発にできる（「この訪問の間だけ席を外している」）。
+
+### 期限を「場所を離れたら」にした理由
+
+- **「そのターンだけ」**は使えない。トリガーは GM の語りの**後**に発火するので、来訪者が
+  一言も喋らないうちに消える。
+- **「N ターン」**は engine に置く価値が薄い。`record_turn` + `Gate::TurnsSince` で今日書ける。
+- 「場所を離れたら」だけが、engine 側にしか置けず、かつ作者の意図（この場面限り）と一致する。
+
+### 実装中に見つかった分岐
+
+`ResolveVote` の死亡投影を揮発で書くと、**場所を変えた瞬間に処刑された者が蘇る**。永続で書く。
+新しい様式を足したときは、既存の呼び出し元がどちらの様式であるべきかを全部数えること。
+
+### PoC
+
+- `volatile_presence_expires_on_leaving_and_falls_back_to_location_set`
+  — 同一テスト内に `volatile: false` の対照群を置き、移動後に来訪者だけが消えて同行者が残ることを
+  弁別する。揮発の「不在」も検証。
+- `old_saves_parse_bool_presence_overrides_as_persistent`
+  — 旧セーブの `{ alice: true }` が untagged で `Persistent` として読める
+  （`LocationItem` / `StatInit` と同じ後方互換パターン、これで三例目）。
+
+既存 320 本は**回帰ゼロ**。harness / app / frontend は `present_at` を呼ぶだけなので無改修。
 
 ---
 
