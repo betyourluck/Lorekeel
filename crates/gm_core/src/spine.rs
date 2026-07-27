@@ -845,6 +845,16 @@ pub enum ScenarioError {
     /// 幻の対決が pending に居座り、以後の `attempt_contest` が全部 `ContestInProgress` で
     /// 却下されるようになる (沈黙でなく盤面の停止)。こちらも **lint** (load は拒否しない)。
     UnknownContestInEffects { origin: String, contest: String },
+    /// authored effects の `move` が**宣言されていない場所**を指している。
+    ///
+    /// トリガー効果の `move` は出口も gate も見ない (落とし穴・転移・場面転換を、出口を偽装せずに
+    /// 書けるのが authored 専権の価値)。その裏返しで行き先を typo すると、主人公は locations に
+    /// 無い場所に立つ — 出口も説明文も無く、エラーも警告も出ない**ソフトロック**になる。
+    /// LLM の `move` は [`crate::adjudicate`] が `NoExit` で弾くので、穴は検証を通らない
+    /// authored effects にだけ開いている。**lint** — 壊れた盤面でもプレイは続くので load は
+    /// 拒否しない ([`ScenarioError::UnknownChallengeInEffects`] と同じ「死んだ参照」の一族)。
+    /// `origin` は `trigger:{id}` / `challenge:{id}` / `contest:{id}`。
+    UnknownLocationInEffects { origin: String, to: LocationId },
     /// challenge の authored 判定主体 (`ChallengeDef::entity`) が、判定に使う stat を宣言して
     /// いない (幻主体/幻ステータス)。player は `initial_stats`、NPC は `CharacterDef::stats` で宣言。
     ChallengeStatUndeclared {
@@ -1378,12 +1388,20 @@ impl Scenario {
                 scan_gate(&ex.gate, &format!("exit:{from}->{}", ex.to), &known, &mut warns);
             }
         }
-        // authored effects の中の「死んだ参照」— attempt_challenge / attempt_contest が
+        // authored effects の中の「死んだ参照」— attempt_challenge / attempt_contest / move が
         // 存在しない id を指していないか。**トリガー効果は検証を通らない** (信頼済ゆえ
         // apply_ops 直行) ので、typo が沈黙する唯一の経路がここに開いていた。
         let mut scan_refs = |effects: &[StateOp], origin: String| {
             for op in effects {
                 match op {
+                    // move は出口も gate も見ずに location を書き換えるので、幻の行き先は
+                    // 「宣言されていない場所に立つ」= 出口も説明文も無いソフトロックになる。
+                    StateOp::Move { to } if !known.contains(to) => {
+                        warns.push(ScenarioError::UnknownLocationInEffects {
+                            origin: origin.clone(),
+                            to: to.clone(),
+                        });
+                    }
                     StateOp::AttemptChallenge { challenge, .. }
                         if self.challenge(challenge).is_none() =>
                     {

@@ -3121,6 +3121,54 @@ goal: { kind: always }
         assert_eq!(lints.len(), 2, "既知 id (trap_dodge) には出ない = 偽陽性なし: {lints:?}");
     }
 
+    /// 【lint: authored effects の死んだ行き先】トリガー効果の `move` は**出口も gate も見ない** —
+    /// 落とし穴・転移・場面転換を出口を偽装せずに書けるのが authored 専権の価値だが、その裏返しで
+    /// 行き先を typo すると主人公は**宣言されていない場所に立つ**。出口も説明文も無く、エラーも
+    /// 警告も出ないので作者は気づけない (challenge/contest の死んだ参照と同じ一族・同じ機序で
+    /// 未知フィールド lint の射程外)。**lint** — 壊れた盤面でもプレイは続くので load は拒否しない。
+    ///
+    /// LLM の `move` はこの穴を持たない (`adjudicate` が `NoExit` で却下する) ため、対象は
+    /// 検証を通らない authored effects だけでよい。
+    #[test]
+    fn lints_dangling_move_destination_in_authored_effects() {
+        let yaml = r#"
+title: t
+start: cell
+allowed_flags: [引いた, 落ちた]
+challenges:
+  jump:
+    sides: 20
+    dc: 10
+    on_success: { flag: 落ちた, effects: [{ op: move, to: corridorX }] }
+triggers:
+  - id: trapdoor
+    when: { kind: flag_is, key: 引いた, value: true }
+    effects:
+      - { op: move, to: pitX }
+      - { op: move, to: pit }
+locations:
+  cell: { description: d, items: {}, exits: [] }
+  pit: { description: d, items: {}, exits: [] }
+goal: { kind: always }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "lint は load を拒否しない: {:?}", sc.validate());
+        let lints = sc.lints();
+        assert!(
+            lints.iter().any(|l| matches!(l,
+                crate::ScenarioError::UnknownLocationInEffects { origin, to }
+                    if to == "pitX" && origin.contains("trapdoor"))),
+            "トリガー効果の幻の行き先を出所つきで名指しする: {lints:?}"
+        );
+        assert!(
+            lints.iter().any(|l| matches!(l,
+                crate::ScenarioError::UnknownLocationInEffects { origin, to }
+                    if to == "corridorX" && origin.contains("jump"))),
+            "challenge の帰結効果でも同じく名指しする: {lints:?}"
+        );
+        assert_eq!(lints.len(), 2, "宣言済みの pit には出ない = 偽陽性なし: {lints:?}");
+    }
+
     /// 【challenge effects の再帰禁止】effects に attempt_challenge を書くと A→A の無限再帰が
     /// 組めてしまうため validate が load 時に弾く (連鎖したければ従来どおり flag→トリガー経由)。
     #[test]

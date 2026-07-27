@@ -393,6 +393,13 @@ fn scenario_warnings(scenario: &Scenario) -> Vec<String> {
                  幻の対決が進行中のまま居座り、以後の対決がすべて「対決の最中」で却下されます。\
                  contests に定義された id を確認してください"
             ),
+            // 効果の move は出口も gate も見ないので、行き先の typo は「宣言されていない場所に
+            // 立つ」= 出口も説明文も無いソフトロックになる (エラーも警告も出ない)。
+            ScenarioError::UnknownLocationInEffects { origin, to } => format!(
+                "{origin} の move が、宣言されていない場所「{to}」を指しています。\
+                 主人公はその場所に立ちますが、出口も説明文も無いため先へ進めなくなります（エラーも出ません）。\
+                 locations に定義された id を確認してください"
+            ),
             other => format!("{other:?}"),
         })
         .collect()
