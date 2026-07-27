@@ -192,6 +192,7 @@ fn gate_samples() -> Vec<Gate> {
         Gate::AttributeIs { entity: e(), key: "a".into(), value: "v".into() },
         Gate::TurnsSince { entity: e(), key: "s".into(), turns: 1 },
         Gate::HasVoted { entity: e() },
+        Gate::PresenceIs { entity: e(), present: true },
         Gate::All { of: Vec::new() },
         Gate::Any { of: Vec::new() },
         Gate::Not { of: Box::new(Gate::Always) },
@@ -212,6 +213,7 @@ fn _gate_exhaustive_guard(g: &Gate) {
         | Gate::AttributeIs { .. }
         | Gate::TurnsSince { .. }
         | Gate::HasVoted { .. }
+        | Gate::PresenceIs { .. }
         | Gate::All { .. }
         | Gate::Any { .. }
         | Gate::Not { .. } => {}

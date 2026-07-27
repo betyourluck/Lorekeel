@@ -78,6 +78,21 @@ pub enum Gate {
         #[serde(default = "default_entity")]
         entity: EntityId,
     },
+    /// 指定キャラが**この場にいる** (spec 04 の実効 presence = `Location.present` ± overrides)。
+    /// `present: false` で不在を直接問える (`not` で包まなくてよい)。
+    ///
+    /// 用途の核心は**筋書きのビートを不在のキャラに出させない**こと — 「〇〇が帰っていった」の
+    /// ような退場の語りを、その場にいない相手に対して発火させない。譲渡や会話の前提にも使える。
+    ///
+    /// 実効 presence は scenario 側の土台 (`Location.present`) と state 側の override の合成なので、
+    /// この gate だけは [`Gate::eval`] が scenario を要る (state に写す案は、セーブに複製が残って
+    /// パッケージ更新で作者が `present` を直しても古いセーブが古い顔ぶれのままになるため採らない)。
+    /// `entity` は必須 (主人公は常に居るので既定に意味がない)。
+    PresenceIs {
+        entity: EntityId,
+        #[serde(default = "default_true")]
+        present: bool,
+    },
     /// すべての子条件が通る (AND)。
     All { of: Vec<Gate> },
     /// いずれかの子条件が通る (OR)。
@@ -89,7 +104,12 @@ pub enum Gate {
 }
 
 impl Gate {
-    pub fn eval(&self, s: &GameState) -> bool {
+    /// この条件が現在の世界で成立するか。**純粋関数**。
+    ///
+    /// `sc` を取るのは [`Gate::PresenceIs`] のため — 実効 presence の土台 (`Location.present`) は
+    /// scenario 側にあり、state だけでは半分しか見えない (2026-07-28)。他の条件は state だけで
+    /// 決まるので `sc` を読まない。
+    pub fn eval(&self, s: &GameState, sc: &Scenario) -> bool {
         match self {
             Gate::Always => true,
             Gate::HasItem { entity, item } => s.has_item(entity, item),
@@ -105,9 +125,10 @@ impl Gate {
                 i64::from(s.turn) - s.stat_of(entity, key) >= i64::from(*turns)
             }
             Gate::HasVoted { entity } => s.votes.contains_key(entity),
-            Gate::All { of } => of.iter().all(|g| g.eval(s)),
-            Gate::Any { of } => of.iter().any(|g| g.eval(s)),
-            Gate::Not { of } => !of.eval(s),
+            Gate::PresenceIs { entity, present } => sc.present_at(s).contains(entity) == *present,
+            Gate::All { of } => of.iter().all(|g| g.eval(s, sc)),
+            Gate::Any { of } => of.iter().any(|g| g.eval(s, sc)),
+            Gate::Not { of } => !of.eval(s, sc),
         }
     }
 
@@ -119,12 +140,12 @@ impl Gate {
     /// - `Any` は「どれか一つ満たせばよい」まとまりなので、全滅時は **Any ノード自体**を
     ///   1 件返す (子を individually 並べると『全部未達』に読めて誤解を生む)。
     /// - 葉が false ならその葉自身。
-    pub fn unmet(&self, s: &GameState) -> Vec<Gate> {
-        if self.eval(s) {
+    pub fn unmet(&self, s: &GameState, sc: &Scenario) -> Vec<Gate> {
+        if self.eval(s, sc) {
             return Vec::new();
         }
         match self {
-            Gate::All { of } => of.iter().flat_map(|g| g.unmet(s)).collect(),
+            Gate::All { of } => of.iter().flat_map(|g| g.unmet(s, sc)).collect(),
             other => vec![other.clone()],
         }
     }
@@ -798,6 +819,10 @@ pub enum ScenarioError {
     /// (所持品を場所と誤認)。**lint** — 壊れた盤面でもプレイは続くので load は拒否しない。
     /// `origin` は `challenge:{id}` / `trigger:{id}` / `exit:{from}->{to}` 等の場所名。
     UnknownLocationInGate { origin: String, at: LocationId },
+    /// `presence_is` が**このモジュールが知らないキャラ**を指している (spec 04 同梱)。
+    /// [`Scenario::present_at`] は cast 注入されていない entity を落とすので、この Gate は
+    /// 永久に偽 (`present: false` なら永久に真) — どちらも死んだ条件。**lint**。
+    UnknownEntityInGate { origin: String, entity: EntityId },
     /// `flag_titles` のキーが `allowed_flags` に宣言されていない (幻フラグへの表示名)。
     FlagTitleUndeclared { flag: FlagKey },
     /// `hidden_flags` のキーが `allowed_flags` に宣言されていない (幻フラグの秘匿)。
@@ -1351,7 +1376,15 @@ impl Scenario {
         }
         // spec 21 同梱: 幻の場所を指す location_is (永久に false = 死んだ Gate)。
         // Gate は入れ子 (all/any/not) を取るので再帰で葉まで舐める。
-        fn scan_gate(g: &Gate, origin: &str, known: &BTreeSet<LocationId>, out: &mut Vec<ScenarioError>) {
+        // presence_is (2026-07-28) も同じ「死んだ参照」— present_at はこのモジュールが知らない
+        // entity を落とすので、幻のキャラを問う gate は永久に偽 (present: false なら永久に真)。
+        fn scan_gate(
+            g: &Gate,
+            origin: &str,
+            known: &BTreeSet<LocationId>,
+            cast: &BTreeSet<EntityId>,
+            out: &mut Vec<ScenarioError>,
+        ) {
             match g {
                 Gate::LocationIs { at } if !known.contains(at) => {
                     out.push(ScenarioError::UnknownLocationInGate {
@@ -1359,33 +1392,40 @@ impl Scenario {
                         at: at.clone(),
                     });
                 }
+                Gate::PresenceIs { entity, .. } if !cast.contains(entity) => {
+                    out.push(ScenarioError::UnknownEntityInGate {
+                        origin: origin.to_string(),
+                        entity: entity.clone(),
+                    });
+                }
                 Gate::All { of } | Gate::Any { of } => {
                     for sub in of {
-                        scan_gate(sub, origin, known, out);
+                        scan_gate(sub, origin, known, cast, out);
                     }
                 }
-                Gate::Not { of } => scan_gate(of, origin, known, out),
+                Gate::Not { of } => scan_gate(of, origin, known, cast, out),
                 _ => {}
             }
         }
         let known: BTreeSet<LocationId> = self.locations.keys().cloned().collect();
+        let cast: BTreeSet<EntityId> = self.characters.keys().cloned().collect();
         for (cid, def) in &self.challenges {
             if let Some(req) = &def.requires {
-                scan_gate(req, &format!("challenge:{cid}"), &known, &mut warns);
+                scan_gate(req, &format!("challenge:{cid}"), &known, &cast, &mut warns);
             }
             for m in &def.modifiers {
-                scan_gate(&m.when, &format!("challenge:{cid}"), &known, &mut warns);
+                scan_gate(&m.when, &format!("challenge:{cid}"), &known, &cast, &mut warns);
             }
         }
         for t in &self.triggers {
-            scan_gate(&t.when, &format!("trigger:{}", t.id), &known, &mut warns);
+            scan_gate(&t.when, &format!("trigger:{}", t.id), &known, &cast, &mut warns);
         }
         for (key, gate) in &self.flag_rules {
-            scan_gate(gate, &format!("flag_rules:{key}"), &known, &mut warns);
+            scan_gate(gate, &format!("flag_rules:{key}"), &known, &cast, &mut warns);
         }
         for (from, loc) in &self.locations {
             for ex in &loc.exits {
-                scan_gate(&ex.gate, &format!("exit:{from}->{}", ex.to), &known, &mut warns);
+                scan_gate(&ex.gate, &format!("exit:{from}->{}", ex.to), &known, &cast, &mut warns);
             }
         }
         // authored effects の中の「死んだ参照」— attempt_challenge / attempt_contest / move が
@@ -1906,12 +1946,12 @@ impl Scenario {
         if !self.goals.is_empty() {
             self.goals
                 .iter()
-                .find(|g| g.when.eval(state))
+                .find(|g| g.when.eval(state, self))
                 .map(|g| g.id.clone())
         } else {
             self.goal
                 .as_ref()
-                .filter(|g| g.eval(state))
+                .filter(|g| g.eval(state, self))
                 .map(|_| DEFAULT_GOAL.to_string())
         }
     }
@@ -1921,7 +1961,7 @@ impl Scenario {
     /// `goals` (名前付き) が非空のときのみ意味を持つ — 単一 `goal` (後方互換) は GoalDef を
     /// 持たないので `None` (到達判定は `reached`/`is_goal` を使う)。authored 順で最初の一致。
     pub fn reached_goal(&self, state: &GameState) -> Option<&GoalDef> {
-        self.goals.iter().find(|g| g.when.eval(state))
+        self.goals.iter().find(|g| g.when.eval(state, self))
     }
 
     /// **状態を持ち越したまま次の骨格へ遷移する** (campaign keystone, PoC-2a)。

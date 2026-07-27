@@ -381,6 +381,13 @@ fn scenario_warnings(scenario: &Scenario) -> Vec<String> {
                  この条件は永久に成立しません（挑戦なら一度も選べず、出口なら通れません）。\
                  locations に無い名前です — 所持品を対象にするなら has_item を使ってください"
             ),
+            // presence_is が cast に無いキャラを指すと、present_at が落とすので永久に偽
+            // (present: false なら永久に真)。どちらも「書いたのに効かない」。
+            ScenarioError::UnknownEntityInGate { origin, entity } => format!(
+                "{origin} の presence_is が、このシナリオが知らないキャラ「{entity}」を指しています。\
+                 この条件は永久に成立しません（present: false なら逆に常に成立します）。\
+                 characters に定義されているか、cast に含まれているかを確認してください"
+            ),
             // authored effects の死んだ参照。トリガー効果は検証を通らない (信頼済で apply_ops
             // 直行) ので、typo は「エラーも警告もなく判定が起きない」形で沈黙していた。
             ScenarioError::UnknownChallengeInEffects { origin, challenge } => format!(
@@ -632,7 +639,7 @@ fn map_view(scenario: &Scenario, state: &GameState, history: &[TurnLog]) -> MapV
             edges.push(MapEdge {
                 from: from.clone(),
                 to: exit.to.clone(),
-                locked: !exit.gate.eval(state),
+                locked: !exit.gate.eval(state, scenario),
             });
         }
     }

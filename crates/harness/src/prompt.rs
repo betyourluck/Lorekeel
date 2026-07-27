@@ -298,6 +298,13 @@ fn gate_brief(gate: &Gate) -> String {
         Gate::TurnsSince { entity, key, turns } => {
             format!("{entity} の「{key}」に刻まれた時から {turns} ターン以上経つこと")
         }
+        Gate::PresenceIs { entity, present } => {
+            if *present {
+                format!("{entity} がこの場にいること")
+            } else {
+                format!("{entity} がこの場にいないこと")
+            }
+        }
         Gate::HasVoted { entity } => format!("{entity} が投票 (cast_vote) を済ませていること"),
         Gate::All { of } => {
             let parts: Vec<String> = of.iter().map(gate_brief).collect();
@@ -623,7 +630,7 @@ pub fn state_brief(state: &GameState, scenario: &Scenario) -> String {
     // 未指名なら narration で促す = 夜の襲撃先/占い先を「聞くターン」が成立する)。
     let mut open_votes: Vec<String> = Vec::new();
     for rule in &scenario.vote_rules {
-        if !rule.when.eval(state) {
+        if !rule.when.eval(state, scenario) {
             continue;
         }
         let matches_rule = |id: &str| match &rule.voter_attribute {
@@ -683,7 +690,7 @@ pub fn state_brief(state: &GameState, scenario: &Scenario) -> String {
             let open: Vec<&str> = loc
                 .exits
                 .iter()
-                .filter(|e| e.gate.eval(state))
+                .filter(|e| e.gate.eval(state, scenario))
                 .map(|e| e.to.as_str())
                 .collect();
             if open.is_empty() {
@@ -710,7 +717,7 @@ pub fn state_brief(state: &GameState, scenario: &Scenario) -> String {
                         && !(li.take() == gm_core::TakeMode::Once
                             && state.already_taken(&state.location, id))
                         && !state.has_item(gm_core::PLAYER, id)
-                        && li.when().eval(state)
+                        && li.when().eval(state, scenario)
                 })
                 .map(|(id, _)| id.as_str())
                 .collect();
@@ -746,7 +753,7 @@ pub fn state_brief(state: &GameState, scenario: &Scenario) -> String {
         .filter(|f| !state.flag(f))
         .filter_map(|f| {
             let gate = scenario.flag_rules.get(&f)?;
-            (!gate.eval(state)).then(|| {
+            (!gate.eval(state, scenario)).then(|| {
                 let title = scenario
                     .flag_titles
                     .get(&f)

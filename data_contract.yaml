@@ -260,6 +260,7 @@ Gate:                               # 内部タグ "kind" 付き列挙。エン�
   - { kind: has_voted, entity: EntityId }  # ✅#38 (2026-07-05): entity の票が現在の票箱 (state.votes) に入っている。「プレイヤーが投票したら開票」のイベント駆動 — resolve_vote が票をリセットするので開票後に自然と偽へ戻り repeatable トリガーが再武装。turns_since と any で束ねれば「票が入るか N ターンで強制開票」。entity 省略時 player
   - { kind: all, of: [Gate] }
   - { kind: any, of: [Gate] }
+  - { kind: presence_is, entity: EntityId, present: bool }  # ✅(2026-07-28) その entity が**この場にいるか** (実効 presence = Location.present ± present_overrides、揮発の来訪者にも追従)。present 既定 true・false で不在を直接問える(not で包まなくてよい)・entity は必須(主人公は常に居るので既定に意味がない)。用途の核心は**筋書きのビートを不在のキャラに出させない**こと(退場の語り・別れの挨拶)。**この gate のためだけに Gate::eval/unmet が &Scenario を取る** — 土台(Location.present)は scenario 側なので state だけでは半分しか見えない。state に写す案は不採用(セーブに複製が残り spec 17 のパッケージ更新で作者が present を直しても古いセーブが古い顔ぶれのままになる = party が既に抱えるドリフトを増やさない)。幻 entity は lint UnknownEntityInGate(present_at が cast 外を落とすので永久に偽 / present:false なら永久に真 = 死んだ条件)
   - { kind: not, of: Gate }  # ✅(2026-07-24) 否定 (NOT)。all(AND)/any(OR) に対しブール代数を閉じる。任意の gate を否定でき、has_item/has_skill/attribute_is に無かった「〜でない」を書ける (フラグでの二重管理が不要)。例: 「鍵を持っていない」= { kind: not, of: { kind: has_item, item: 鍵 } }。scan_gate は not の中も再帰で lint。unmet の catch-all がそのまま拾う
 
 # --- LLM ナレーター脚 (crate llm_client。提案はするが裁定はしない) ------------

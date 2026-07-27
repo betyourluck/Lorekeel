@@ -142,6 +142,13 @@ fn gate_ja(gate: &Gate) -> String {
             format!("{entity} の「{key}」から {turns} ターン以上経つこと")
         }
         Gate::HasVoted { entity } => format!("{entity} が投票を済ませていること"),
+        Gate::PresenceIs { entity, present } => {
+            if *present {
+                format!("{entity} がこの場にいること")
+            } else {
+                format!("{entity} がこの場にいないこと")
+            }
+        }
         Gate::All { of } => {
             let parts: Vec<String> = of.iter().map(gate_ja).collect();
             format!("すべて満たす({})", parts.join(" / "))
@@ -174,6 +181,13 @@ fn gate_en(gate: &Gate) -> String {
             format!("at least {turns} turns have passed since {entity}'s '{key}'")
         }
         Gate::HasVoted { entity } => format!("{entity} has cast a vote"),
+        Gate::PresenceIs { entity, present } => {
+            if *present {
+                format!("{entity} is present here")
+            } else {
+                format!("{entity} is not present here")
+            }
+        }
         Gate::All { of } => {
             let parts: Vec<String> = of.iter().map(gate_en).collect();
             format!("all of ({})", parts.join(" / "))

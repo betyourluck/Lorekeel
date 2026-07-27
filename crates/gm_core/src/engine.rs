@@ -358,11 +358,11 @@ fn validate_op(
                             reasons.push(RejectReason::ItemAlreadyTaken { item: item.clone() });
                         }
                         _ => {
-                            if !li.when().eval(state) {
+                            if !li.when().eval(state, scenario) {
                                 reasons.push(RejectReason::ItemGateUnmet {
                                     item: item.clone(),
                                     requirement: li.when().clone(),
-                                    unmet: li.when().unmet(state),
+                                    unmet: li.when().unmet(state, scenario),
                                 });
                             }
                         }
@@ -409,8 +409,8 @@ fn validate_op(
                 }
                 if *value {
                     let gate = scenario.flag_gate(key);
-                    if !gate.eval(state) {
-                        let unmet = gate.unmet(state);
+                    if !gate.eval(state, scenario) {
+                        let unmet = gate.unmet(state, scenario);
                         reasons.push(RejectReason::FlagGateUnmet {
                             key: key.clone(),
                             requirement: gate,
@@ -422,12 +422,12 @@ fn validate_op(
             StateOp::Move { to } => match loc.exits.iter().find(|e| &e.to == to) {
                 None => reasons.push(RejectReason::NoExit { to: to.clone() }),
                 Some(exit) => {
-                    if !exit.gate.eval(state) {
+                    if !exit.gate.eval(state, scenario) {
                         // 必要条件を理由に載せる (#42): 「未達」だけでは LLM が move を諦める。
                         reasons.push(RejectReason::MoveGateUnmet {
                             to: to.clone(),
                             requirement: exit.gate.clone(),
-                            unmet: exit.gate.unmet(state),
+                            unmet: exit.gate.unmet(state, scenario),
                         });
                     }
                 }
@@ -471,11 +471,11 @@ fn validate_op(
                     Some(def) => {
                         // 前提条件 (requires Gate) が未達なら、まだ挑めない (挑戦の解禁/封鎖)。
                         if let Some(req) = &def.requires {
-                            if !req.eval(state) {
+                            if !req.eval(state, scenario) {
                                 reasons.push(RejectReason::ChallengeLocked {
                                     challenge: challenge.clone(),
                                     requirement: req.clone(),
-                                    unmet: req.unmet(state),
+                                    unmet: req.unmet(state, scenario),
                                 });
                             }
                         }
@@ -525,11 +525,11 @@ fn validate_op(
                     }
                     Some(def) => {
                         if let Some(req) = &def.requires {
-                            if !req.eval(state) {
+                            if !req.eval(state, scenario) {
                                 reasons.push(RejectReason::ContestLocked {
                                     contest: contest.clone(),
                                     requirement: req.clone(),
-                                    unmet: req.unmet(state),
+                                    unmet: req.unmet(state, scenario),
                                 });
                             }
                         }
@@ -622,7 +622,7 @@ fn validate_op(
                         None => true, // voter 条件なし = 生存者なら誰でも
                         Some(va) => state.attribute_of(voter, &va.key) == va.value,
                     };
-                    rule.when.eval(state) && voter_ok
+                    rule.when.eval(state, scenario) && voter_ok
                 });
                 if !allowed {
                     reasons.push(RejectReason::VoteNotAllowed { voter: voter.clone() });
@@ -654,7 +654,7 @@ fn check_taboos(
     apply_ops(&mut projected, scenario, delta, &mut Vec::new(), &mut Vec::new(), &mut Vec::new(), &mut Vec::new());
     for (eid, def) in &scenario.characters {
         for taboo in &def.taboos {
-            if !taboo.eval(state) && taboo.eval(&projected) {
+            if !taboo.eval(state, scenario) && taboo.eval(&projected, scenario) {
                 reasons.push(RejectReason::TabooViolated { entity: eid.clone() });
             }
         }
@@ -934,7 +934,7 @@ pub fn contest_round(
         "lose" => tally.losses += 1,
         _ => tally.ties += 1,
     }
-    let reason = if def.until.as_ref().is_some_and(|g| g.eval(state)) {
+    let reason = if def.until.as_ref().is_some_and(|g| g.eval(state, scenario)) {
         Some("until")
     } else if scenario.reached(state).is_some() {
         // 決着条件の書き漏れでも goal 到達 (死亡等) で必ず閉じる安全弁。
@@ -1319,7 +1319,7 @@ fn fire_triggers(
     loop {
         // この settle で未発火・永続 latch されておらず・発火条件成立の最初のトリガー (authored 順)。
         let next = scenario.triggers.iter().find(|t| {
-            !fired_this_settle.contains(&t.id) && !state.fired.contains(&t.id) && t.when.eval(state)
+            !fired_this_settle.contains(&t.id) && !state.fired.contains(&t.id) && t.when.eval(state, scenario)
         });
         let Some(t) = next else { break };
 
@@ -1558,7 +1558,7 @@ fn apply_ops(
                         // 目標値の素: stat 現在値 or 式修正 (spec 19。式は現在値で評価)。
                         let base = stat_or_expr(state, subject, &def.stat, &def.expr);
                         let cond_mod: i64 =
-                            def.modifiers.iter().filter(|m| m.when.eval(state)).map(|m| m.bonus).sum();
+                            def.modifiers.iter().filter(|m| m.when.eval(state, scenario)).map(|m| m.bonus).sum();
                         let target = base + cond_mod;
                         let (degree, success) = percentile_degree(roll, target);
                         // spec 18 Phase B: 決断つき challenge の通常失敗は帰結を適用せず凍結する
@@ -1629,7 +1629,7 @@ fn apply_ops(
                     // 現在値で評価した値が修正になる ((CON+SIZ)/2 等)。
                     let stat_mod = stat_or_expr(state, subject, &def.stat, &def.expr);
                     // 条件付き修正: when (Gate) が真の分だけ bonus を加える (導師の教えで +5 等)。
-                    let cond_mod: i64 = def.modifiers.iter().filter(|m| m.when.eval(state)).map(|m| m.bonus).sum();
+                    let cond_mod: i64 = def.modifiers.iter().filter(|m| m.when.eval(state, scenario)).map(|m| m.bonus).sum();
                     let modifier = stat_mod + cond_mod;
                     let total = i64::from(roll) * def.times.max(1) + modifier;
                     let success = total >= def.dc as i64;
@@ -4012,9 +4012,9 @@ goal: { kind: has_item, entity: party, item: 鍵 }
         // ロスターが seed される (companion 群だけ・主人公は走査時に足す)。
         assert_eq!(s.party.iter().map(|e| e.as_str()).collect::<Vec<_>>(), vec!["alice"]);
         // 仲間アリスが鍵を持つ → party gate は真 (集団で問う)。
-        assert!(crate::Gate::HasItem { entity: "party".into(), item: "鍵".into() }.eval(&s));
+        assert!(crate::Gate::HasItem { entity: "party".into(), item: "鍵".into() }.eval(&s, &sc));
         // 主人公は持っていない → player 既定の gate は偽 (「仲間の鍵が gate に見えない」穴の再現)。
-        assert!(!crate::Gate::HasItem { entity: "player".into(), item: "鍵".into() }.eval(&s));
+        assert!(!crate::Gate::HasItem { entity: "player".into(), item: "鍵".into() }.eval(&s, &sc));
         // goal (has_item entity=party) は既に成立 = 扉が開く (持ち替え無し)。
         assert!(is_goal(&s, &sc));
     }
@@ -4646,6 +4646,85 @@ locations:
         // override は空の場所にも登場させられる (トリガー専権の経路は不変)。
         s.present_overrides.insert("bob".into(), crate::state::PresenceOverride::Persistent(true));
         assert!(sc.present_at(&s).contains("bob"), "override true は base が空でも登場");
+    }
+
+    /// 【presence_is (2026-07-28, ユーザー要望「いないキャラを『〇〇が帰った』と出したくない」)】
+    /// 「誰々がこの場にいるか」を条件にできる。実効 presence は `Location.present` (scenario 側の
+    /// 土台) と `present_overrides` (state 側) の合成なので、**state だけを見る gate からは
+    /// 半分しか見えなかった** — `Gate::eval` に scenario を渡して塞ぐ (state に写すとセーブに
+    /// 複製が残り、パッケージ更新で作者が present を直しても古いセーブが古い顔ぶれのままになる)。
+    ///
+    /// 用途の核心は**筋書きのビートを不在のキャラに出させない**こと (退場の語り・別れの挨拶)。
+    #[test]
+    fn presence_is_gate_follows_effective_presence() {
+        let yaml = r#"
+title: t
+start: shop
+allowed_flags: [見送った]
+goal: { kind: flag_is, key: 見送った, value: true }
+characters:
+  alice: { name: アリス }
+  bob: { name: ボブ }
+locations:
+  shop: { description: 店, present: [alice], exits: [{ to: road }] }
+  road: { description: 道, exits: [] }
+triggers:
+  - id: farewell
+    when: { kind: presence_is, entity: alice }
+    narration: アリスが手を振って帰っていった。
+    effects:
+      - { op: set_flag, key: 見送った, value: true }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert_eq!(sc.validate(), Vec::new(), "{:?}", sc.validate());
+        let s = sc.initial_state(1);
+
+        // 土台 (Location.present) をそのまま読む。
+        let here = crate::Gate::PresenceIs { entity: "alice".into(), present: true };
+        let bob = crate::Gate::PresenceIs { entity: "bob".into(), present: true };
+        assert!(here.eval(&s, &sc), "宣言された alice は居る");
+        assert!(!bob.eval(&s, &sc), "宣言されていない bob は居ない");
+
+        // present: false で「いない」を直接問える (not で包まなくてよい)。
+        let bob_absent = crate::Gate::PresenceIs { entity: "bob".into(), present: false };
+        assert!(bob_absent.eval(&s, &sc), "不在も直接書ける");
+
+        // 揮発の来訪者にも追従する (立てた場所でだけ真)。
+        let mut s2 = sc.initial_state(1);
+        // set_presence は authored 専権なので、トリガー効果と同じ apply_ops 直行経路で入れる。
+        apply_ops(
+            &mut s2,
+            &sc,
+            &StateDelta::new(
+                "",
+                vec![StateOp::SetPresence { entity: "bob".into(), present: true, volatile: true }],
+            ),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        );
+        assert!(bob.eval(&s2, &sc), "来訪者は居る扱い");
+        apply(&mut s2, &sc, &d(vec![StateOp::Move { to: "road".into() }])).unwrap();
+        assert!(!bob.eval(&s2, &sc), "場所を離れれば来訪者は消え、gate も偽に戻る");
+        assert!(!here.eval(&s2, &sc), "road には alice の宣言が無いので不在");
+
+        // トリガーの when に置ける = 不在のキャラの退場ビートを出さない。
+        let mut s3 = sc.initial_state(1);
+        let out = apply(&mut s3, &sc, &d(vec![])).unwrap();
+        assert!(out.fired.iter().any(|f| f.id == "farewell"), "居るので見送りが発火");
+
+        // 幻のキャラを問う gate は永久に偽 = 死んだ条件。lint が名指しする (load は拒否しない)。
+        let broken = yaml.replace("entity: alice", "entity: aliceX");
+        let sc2 = Scenario::from_yaml(&broken).unwrap();
+        assert!(sc2.validate().is_empty(), "lint は load を拒否しない");
+        assert!(
+            sc2.lints().iter().any(|l| matches!(l,
+                crate::ScenarioError::UnknownEntityInGate { origin, entity }
+                    if entity == "aliceX" && origin.contains("farewell"))),
+            "幻の entity を出所つきで名指し: {:?}",
+            sc2.lints()
+        );
     }
 
     /// 【揮発 presence = 来訪者 (2026-07-25)】従来 override は**場所を持たなかった**ので、
