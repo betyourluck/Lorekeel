@@ -14,7 +14,7 @@
 //! enum (Gate/StateOp) は全バリアント標本の直列化の和集合 + **網羅 match の番人**
 //! (バリアント追加時にコンパイルエラーで標本更新を強制する)。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -81,8 +81,12 @@ struct Tables {
     goal: BTreeSet<String>,
     character: BTreeSet<String>,
     stat_decl: BTreeSet<String>,
+    /// Gate/StateOp は**バリアント別**の表が本線 (`*_variants`)。`gate`/`op` はタグが無い・
+    /// 未知の値でバリアントを決められないときの退避先 (和集合 = 疑わしきは黙る)。
     gate: BTreeSet<String>,
+    gate_variants: BTreeMap<String, BTreeSet<String>>,
     op: BTreeSet<String>,
+    op_variants: BTreeMap<String, BTreeSet<String>>,
     protagonist: BTreeSet<String>,
     role_assignment: BTreeSet<String>,
     vote_rule: BTreeSet<String>,
@@ -126,6 +130,14 @@ pub fn struct_keys<T: DeserializeOwned + Serialize>(minimal_yaml: &str) -> BTree
     mapping_keys(&serde_yaml::to_value(&sample).expect("シリアライズは失敗しない"))
 }
 
+/// mapping からタグ (`kind`/`op`) の文字列値を取り出す (無ければ None = バリアント不明)。
+fn tag_of<'a>(v: &'a Value, tag: &str) -> Option<&'a str> {
+    match v {
+        Value::Mapping(m) => m.get(Value::from(tag)).and_then(|t| t.as_str()),
+        _ => None,
+    }
+}
+
 fn mapping_keys(v: &Value) -> BTreeSet<String> {
     match v {
         Value::Mapping(m) => m
@@ -137,6 +149,7 @@ fn mapping_keys(v: &Value) -> BTreeSet<String> {
 }
 
 /// enum の全バリアント標本を直列化し、キーの**和集合** (タグ `kind`/`op` 込み) を得る。
+/// タグが判別できないときの退避先 ([`variant_keys`] が本線)。
 fn union_keys<T: Serialize>(samples: &[T]) -> BTreeSet<String> {
     let mut set = BTreeSet::new();
     for s in samples {
@@ -145,6 +158,23 @@ fn union_keys<T: Serialize>(samples: &[T]) -> BTreeSet<String> {
         }
     }
     set
+}
+
+/// enum の全バリアント標本を直列化し、**タグの値 → そのバリアントのキー集合**の表を得る。
+///
+/// 和集合だけで持つと `{op: move, to: x, entity: aaa}` の `entity` が「他の op にとって
+/// 正しいキー」ゆえ素通りする = **バリアントごとのフィールド typo が全部見えない**
+/// (2026-07-27 発見)。タグ (`op`/`kind`) の値で引けばそのバリアントの語彙だけで検査できる。
+fn variant_keys<T: Serialize>(samples: &[T], tag: &str) -> BTreeMap<String, BTreeSet<String>> {
+    let mut table = BTreeMap::new();
+    for s in samples {
+        let Ok(v) = serde_yaml::to_value(s) else { continue };
+        let keys = mapping_keys(&v);
+        if let Some(name) = v.get(tag).and_then(|t| t.as_str()) {
+            table.insert(name.to_string(), keys);
+        }
+    }
+    table
 }
 
 /// Gate の全バリアント標本。**バリアントを追加したら [`_gate_exhaustive_guard`] がコンパイルエラーに
@@ -257,7 +287,9 @@ impl Tables {
             character: struct_keys::<CharacterDef>("{}"),
             stat_decl: struct_keys::<StatDecl>("initial: 0"),
             gate: union_keys(&gate_samples()),
+            gate_variants: variant_keys(&gate_samples(), "kind"),
             op: union_keys(&op_samples()),
+            op_variants: variant_keys(&op_samples(), "op"),
             protagonist: struct_keys::<Protagonist>("{}"),
             role_assignment: struct_keys::<RoleAssignment>("key: k\npool: {}\namong: []"),
             vote_rule: struct_keys::<VoteRule>("{}"),
@@ -271,7 +303,22 @@ impl Tables {
         }
     }
 
-    fn known(&self, ctx: Ctx) -> &BTreeSet<String> {
+    /// この mapping の既知キー集合。Gate/StateOp は**タグ (`kind`/`op`) の値でバリアントを
+    /// 特定**し、そのバリアントの語彙だけで検査する (和集合だとバリアント別の typo が見えない)。
+    /// タグが無い・未知の値なら和集合へ退避 = 判別できないものは警告しない。
+    fn known(&self, ctx: Ctx, v: &Value) -> &BTreeSet<String> {
+        match ctx {
+            Ctx::Gate => tag_of(v, "kind")
+                .and_then(|name| self.gate_variants.get(name))
+                .unwrap_or(&self.gate),
+            Ctx::Op => {
+                tag_of(v, "op").and_then(|name| self.op_variants.get(name)).unwrap_or(&self.op)
+            }
+            _ => self.known_struct(ctx),
+        }
+    }
+
+    fn known_struct(&self, ctx: Ctx) -> &BTreeSet<String> {
         match ctx {
             Ctx::Scenario => &self.scenario,
             Ctx::Location => &self.location,
@@ -369,7 +416,7 @@ fn child_of(ctx: Ctx, key: &str) -> Child {
 
 fn walk(v: &Value, ctx: Ctx, path: &str, t: &Tables, out: &mut Vec<String>) {
     let Value::Mapping(m) = v else { return };
-    let known = t.known(ctx);
+    let known = t.known(ctx, v);
     for (k, child) in m {
         let Some(key) = k.as_str() else { continue };
         if !known.contains(key) {
@@ -524,6 +571,56 @@ locations:
             warns.iter().any(|w| w.contains("challenges.sleep") && w.contains("hina_cafe_work")),
             "入れ子になった challenge を名指し: {warns:?}"
         );
+    }
+
+    /// 【バリアント別の既知キー (2026-07-27, ユーザー質問「move に entity を書くと？」)】
+    /// enum (Gate/StateOp) の既知キーを**全バリアントの和集合**で持つと、`{op: move, to: x,
+    /// entity: aaa}` の `entity` は「他の op にとって正しいキー」ゆえ素通りする — つまり
+    /// **op/gate ごとのフィールド typo が全部見えない**。タグ (`op`/`kind`) の値でそのバリアントの
+    /// キー集合だけを引くことで塞ぐ。タグが無い/未知の値のときは和集合へ退避する (判別できない
+    /// ものを誤って警告しない = lint は疑わしきは黙る)。
+    #[test]
+    fn lints_per_variant_field_typos_in_ops_and_gates() {
+        let yaml = "
+start: room
+allowed_flags: [f]
+triggers:
+  - id: t
+    when: { kind: location_is, at: room, entity: aaa }
+    effects:
+      - { op: move, to: room, entity: aaa }
+      - { op: set_flag, key: f, value: true }
+locations:
+  room: { description: d }
+";
+        let warns = unknown_key_lints(yaml);
+        assert!(
+            warns.iter().any(|w| w.contains("effects[0]") && w.contains("entity")),
+            "move に書いた entity を名指しする (他の op では正しいキーでも): {warns:?}"
+        );
+        assert!(
+            warns.iter().any(|w| w.contains("when") && w.contains("entity")),
+            "location_is に書いた entity も同様: {warns:?}"
+        );
+        assert_eq!(warns.len(), 2, "正しく書かれた set_flag には出ない = 偽陽性なし: {warns:?}");
+    }
+
+    /// 【判別できないときは黙る】タグ (`op`/`kind`) 自体が無い・未知の値のときは、どのバリアントか
+    /// 決められないので和集合へ退避して警告しない。前方互換 (新しい content を古い Kataribe で
+    /// 読む = 未知のバリアント名) を壊さないための退避でもある。
+    #[test]
+    fn unknown_or_missing_variant_tag_falls_back_to_the_union() {
+        let yaml = "
+start: room
+triggers:
+  - id: t
+    when: { kind: 未知の条件, entity: e, key: k, value: true }
+    effects:
+      - { entity: e, key: s, delta: 1 }
+locations:
+  room: { description: d }
+";
+        assert!(unknown_key_lints(yaml).is_empty(), "{:?}", unknown_key_lints(yaml));
     }
 
     /// 【偽陽性ゼロ】主要な構造 (goal/goals/trigger/challenge/tier/modifiers/character/

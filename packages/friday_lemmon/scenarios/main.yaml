@@ -274,7 +274,6 @@ triggers:
                   - { kind: flag_is, key: met_reiko, value: true }
       effects:
               - { op: set_presence, entity: akari, present: true }
-              - { op: add_item, entity: akari, item: 銀の指輪 }
               - { op: set_flag, key: family_reunion, value: true }
       narration: あなたは3人を同じテーブルに集めた。古い写真をそっと置く。「この指輪、3人同じですね」と。
       recall: 源蔵の告白

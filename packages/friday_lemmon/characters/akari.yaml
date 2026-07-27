@@ -11,5 +11,5 @@ stats:
   信頼度: { initial: 10, min: 0, max: 100 }
   好奇心: { initial: 70, min: 0, max: 100 }
 skills: []
-inventory: []
+inventory: [銀の指輪]
 attributes: { 役割: 依頼人, 年齢: "17歳", 関係: 孫娘 }
