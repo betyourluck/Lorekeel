@@ -76,6 +76,10 @@ pub struct SessionSave {
     /// (章を跨いで覚える = chronicle と同じ判断)。
     #[serde(default)]
     pub facts: Vec<crate::FactEntry>,
+    /// 持続中のイベント CG (画像 ID)。`image_hold: show` で出し `hide` で消すまで残る (2026-07-28)。
+    /// 提示層の状態だが、セーブしないと再開で背景だけ巻き戻る (last_narration と同じ「継続性」)。
+    #[serde(default)]
+    pub sustained_cg: Option<String>,
 }
 
 /// セーブを YAML で書く。**tmp → rename の原子的置換** — 受理ターン毎の上書き運用で

@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use gm_core::{FiredTrigger, ImageMode, TriggerId};
+use gm_core::{FiredTrigger, ImageHold, ImageMode, TriggerId};
 use serde::{Deserialize, Serialize};
 
 use crate::error::HarnessError;
@@ -215,6 +215,8 @@ pub struct FiredBeat {
     pub image: Option<String>,
     /// イベント CG の表示モード。`FiredTrigger.image_mode` を passthrough。
     pub image_mode: Option<ImageMode>,
+    /// イベント CG の保持 (show=消すまで / hide=消す)。`FiredTrigger.image_hold` を passthrough。
+    pub image_hold: Option<ImageHold>,
     /// 発火時の SE (効果音 ID)。`FiredTrigger.sound` を passthrough (再生は提示層)。
     pub sound: Option<String>,
 }
@@ -236,6 +238,7 @@ pub fn resolve_recall<M: Memoria>(memoria: &M, fired: &[FiredTrigger]) -> Vec<Fi
                 .unwrap_or_default(),
             image: f.image.clone(),
             image_mode: f.image_mode,
+            image_hold: f.image_hold,
             sound: f.sound.clone(),
         })
         .collect()
@@ -315,6 +318,7 @@ mod tests {
             narration: "（反応ビートの語り）".into(),
             recall: recall.map(|s| s.into()),
             image: None,
+            image_hold: None,
             image_mode: None,
             sound: None,
         }

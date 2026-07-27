@@ -362,6 +362,7 @@ Trigger:                          # ✅Phase C (Scenario.triggers): エンジン
   memoria_bridge: "✅実装済: 条件成立→発火(cue 運搬)→harness resolve_recall(Memoria)→伏線を語りに注入"
   image: "String? 発火時のイベント CG アセット ID (images/ 配下)。engine 不解釈の不透明 string → FiredTrigger.image → FiredBeat.image。提示層が resolve_asset で背景に (spec 01 Phase 2)"
   image_mode: "ImageMode?(background|overlay) CG の出し方。既定 background=発火ターンに場所背景を上書き(瞬間=次の受理ターンで場所背景へ復帰、spec 01 #3 改訂)。overlay は予約。省略=None。engine 不使用"
+  image_hold: "ImageHold?(show|hide) ✅(2026-07-28) CG を**いつまで出すか**。`image_mode`(どこに描くか) とは別の軸ゆえ別フィールド (一つの名前に二軸を載せた hidden_* の反省)。省略=従来どおりそのターンだけ(既存 content 不変) / show=消すまで持続(場所を移動しても残る=消すのは作者の責任) / hide=消して場所背景へ戻す(`image` 併記でその ID が出ているときだけ=差し替え後の古い取り消しが暴発しない)。**多重 show は差し替え**(後勝ち。CG は背景の上書きなので同時に二枚は在り得ず「前のを消してから出す」を作者に書かせない)。engine 不使用の passthrough — 保持は提示層 (app `GameSession.sustained_cg` + `SessionSave.sustained_cg`=セーブ対象。再開で背景だけ巻き戻らないよう last_narration と同じ「継続性」扱い。campaign 遷移でリセット)。2026-06-26 に撤回した案A(場所が変わるまで持続)との違いは**消す手段が在ること** — 壁紙化は「持続」でなく「消せない」が原因だった"
   sound: "String? 発火時の SE アセット ID (audios/ 配下)。engine 不解釈の不透明 string → FiredTrigger.sound → FiredBeat.sound。提示層が one-shot 再生 (spec 01 Phase 3)"
 
 # --- Memoria 脚 (crate harness::memoria。三権分立の「Memoria が覚える」) ------
@@ -386,6 +387,7 @@ FiredBeat:                        # 発火ビート + recall 解決 (FiredTrigge
   recalled: "[MemoryFragment] cue を Memoria で解決した伏線 (無ければ空)"
   image: "String? イベント CG アセット ID を passthrough (解決は app)。app BeatView が resolve_asset で絶対パス化 → frontend が背景上書き (spec 01 Phase 2)"
   image_mode: "ImageMode? CG の表示モード passthrough (background=瞬間表示・次の受理で場所背景へ復帰 / overlay 予約)。frontend は受理ターンのみ background 更新(却下は保持)"
+  image_hold: "ImageHold? CG の保持 passthrough (show/hide/省略)。app が FiredBeat 列を authored 順に畳んで sustained_cg を決め、実効背景 = 持続 CG ?? 現在地の背景。hide のビートは frontend の瞬間 CG 候補から除く(`image` 併記でも出さない)"
   sound: "String? 発火 SE アセット ID を passthrough (解決は app)。app BeatView が resolve_asset(Audios) で絶対パス化 → frontend が playSe で one-shot 再生 (spec 01 Phase 3)"
 
 # --- デスクトップ UI (app/src-tauri = Tauri2 backend, app/src = Vue3 frontend) ----

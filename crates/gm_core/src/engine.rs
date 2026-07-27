@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::reason::RejectReason;
-use crate::spine::{ImageMode, Scenario, TakeMode};
+use crate::spine::{ImageHold, ImageMode, Scenario, TakeMode};
 use crate::state::{GameState, RngState, StateDelta, StateOp, TriggerId, PLAYER};
 
 /// 裁定結果。`Reject` は**構造化された**理由を含む (文面は提示層が言語ごとに生成)。
@@ -115,6 +115,8 @@ pub struct FiredTrigger {
     pub image: Option<String>,
     /// イベント CG の表示モード。`Trigger.image_mode` を passthrough。
     pub image_mode: Option<ImageMode>,
+    /// イベント CG の保持。`Trigger.image_hold` を passthrough (解釈は提示層)。
+    pub image_hold: Option<ImageHold>,
     /// 発火時の SE (効果音 ID)。`Trigger.sound` を passthrough (engine は解釈しない)。
     pub sound: Option<String>,
 }
@@ -1340,6 +1342,7 @@ fn fire_triggers(
             recall: t.recall.clone(), // cue を passthrough。解釈は harness。
             image: t.image.clone(),   // イベント CG を passthrough。解決は提示層。
             image_mode: t.image_mode,
+            image_hold: t.image_hold, // 保持の解釈は提示層 (engine は運ぶだけ)。
             sound: t.sound.clone(),   // SE を passthrough。再生は提示層。
         });
     }
@@ -1543,6 +1546,7 @@ fn apply_ops(
                                     recall: None,
                                     image: None,
                                     image_mode: None,
+                                    image_hold: None,
                                     sound: (!outcome.sound.is_empty())
                                         .then(|| outcome.sound.clone()),
                                 });
@@ -5818,6 +5822,53 @@ triggers:
         let beat = out.fired.iter().find(|f| f.id == "cg_beat").expect("発火する");
         assert_eq!(beat.image.as_deref(), Some("awakening.svg"), "イベント CG ID を passthrough");
         assert_eq!(beat.image_mode, Some(ImageMode::Overlay), "表示モードを passthrough");
+    }
+
+    /// 【イベント CG の保持 (2026-07-28)】`image_hold` が serde で読まれ `FiredTrigger` へ
+    /// passthrough される (engine は解釈しない — 保持は提示層の仕事)。省略は従来どおり None
+    /// (= そのターンだけ) で、既存 content の挙動は変わらない。
+    #[test]
+    fn trigger_image_hold_passthrough_and_defaults_to_none() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: [出す, 消す]
+goal: { kind: flag_is, key: 消す, value: true }
+locations:
+  room: { description: d, exits: [] }
+triggers:
+  - id: 告白
+    when: { kind: flag_is, key: 出す, value: true }
+    narration: 二人の影が重なる。
+    image: 告白.webp
+    image_hold: show
+  - id: 幕
+    when: { kind: flag_is, key: 消す, value: true }
+    narration: 場面が戻る。
+    image: 告白.webp
+    image_hold: hide
+  - id: 瞬間
+    when: { kind: always }
+    narration: 稲光。
+    image: 雷.webp
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let mut s = sc.initial_state(1);
+
+        let out = apply(&mut s, &sc, &d(vec![])).expect("空デルタは合法");
+        let flash = out.fired.iter().find(|f| f.id == "瞬間").expect("発火");
+        assert_eq!(flash.image_hold, None, "省略は従来どおり瞬間 (既存 content の挙動不変)");
+
+        let out = apply(&mut s, &sc, &d(vec![StateOp::SetFlag { key: "出す".into(), value: true }]))
+            .expect("受理");
+        let show = out.fired.iter().find(|f| f.id == "告白").expect("発火");
+        assert_eq!(show.image_hold, Some(crate::ImageHold::Show), "show を passthrough");
+        assert_eq!(show.image.as_deref(), Some("告白.webp"));
+
+        let out = apply(&mut s, &sc, &d(vec![StateOp::SetFlag { key: "消す".into(), value: true }]))
+            .expect("受理");
+        let hide = out.fired.iter().find(|f| f.id == "幕").expect("発火");
+        assert_eq!(hide.image_hold, Some(crate::ImageHold::Hide), "hide を passthrough");
     }
 
     /// 【既定モード】`image_mode` 省略時は `None` のまま (提示層が Background と解釈する)。

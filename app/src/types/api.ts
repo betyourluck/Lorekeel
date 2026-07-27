@@ -186,6 +186,8 @@ export interface BeatView {
   image: string | null;
   /** イベント CG の表示モード ("background" | "overlay")。未指定なら null (=background 扱い)。 */
   image_mode: string | null;
+  /** イベント CG の保持 ("show" = 消すまで残す / "hide" = 消す)。null なら従来どおりそのターンだけ。 */
+  image_hold: string | null;
   /** 発火時の SE の絶対パス (convertFileSrc で URL 化 → one-shot 再生)。無ければ null。 */
   sound: string | null;
 }

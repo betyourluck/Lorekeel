@@ -15,11 +15,12 @@ mod update;
 
 use std::path::{Component, Path, PathBuf};
 
-use gm_core::{is_goal, CheckOutcome, GameState, ImageMode, Lang, Scenario, ScenarioError, PLAYER};
+use gm_core::{is_goal, CheckOutcome, GameState, ImageHold, ImageMode, Lang, Scenario, ScenarioError, PLAYER};
 use harness::{
     advance_campaign_injected, carryover_narration, chronicle_entry, is_campaign_entry,
     load_campaign_package, load_lore, load_module_injected, load_package, load_session,
     read_manifest, resolve_asset, resolve_recall, run_turn, save_session, AssetKind, Campaign,
+    FiredBeat,
     CampaignMemory, LoreStore, MemoryFragment, ModuleId, PackageManifest, SavedContent,
     SessionSave, Summarizer, Synopsis, SynopsisJob, TurnLog, TurnOutcome, SAVE_VERSION,
 };
@@ -266,6 +267,8 @@ struct BeatView {
     image: Option<String>,
     /// イベント CG の表示モード ("background" | "overlay")。未指定なら None (=background 扱い)。
     image_mode: Option<String>,
+    /// イベント CG の保持 ("show" = 消すまで / "hide" = 消す)。省略はそのターンだけ (従来)。
+    image_hold: Option<String>,
     /// 発火時の SE の絶対パス (frontend が convertFileSrc → one-shot 再生)。無ければ None。
     sound: Option<String>,
 }
@@ -505,6 +508,40 @@ fn background_for(scenario: &Scenario, state: &GameState) -> Option<String> {
     scenario.location(&state.location)?.image.clone()
 }
 
+/// **実効背景** = 持続中のイベント CG があればそれ、無ければ現在地の背景 (2026-07-28)。
+///
+/// 瞬間 CG (`image_hold` 省略) は提示層が発火ターンだけ被せる派生値なのでここには来ない —
+/// ここが返すのは「次のターンにも残っているべき背景」。
+fn effective_background(sess: &GameSession) -> Option<String> {
+    sess.sustained_cg
+        .clone()
+        .or_else(|| background_for(&sess.scenario, &sess.state))
+}
+
+/// 発火ビート列を順に畳んで、持続 CG の次の値を決める (**純粋**・PoC 対象)。
+///
+/// `show` = その CG を出したまま保持 / `hide` = 消す。`hide` に `image` が併記されていれば
+/// **表示中のものと一致するときだけ**消す (別の CG に差し替わった後の取り消しが暴発しない)。
+/// authored 順に畳むので、同じ settle で show→hide と書けば最後が勝つ (決定論)。
+fn resolve_sustained_cg(current: Option<String>, beats: &[FiredBeat]) -> Option<String> {
+    let mut cg = current;
+    for b in beats {
+        match b.image_hold {
+            Some(ImageHold::Show) => {
+                if let Some(id) = &b.image {
+                    cg = Some(id.clone());
+                }
+            }
+            Some(ImageHold::Hide) => match (&b.image, &cg) {
+                (Some(id), Some(now)) if id != now => {} // 別の CG に差し替わった後の取り消しは無視
+                _ => cg = None,
+            },
+            None => {}
+        }
+    }
+    cg
+}
+
 /// 現在地のループ BGM の**アセット ID** (audios/)。無ければ None。
 fn bgm_for(scenario: &Scenario, state: &GameState) -> Option<String> {
     scenario.location(&state.location)?.bgm.clone()
@@ -710,6 +747,9 @@ struct GameSession {
     package_path: String,
     /// あらすじ (spec 10)。圧縮済み章 + 遷移契機の凍結リトライ範囲。セーブ対象。
     synopsis: Synopsis,
+    /// 持続中のイベント CG (画像 ID)。`image_hold: show` で立ち `hide` で消える (2026-07-28)。
+    /// 提示層の状態だが、セーブしないと再開で背景だけ巻き戻るのでセーブ対象。
+    sustained_cg: Option<String>,
     /// あらすじ要約用の専用 client (SUMMARY_LLM_*)。None なら GM の client を共用。
     summarizer: Option<LlmClient>,
     /// 既成事実 (spec 20)。正本の外の覚え書き。セーブ対象、campaign 遷移でも持ち越す。
@@ -2277,6 +2317,7 @@ async fn new_game(
         save_path,
         package_path: rel,
         synopsis: Synopsis::default(),
+        sustained_cg: None,
         summarizer,
         facts: Vec::new(),
         participants: Vec::new(),
@@ -2385,7 +2426,10 @@ async fn restore_session(
             .map(|l| l.description.clone())
             .unwrap_or_default(),
         state: state_view(&state, &scenario, &save.history, PLAYER),
-        background: background_for(&scenario, &state),
+        background: save
+            .sustained_cg
+            .clone()
+            .or_else(|| background_for(&scenario, &state)),
         bgm: bgm_for(&scenario, &state),
         present_characters: present_characters(&scenario, &state),
         resumed: Some(ResumeView {
@@ -2435,6 +2479,7 @@ async fn restore_session(
         synopsis: save.synopsis,
         summarizer,
         facts: save.facts,
+        sustained_cg: save.sustained_cg,
         // 卓は揮発 (契約 participants) — セーブから復元しない。再開時はホストが張り直す。
         // 開帳の保留もロードで破棄 (spec 18: リロード = 自動開帳は許容)。
         participants: Vec::new(),
@@ -2466,6 +2511,7 @@ fn session_save_of(sess: &GameSession) -> SessionSave {
         pending_lore: sess.pending_lore.clone(),
         facts: sess.facts.clone(),
         synopsis: sess.synopsis.clone(),
+        sustained_cg: sess.sustained_cg.clone(),
     }
 }
 
@@ -3090,6 +3136,8 @@ async fn do_play_turn(
             // ターン処理では触らない — 変化はコマンド (facts_add/edit/delete) 側で起きる。
             // 発火ビートの cue を Memoria で解決 (memoria_bridge)。
             let resolved = resolve_recall(&sess.lore, &fired);
+            // 持続 CG (2026-07-28): show で立ち、hide で消える。次ターン以降の背景になる。
+            sess.sustained_cg = resolve_sustained_cg(sess.sustained_cg.clone(), &resolved);
             // ビートは GM が見ていない筋書きの出来事 — 継続文脈と経緯ログの両方へ併記する。
             let beat_texts: Vec<String> = resolved.iter().map(|b| b.narration.clone()).collect();
             // 次ターンの継続文脈に持ち越す (既出情景の繰り返し防止。ビート込み)。
@@ -3115,6 +3163,10 @@ async fn do_play_turn(
                     image_mode: b.image_mode.map(|m| match m {
                         ImageMode::Background => "background".to_string(),
                         ImageMode::Overlay => "overlay".to_string(),
+                    }),
+                    image_hold: b.image_hold.map(|h| match h {
+                        ImageHold::Show => "show".to_string(),
+                        ImageHold::Hide => "hide".to_string(),
                     }),
                     sound: b.sound.clone(),
                 })
@@ -3196,7 +3248,7 @@ async fn do_play_turn(
                 goal_id,
                 goal_title,
                 goal_narration,
-                background: background_for(&sess.scenario, &sess.state),
+                background: effective_background(sess),
                 bgm: bgm_for(&sess.scenario, &sess.state),
                 present_characters: present_characters(&sess.scenario, &sess.state),
                 transition: None,
@@ -3231,7 +3283,7 @@ async fn do_play_turn(
             goal_id: goal_view(&sess.state, &sess.scenario).0,
             goal_title: goal_view(&sess.state, &sess.scenario).1,
             goal_narration: goal_view(&sess.state, &sess.scenario).2,
-            background: background_for(&sess.scenario, &sess.state),
+            background: effective_background(sess),
             bgm: bgm_for(&sess.scenario, &sess.state),
             present_characters: present_characters(&sess.scenario, &sess.state),
             transition: None,
@@ -3315,8 +3367,11 @@ async fn do_play_turn(
                     description,
                 });
                 // パネル類は遷移先を指す (goal_* は遷移元の結末のまま残す)。
+                // 持続 CG は前章のものを持ち越さない (章が変われば情景も変わる = frontend が
+                // 遷移ターンに CG を出さないのと同じ判断)。
+                sess.sustained_cg = None;
                 view.state = state_view(&sess.state, &sess.scenario, &sess.history, &sess.viewer_entity());
-                view.background = background_for(&sess.scenario, &sess.state);
+                view.background = effective_background(sess);
                 view.bgm = bgm_for(&sess.scenario, &sess.state);
                 view.present_characters =
                     present_characters(&sess.scenario, &sess.state);
@@ -3443,6 +3498,7 @@ async fn resolve_dice_decision(
 
     // 発火ビートの解決 (play_turn と同経路) と、次ターンへの語り素材の持ち越し。
     let resolved = resolve_recall(&sess.lore, &r.fired);
+    sess.sustained_cg = resolve_sustained_cg(sess.sustained_cg.clone(), &resolved);
     let beat_texts: Vec<String> = resolved.iter().map(|b| b.narration.clone()).collect();
     // 継続文脈: 直前の語りに決断の結末を継ぎ足す (判定結末文・ビートを含む)。
     let base = std::mem::take(&mut sess.last_narration);
@@ -3475,6 +3531,10 @@ async fn resolve_dice_decision(
             image_mode: b.image_mode.map(|m| match m {
                 ImageMode::Background => "background".to_string(),
                 ImageMode::Overlay => "overlay".to_string(),
+            }),
+            image_hold: b.image_hold.map(|h| match h {
+                ImageHold::Show => "show".to_string(),
+                ImageHold::Hide => "hide".to_string(),
             }),
             sound: b.sound.clone(),
         })
@@ -3595,6 +3655,7 @@ async fn play_contest_round(
 
     // 発火ビート (帰結からの連鎖)。lore 解決は play_turn と同経路。
     let resolved = resolve_recall(&sess.lore, &r.fired);
+    sess.sustained_cg = resolve_sustained_cg(sess.sustained_cg.clone(), &resolved);
     sess.pending_lore.extend(resolved.iter().flat_map(|b| b.recalled.clone()));
     let beats: Vec<BeatView> = resolved
         .iter()
@@ -3606,6 +3667,10 @@ async fn play_contest_round(
             image_mode: b.image_mode.map(|m| match m {
                 ImageMode::Background => "background".to_string(),
                 ImageMode::Overlay => "overlay".to_string(),
+            }),
+            image_hold: b.image_hold.map(|h| match h {
+                ImageHold::Show => "show".to_string(),
+                ImageHold::Hide => "hide".to_string(),
             }),
             sound: b.sound.clone(),
         })
@@ -3806,7 +3871,7 @@ async fn current_game_view(
             .map(|l| normalize(&l.description))
             .unwrap_or_default(),
         state: state_view(&sess.state, &sess.scenario, &sess.history, &viewer),
-        background: background_for(&sess.scenario, &sess.state),
+        background: effective_background(sess),
         bgm: bgm_for(&sess.scenario, &sess.state),
         present_characters: present_characters(&sess.scenario, &sess.state),
         // 途中参加のゲストにも「前回までの語り」を出す (再開と同じ器 = 情景の接続)。
@@ -3918,6 +3983,59 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    /// 【持続 CG の畳み込み (2026-07-28)】`image_hold: show` で立ち `hide` で消える。
+    ///
+    /// - **多重 show は差し替え** (後勝ち) — 前の CG は自動的に降りる。CG は背景の上書きなので
+    ///   同時に二枚は在り得ず、「前のを消してから出す」を作者に書かせない。
+    /// - `hide` に `image` を併記した場合は**表示中のものと一致するときだけ**消す
+    ///   (別の CG に差し替わった後に古い取り消しが飛んできても暴発しない)。
+    /// - `image_hold` 省略のビート (瞬間 CG) は持続値を動かさない。
+    #[test]
+    fn sustained_cg_folds_show_and_hide_in_order() {
+        use super::*;
+        let beat = |image: Option<&str>, hold: Option<gm_core::ImageHold>| FiredBeat {
+            id: "t".into(),
+            narration: String::new(),
+            recalled: Vec::new(),
+            image: image.map(String::from),
+            image_mode: None,
+            image_hold: hold,
+            sound: None,
+        };
+        let show = |i: &str| beat(Some(i), Some(gm_core::ImageHold::Show));
+        let hide_any = || beat(None, Some(gm_core::ImageHold::Hide));
+        let hide = |i: &str| beat(Some(i), Some(gm_core::ImageHold::Hide));
+        let flash = |i: &str| beat(Some(i), None);
+
+        assert_eq!(resolve_sustained_cg(None, &[show("a.webp")]), Some("a.webp".into()));
+        // 多重 show = 差し替え (後勝ち)。
+        assert_eq!(
+            resolve_sustained_cg(Some("a.webp".into()), &[show("b.webp")]),
+            Some("b.webp".into()),
+            "後から出した CG が前のを置き換える"
+        );
+        // 瞬間 CG は持続値に触らない。
+        assert_eq!(
+            resolve_sustained_cg(Some("a.webp".into()), &[flash("x.webp")]),
+            Some("a.webp".into()),
+            "image_hold 省略のビートは持続 CG を動かさない"
+        );
+        // hide: 名指し一致で消える / 不一致は無視 / 無指定は何でも消す。
+        assert_eq!(resolve_sustained_cg(Some("a.webp".into()), &[hide("a.webp")]), None);
+        assert_eq!(
+            resolve_sustained_cg(Some("b.webp".into()), &[hide("a.webp")]),
+            Some("b.webp".into()),
+            "差し替わった後の古い取り消しは暴発しない"
+        );
+        assert_eq!(resolve_sustained_cg(Some("b.webp".into()), &[hide_any()]), None);
+        // 同じ settle 内は authored 順で最後が勝つ (決定論)。
+        assert_eq!(resolve_sustained_cg(None, &[show("a.webp"), hide_any()]), None);
+        assert_eq!(
+            resolve_sustained_cg(None, &[hide_any(), show("a.webp")]),
+            Some("a.webp".into())
+        );
+    }
+
     use super::{meta_matches_site, normalize_path, normalize_site_url};
 
     /// 【CSP がノックサーバーへの WebSocket を通すこと (spec 23)】

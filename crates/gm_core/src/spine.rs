@@ -359,6 +359,15 @@ pub struct Trigger {
     /// イベント CG の出し方 (既定 [`ImageMode::Background`])。engine は使わない不透明データ。
     #[serde(default)]
     pub image_mode: Option<ImageMode>,
+    /// イベント CG を**いつまで出すか** (2026-07-28)。engine は使わない不透明データ。
+    ///
+    /// 省略 = 従来どおり**そのターンだけ** (発火ターンに出て次の受理ターンで場所背景へ戻る)。
+    /// [`ImageHold::Show`] = 消すまで持続 / [`ImageHold::Hide`] = 消す (`image` を併記すれば
+    /// その ID が出ているときだけ消す = 別の CG に差し替わった後の取り消しが暴発しない)。
+    ///
+    /// `image_mode` (描画位置) とは**別の軸**なので分けてある。
+    #[serde(default)]
+    pub image_hold: Option<ImageHold>,
     /// 発火時の SE (効果音) のアセット ID (`audios/` 配下)。**engine は解釈しない不透明 string**
     /// (image と同類)。提示層が発火ターンに one-shot 再生する。`None` なら SE 無し。
     #[serde(default)]
@@ -379,10 +388,25 @@ pub struct Trigger {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ImageMode {
-    /// 背景を上書き・持続 (シーン切替)。既定。
+    /// 背景を上書きする (シーン切替)。既定。**保持の長さは [`ImageHold`] が決める**
+    /// (2026-06-26 の案A 撤回で「持続」の意味は外した — doc だけ残っていたのを 2026-07-28 に訂正)。
     Background,
     /// 既存背景の上に重ねる (予約・提示層の実装は将来)。
     Overlay,
+}
+
+/// イベント CG を**いつまで出すか** (2026-07-28)。`image_mode` (どこに描くか) とは別の軸。
+///
+/// 既定 (省略) は**そのターンだけ** — 2026-06-26 に「場所が変わるまで持続」(案A) を撤回した
+/// ときの挙動。あれは落石 CG が祠を出るまで壁紙化したのが理由で、**消す手段が無かった**ことが
+/// 本体だった。作者が明示的に消せるなら持続してよい、というのがこの enum。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageHold {
+    /// 消すまで出し続ける (場所を移動しても残る — 消すのは作者の責任)。
+    Show,
+    /// 出ている CG を消して場所背景へ戻す。`image` を併記するとその ID のときだけ消す。
+    Hide,
 }
 
 /// tier がどの**自然出目** (修正前の素の `1d{sides}`) で発火するか。

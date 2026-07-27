@@ -389,6 +389,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 pending_lore: pending_lore.clone(),
                 facts: facts_list.clone(),
                 synopsis: synopsis.clone(),
+                // CLI は背景を描かないので持続 CG を持たない (GUI 専用の提示層状態)。
+                sustained_cg: None,
             };
             if let Err(e) = harness::save_session(&save_path, &save) {
                 // 救済機構がセッション本体を殺さない: 警告して続行。

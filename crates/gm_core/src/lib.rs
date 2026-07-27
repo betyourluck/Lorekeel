@@ -26,7 +26,7 @@ pub use reason::{Lang, RejectReason};
 pub use lint::{struct_keys, unknown_key_lints, unknown_keys};
 pub use expr::{parse_expr, Expr};
 pub use spine::{
-    ChallengeDef, CharacterDef, CheckStyle, ContestDef, Exit, Gate, GoalDef, ImageMode, Location,
+    ChallengeDef, CharacterDef, CheckStyle, ContestDef, Exit, Gate, GoalDef, ImageHold, ImageMode, Location,
     LocationItem, FactsPolicy, Natural, Protagonist, Resolution, RoleAssignment, RollRef, RollSpec,
     Scenario, ScenarioError, StatDecl, StatInit, TakeMode, TierDef, Trigger,
 };

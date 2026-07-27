@@ -1785,14 +1785,21 @@ export const useGameStore = defineStore("game", {
         // マップ (spec 15) — 移動/遷移で backend が差し替える (却下でも現状スナップショット)。
         if (turn.map) this.map = turn.map;
         // 背景は受理ターンのみ更新する。却下 = 物語が進んでいないので現在の背景 (=直前の CG) を保つ。
-        // イベント CG は瞬間 (spec 01 #3): 発火ターンに出て、次の受理ターンで場所背景へ復帰する。
+        // イベント CG は既定で瞬間 (spec 01 #3): 発火ターンに出て、次の受理ターンで場所背景へ復帰。
+        // image_hold: show の CG は backend が turn.background に畳んで返すので、次ターン以降も残る。
+        // hide のビートは「消す」指示なので背景候補にしない (image を併記していても出さない)。
         // campaign 遷移は前章の CG を持ち越さず遷移先の場所背景にする。
         if (turn.accepted) {
           const cgBeat = turn.transition
             ? undefined
             : [...turn.beats]
                 .reverse()
-                .find((b) => b.image && (b.image_mode ?? "background") === "background");
+                .find(
+                  (b) =>
+                    b.image &&
+                    (b.image_mode ?? "background") === "background" &&
+                    b.image_hold !== "hide",
+                );
           const nextBackground = cgBeat?.image ? assetUrl("images", cgBeat.image) : assetUrl("images", turn.background);
           const nextBgm = assetUrl("audios", turn.bgm);
           if (revealing) {

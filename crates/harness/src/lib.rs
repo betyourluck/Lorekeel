@@ -973,6 +973,7 @@ mod tests {
             last_narration: "霧が窓を這う。".into(),
             pending_checks: vec![],
             pending_lore: vec![],
+            sustained_cg: None,
             facts: vec![FactEntry {
                 id: 1,
                 origin: FactOrigin::User,
@@ -1028,6 +1029,7 @@ mod tests {
             last_narration: String::new(),
             pending_checks: vec![],
             pending_lore: vec![],
+            sustained_cg: None,
             facts: vec![],
             synopsis: Synopsis::default(),
         };
