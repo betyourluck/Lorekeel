@@ -392,6 +392,8 @@ export const messages = {
       localEmpty:
         "パッケージがありません。下のフォームでフォルダパスを追加するか、配布サイトから取得してください。",
       loadFailed: "読込失敗",
+      openFolderTitle: "パッケージのフォルダを開く (中身を書き換えて遊べる)",
+      openFolder: "フォルダ",
       removeTitle: "一覧から削除",
       remove: "削除",
       pathPlaceholder: "パッケージフォルダのパス (例: packages/houkago)",
@@ -940,6 +942,8 @@ export const messages = {
       localEmpty:
         "No packages. Add a folder path in the form below, or install from the distribution site.",
       loadFailed: "Load failed",
+      openFolderTitle: "Open the package folder (edit its contents to remix)",
+      openFolder: "Folder",
       removeTitle: "Remove from list",
       remove: "Remove",
       pathPlaceholder: "Package folder path (e.g. packages/houkago)",

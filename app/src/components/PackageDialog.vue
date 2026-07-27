@@ -157,6 +157,14 @@ function totalPages(): number {
               {{ game.updatingPath === p.path ? t("packages.updating") : t("packages.updateAction") }}
             </button>
             <button
+              class="shrink-0 text-parchment/40 hover:text-parchment text-sm"
+              :title="t('packages.openFolderTitle')"
+              :aria-label="t('packages.openFolder')"
+              @click="game.openPackageFolder(p.path)"
+            >
+              {{ t("packages.openFolder") }}
+            </button>
+            <button
               class="shrink-0 text-parchment/40 hover:text-red-400 text-sm"
               :title="t('packages.removeTitle')"
               :aria-label="t('packages.remove')"

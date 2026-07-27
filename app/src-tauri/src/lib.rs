@@ -1031,6 +1031,23 @@ fn open_log_folder(app: tauri::AppHandle, folder: String) -> Result<(), String> 
     open_in_file_manager(&dir)
 }
 
+/// パッケージのフォルダを OS 標準のファイルマネージャで開く (一覧の「フォルダ」ボタン)。
+///
+/// 中身を直接いじって遊ぶ (改変・自作の下敷きにする) ための導線。パスは一覧が持つ登録済みの
+/// ものなので、`list_packages` と**同じ解決** (`resolve_pkg_dir`) を通して同じ場所を指す。
+/// 実在するフォルダのときだけ開く (存在しないパスをファイルマネージャに渡さない)。
+///
+/// 留意 (spec 17): 書庫から取得したパッケージを手で書き換えると tree_hash が変わり、
+/// 更新時に「編集されています」の警告が出る (上書きで自分の改変が消えるのを防ぐ守り)。
+#[tauri::command]
+fn open_package_folder(path: String) -> Result<(), String> {
+    let dir = resolve_pkg_dir(&path);
+    if !dir.is_dir() {
+        return Err(format!("フォルダが見つかりません: {}", dir.display()));
+    }
+    open_in_file_manager(&dir)
+}
+
 /// フォルダを OS 標準のファイルマネージャで開く (プラットフォーム別)。
 fn open_in_file_manager(dir: &Path) -> Result<(), String> {
     os_open(&dir.to_string_lossy()).map_err(|e| format!("フォルダを開けません: {e}"))
@@ -3957,6 +3974,7 @@ pub fn run() {
             get_default_log_dir,
             save_log_file,
             open_log_folder,
+            open_package_folder,
             pick_package_folder,
             delete_autosave,
             facts_add,

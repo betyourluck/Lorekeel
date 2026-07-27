@@ -1202,6 +1202,16 @@ export const useGameStore = defineStore("game", {
       }
     },
 
+    // パッケージのフォルダを OS のファイルマネージャで開く (一覧の「フォルダ」ボタン)。
+    // 中身を直接いじる (改変する・自作の下敷きにする) ための導線。
+    async openPackageFolder(path: string) {
+      try {
+        await invoke("open_package_folder", { path });
+      } catch (e) {
+        this.logToast = t("store.openFolderFailed", { error: String(e) });
+      }
+    },
+
     // ログフォルダを OS のファイルマネージャで開く (設定ダイアログのボタン)。
     async openLogFolder() {
       try {
