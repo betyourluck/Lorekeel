@@ -11,6 +11,8 @@ mod asset;
 mod campaign;
 mod epilogue;
 mod error;
+mod inspect;
+mod inspect_msg;
 mod loader;
 mod facts;
 mod memoria;
@@ -26,8 +28,11 @@ pub use campaign::{
     advance_campaign, advance_campaign_injected, load_campaign, load_module, load_module_injected,
     Advance, Campaign, CampaignEdge, CampaignMemory, ModuleId,
 };
+pub use inspect::{inspect, inspect_package, inspect_scenario_file, InspectReport};
+pub use inspect_msg::scenario_lint_messages;
 pub use package::{
-    inject_package, is_campaign_entry, load_campaign_package, load_package, read_manifest, Globals,
+    character_lints, inject_package, is_campaign_entry, load_campaign_package, load_package,
+    manifest_lints, read_manifest, Globals,
     LoadedCampaignPackage, LoadedPackage, PackageManifest, PlayerDef,
 };
 pub use epilogue::{

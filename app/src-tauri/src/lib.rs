@@ -15,7 +15,7 @@ mod update;
 
 use std::path::{Component, Path, PathBuf};
 
-use gm_core::{is_goal, CheckOutcome, GameState, ImageHold, ImageMode, Lang, Scenario, ScenarioError, PLAYER};
+use gm_core::{is_goal, CheckOutcome, GameState, ImageHold, ImageMode, Lang, Scenario, PLAYER};
 use harness::{
     advance_campaign_injected, carryover_narration, chronicle_entry, is_campaign_entry,
     load_campaign_package, load_lore, load_module_injected, load_package, load_session,
@@ -367,52 +367,10 @@ fn fact_views(list: &[harness::FactEntry]) -> Vec<FactView> {
         .collect()
 }
 
-/// scenario の lint を作者向けの表示文にする (非 fatal — load は拒否せず開幕に ⚠ で報せる。
-/// fatal にすると配布済み content が受領側で死ぬので警告に留める)。
+/// scenario の lint を作者向けの表示文にする。**文面の正本は harness**
+/// (`play lint` と同じ受け手＝作者に、同じ言葉で伝えるため。片方だけ直すと必ずずれる)。
 fn scenario_warnings(scenario: &Scenario) -> Vec<String> {
-    scenario
-        .lints()
-        .into_iter()
-        .map(|l| match l {
-            ScenarioError::FlagHintOnAuthoredOnly { flag } => format!(
-                "フラグ「{flag}」の flag_hint は GM に届きません（トリガー/challenge が立てる専権フラグのため）。\
-                 GM に立てさせるならトリガー/challenge 側の set_flag を外し、筋書きで立てるならヒントを外してください"
-            ),
-            // spec 21 同梱: 幻の場所を指す location_is は永久に false = その Gate は死んでいる。
-            ScenarioError::UnknownLocationInGate { origin, at } => format!(
-                "{origin} の location_is が、宣言されていない場所「{at}」を指しています。\
-                 この条件は永久に成立しません（挑戦なら一度も選べず、出口なら通れません）。\
-                 locations に無い名前です — 所持品を対象にするなら has_item を使ってください"
-            ),
-            // presence_is が cast に無いキャラを指すと、present_at が落とすので永久に偽
-            // (present: false なら永久に真)。どちらも「書いたのに効かない」。
-            ScenarioError::UnknownEntityInGate { origin, entity } => format!(
-                "{origin} の presence_is が、このシナリオが知らないキャラ「{entity}」を指しています。\
-                 この条件は永久に成立しません（present: false なら逆に常に成立します）。\
-                 characters に定義されているか、cast に含まれているかを確認してください"
-            ),
-            // authored effects の死んだ参照。トリガー効果は検証を通らない (信頼済で apply_ops
-            // 直行) ので、typo は「エラーも警告もなく判定が起きない」形で沈黙していた。
-            ScenarioError::UnknownChallengeInEffects { origin, challenge } => format!(
-                "{origin} の attempt_challenge が、存在しない挑戦「{challenge}」を指しています。\
-                 このトリガー/帰結は発火しても判定を起こしません（エラーも出ません）。\
-                 challenges に定義された id を確認してください"
-            ),
-            ScenarioError::UnknownContestInEffects { origin, contest } => format!(
-                "{origin} の attempt_contest が、存在しない対決「{contest}」を指しています。\
-                 幻の対決が進行中のまま居座り、以後の対決がすべて「対決の最中」で却下されます。\
-                 contests に定義された id を確認してください"
-            ),
-            // 効果の move は出口も gate も見ないので、行き先の typo は「宣言されていない場所に
-            // 立つ」= 出口も説明文も無いソフトロックになる (エラーも警告も出ない)。
-            ScenarioError::UnknownLocationInEffects { origin, to } => format!(
-                "{origin} の move が、宣言されていない場所「{to}」を指しています。\
-                 主人公はその場所に立ちますが、出口も説明文も無いため先へ進めなくなります（エラーも出ません）。\
-                 locations に定義された id を確認してください"
-            ),
-            other => format!("{other:?}"),
-        })
-        .collect()
+    harness::scenario_lint_messages(scenario)
 }
 
 /// セーブから再開したときに frontend が開幕ログへ出す情報。

@@ -527,6 +527,15 @@ Epilogue:                           # spec 11 (2026-07-14 rev3 査読確定): go
   grounding: "既定規律 =「起きたことは記録のとおりに・これから起きること (後日談) は自由に」。終幕ゆえ以後のターンを汚染しない (#47 経路なし) が、プレイヤーが読む確定文なので記録との矛盾は禁止。後日談の方向づけは authored 指示。目安 600 字・機械カットなし (narration と同じ非検証チャネル)"
   presentation: "表示順 = 結末ナレーション → 到達バナー (🎉) → 「―― エピローグ ――」→ 本文 (**エピローグで幕が下りる** — バナーが余韻をぶった切らない)。会話ログ (frontend LogEntry = テキスト保存対象) にのみ積む。chronicle (TurnLog 正史) と SessionSave には積まない。生成は autosave の**後** (失敗がセーブを巻き込まない。SessionSave に epilogue フィールドは無い = 保存経路に分岐なし)。生成中は epilogue-writing イベント"
 
+PackageInspection:                  # play lint (2026-08-09): 生成 → 検める のループ用の静的検分
+  entry:   "harness::inspect(path) → InspectReport{target, errors, warnings}。フォルダ = パッケージ (単発 entry / campaign entry 両対応) / .yaml = シナリオ単体 (下書きの形の早見。cast 注入も package 注入も掛からないので外部キャラ前提の盤面は幻 entity に見えうる)。CLI = `play lint <path>...` (**API キー不要・LLM 呼び出しゼロ** — 検分がキーを要求すると生成ループが回らない)。終了コードは errors があるときだけ 1"
+  sources: "**新しい検査規則は作らない** — 既存 5 つを 1 つの入口へ集めるだけ: gm_core::unknown_key_lints (シナリオ生テキスト) / Scenario::validate (load 拒否級 = 閉世界の破れ) / Scenario::lints (非 fatal = 意図どおり動かない書き方) / harness::manifest_lints (package.yaml) / harness::character_lints (characters/*.yaml、新設)"
+  character_lints: "`characters/*.yaml` 1 枚の未知フィールド lint。**長らく完全に無検査だった** — CharacterDef も serde が未知キーを黙って無視するので `stats` を `stat` と書けばそのキャラは数値を 1 つも持たないまま静かに動く。既知キーは gm_core::struct_keys で型から導出 (手書きしない = フィールド追加に自動追従)。stats の値が mapping のときは StatDecl の中 (initial/min/max) まで見る (素の数値は StatInit の短縮形ゆえ対象外)。**生成物で特に効く — 人は同梱の他ファイルを見ながら書くが、モデルは仕様書だけを見て書くので欄名の揺れがここに集まる**"
+  campaign_modules: "検分は campaign の**全モジュール**を歩く (load_campaign_package が組むのは開始モジュールだけ)。各モジュールの生テキストへ unknown_key_lints を掛ける — 従来 load_module_injected が生テキストを返さないため射程外だった穴を、検分側が自分で読むことで塞ぐ"
+  order:   "検査順は「壊れていても見えるもの」から: characters → manifest → entry/モジュール。シナリオが load 失敗してもキャラ定義の欄名の誤りは見える (生成物では両方同時に壊れているのが普通)"
+  messages: "作者向け文面の正本は harness::scenario_lint_messages (app の開幕 ⚠ と play lint が共用)。受け手はどちらも「作者」で言うべきことも同じ — 別々に持つと片方だけ直したときに必ずずれる (2026-08-09 に app から移設)。lint は**何がダメか**でなく**何をすれば直るか**を言う"
+  boundary: "**緑は「読める」であって「遊べる」ではない**。validate も lints も各機構を**単独で**検査するので、独立に正しい機構どうしの相互作用は原理的に捕まらない (2026-07-09 実例: 同じフラグへの flag_hints + hidden_flags で GM がフラグを知り得ず真エンド到達不能、validate 無反応、発見は全ゴール経路の手トレースのみ)。CLI は errors ゼロのときこの注記を毎回出す — 黙ると「緑だから遊べる」と読まれる"
+
 UnifiedToolLayer:                   # spec 12 Phase A (2026-07-15): llm_client の canonical + adapter seam (Claude/GPT/Gemini/Grok)
   provider: "Provider = openai_compat | anthropic | gemini(Phase C)。判定 = LLM_PROVIDER 明示 > base_url 自動 (api.anthropic.com → anthropic / generativelanguage.googleapis.com かつ /openai を含まない → gemini / それ以外 → openai_compat)。プロキシ等の判定不能ホストは openai_compat に落ちる (安全側。明示指定を .env.example で誘導)"
   chat_request: "canonical ChatRequest { model, messages: [ChatMessage{role,content}], tools: [ToolSpec{name, description, parameters(JSON Schema, schemars 機械生成の単一真実源)}], tool_choice, temperature: Option (明示時のみ送る), max_tokens } — Driver 相当 (generate/generate_structured) はこれしか組まない。wire への変換は adapter の encode 純関数"

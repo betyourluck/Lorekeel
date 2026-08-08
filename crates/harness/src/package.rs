@@ -121,6 +121,36 @@ pub fn manifest_lints(src: &str) -> Vec<String> {
     out
 }
 
+/// `characters/*.yaml` 1 枚の未知フィールド lint (非 fatal)。
+///
+/// **ここは長らく完全に無検査だった** — `CharacterDef` も serde が未知キーを黙って無視するので、
+/// `stats` を `stat` と書けばそのキャラは数値を 1 つも持たないまま静かに動く。
+/// `manifest_lints` と同じ形（既知キーは [`gm_core::struct_keys`] で型から導出＝手書きしない）。
+///
+/// 生成物を検める用途で特に効く: 人は同梱の他ファイルを見ながら書くが、
+/// **モデルは仕様書だけを見て書く**ので、欄名の揺れがここに集まる。
+pub fn character_lints(src: &str) -> Vec<String> {
+    let Ok(root) = serde_yaml::from_str::<serde_yaml::Value>(src) else {
+        return Vec::new(); // parse エラーは load_characters 側が出す (役割分離)
+    };
+    let keys = gm_core::struct_keys::<gm_core::CharacterDef>("{}");
+    let mut out = gm_core::unknown_keys(&root, &keys, "");
+    // stats は StatDecl の表 (initial/min/max)。値が mapping のときだけ中を見る
+    // (素の数値は StatInit の短縮形なので対象外 — 主人公の initial_stats と同じ意味論)。
+    if let serde_yaml::Value::Mapping(m) = &root {
+        if let Some(serde_yaml::Value::Mapping(stats)) = m.get(serde_yaml::Value::from("stats")) {
+            let decl = gm_core::struct_keys::<gm_core::StatDecl>("initial: 0");
+            for (name, v) in stats {
+                if matches!(v, serde_yaml::Value::Mapping(_)) {
+                    let path = format!("stats.{}", name.as_str().unwrap_or("?"));
+                    out.extend(gm_core::unknown_keys(v, &decl, &path));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// [`load_package`] の戻り。entry シナリオ (注入・検証済) + manifest (world/profile を語り素材として保持)。
 #[derive(Debug, Clone)]
 pub struct LoadedPackage {

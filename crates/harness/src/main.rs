@@ -15,6 +15,10 @@
 //! cargo run -p harness --bin play --save my_save.yaml               # オートセーブ先の指定 (既定 kataribe_autosave.yaml)
 //! cargo run -p harness --bin play --seed 42                         # seed 固定 (テスト/再現用。省略時は毎回変わる)
 //! cargo run -p harness --bin play < actions.txt            # 台本を流し込む
+//!
+//! # 検分 (API キー不要・LLM 呼び出しゼロ)。生成 → 検める のループ用。
+//! cargo run -p harness --bin play -- lint packages/xxx
+//! cargo run -p harness --bin play -- lint packages/*        # 複数まとめて
 //! ```
 //!
 //! キャンペーンモードでは goal 到達ごとに [`advance_campaign`] が発火 GoalId で次モジュールを
@@ -73,6 +77,49 @@ fn take_flag_value(args: &mut Vec<String>, key: &str) -> Result<Option<String>, 
         Some(_) => Err(format!("{key} の後に値を指定してください")),
         None => Ok(None),
     }
+}
+
+/// `play lint <path>...` — パッケージ / シナリオの静的検分 (**API キー不要・LLM 呼び出しゼロ**)。
+///
+/// 生成 → 検分のループ用。`package_spec.md` を渡して LLM に書かせる流儀では、
+/// 従来これを見る唯一の経路が「アプリに入れて新しいゲームを始める」(開幕の ⚠) で、
+/// キーとターンを 1 回消費していた。
+///
+/// 終了コードは **errors があるときだけ 1** (警告は 0)。スクリプトで束ねて回すため。
+fn run_lint(paths: &[String]) -> Result<(), Box<dyn Error>> {
+    if paths.is_empty() {
+        eprintln!("使い方: play lint <パッケージのフォルダ | シナリオの .yaml> ...");
+        std::process::exit(2);
+    }
+    let (mut errors, mut warnings) = (0usize, 0usize);
+    for p in paths {
+        let report = harness::inspect(Path::new(p));
+        println!("── {}", report.target);
+        for e in &report.errors {
+            println!("  ✗ {e}");
+        }
+        for w in &report.warnings {
+            println!("  ⚠ {w}");
+        }
+        if report.is_clean() {
+            println!("  ✓ 問題なし");
+        }
+        errors += report.errors.len();
+        warnings += report.warnings.len();
+    }
+    println!("\n合計: エラー {errors} / 警告 {warnings}");
+    // **緑は「読める」であって「遊べる」ではない** — validate も lints も各機構を単独で
+    // 検査するので、独立に正しい機構どうしの相互作用は捕まらない (2026-07-09 の実例:
+    // 同じフラグへの flag_hints + hidden_flags で真エンドが到達不能。validate は無反応)。
+    // ここを黙ると「緑だから遊べる」と読まれるので、毎回言う。
+    if errors == 0 {
+        println!("※ 静的検査が通っても遊べるとは限りません — 各ゴールへの到達経路は手でたどってください");
+        println!("  (機構どうしの相互作用による到達不能は、原理的にこの検査では捕まりません)");
+    }
+    if errors > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 /// あらすじ圧縮ジョブを実行する (spec 10)。成功 = complete / 失敗 = abandon (非致命 —
@@ -136,6 +183,15 @@ fn root_of(path: &str) -> PathBuf {
 async fn main() -> Result<(), Box<dyn Error>> {
     // .env を読み込む (アプリ入口の責務。LlmConfig::from_env は env を読むだけ)。
     dotenvy::dotenv().ok();
+
+    // `lint` は **設定の解決より前**に分岐する — 検分に API キーは要らない。
+    // ここを下げると「キーが無いと自分の書いたシナリオも検められない」ことになり、
+    // 生成 → 検分のループが回らなくなる (この機能の存在意義そのもの)。
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if raw.first().map(String::as_str) == Some("lint") {
+        return run_lint(&raw[1..]);
+    }
+
     let lang = lang_from_env();
 
     // --- 設定 ---
