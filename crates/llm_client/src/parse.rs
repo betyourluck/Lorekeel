@@ -182,7 +182,12 @@ fn fix_ops_as_string(value: &mut serde_json::Value) -> bool {
 
 /// JSON オブジェクト (tool 経路 — decode 境界でパース済み) を `T` へ。素直な from_value が
 /// 失敗したら [`fix_ops_as_string`] (#40) を当てて再試行する。
-/// 失敗時は**最初の** serde エラーを返す (崩れの一次症状を診断に残す)。
+///
+/// **救済を試みて失敗したら、その理由を返す** (最初の症状で覆い隠さない)。旧実装は
+/// `.map_err(|_| first)` で一次症状を残していたが、それは**救済が効かなかった理由を
+/// 恒久的に見えなくする** — 画面には「ops が文字列」と出続けるのに、実際に詰まっている
+/// のは別の場所、という状態になる (2026-08-08 Meta 実機で踏んだ)。
+/// 一次症状は救済が**当たらなかった**とき (ops が文字列でない) にだけ意味を持つ。
 fn from_value_lenient<T: DeserializeOwned>(value: serde_json::Value) -> Result<T, serde_json::Error> {
     let first = match serde_json::from_value::<T>(value.clone()) {
         Ok(v) => return Ok(v),
@@ -192,21 +197,26 @@ fn from_value_lenient<T: DeserializeOwned>(value: serde_json::Value) -> Result<T
     if !fix_ops_as_string(&mut value) {
         return Err(first);
     }
-    serde_json::from_value::<T>(value).map_err(|_| first)
+    serde_json::from_value::<T>(value)
 }
 
 /// JSON テキスト (content フォールバック経路) を `T` へ。素直な from_str が失敗したら
 /// [`fix_ops_as_string`] (#40) を当てて再試行する (#28/#30 と同族のソース後処理)。
+///
+/// **エラーの選び方が診断そのもの**。型付きパースは前から読むので、後ろが壊れている
+/// (途中で切れた・末尾が欠けた) 応答でも、**先に見つかった型の不一致**を報告してしまう。
+/// 素の `Value` としても読めなければ、詰まっているのは型ではなく**構文**なので、
+/// そちらのエラーを返す — 「ops が配列でない」と言い続けながら実は本文が途中で切れていた、
+/// を避ける (2026-08-08 Meta 実機)。
 fn from_str_lenient<T: DeserializeOwned>(raw: &str) -> Result<T, serde_json::Error> {
     let first = match serde_json::from_str::<T>(raw) {
         Ok(v) => return Ok(v),
         Err(e) => e,
     };
-    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(raw) else {
-        return Err(first);
-    };
+    // 構文が壊れているならそれが真因。型の不一致 (first) は部分パースの副産物。
+    let mut value = serde_json::from_str::<serde_json::Value>(raw)?;
     if !fix_ops_as_string(&mut value) {
         return Err(first);
     }
-    serde_json::from_value::<T>(value).map_err(|_| first)
+    serde_json::from_value::<T>(value)
 }

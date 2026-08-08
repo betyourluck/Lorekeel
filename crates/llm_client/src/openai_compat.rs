@@ -41,6 +41,17 @@ pub(crate) fn encode(req: &ChatRequest, mode: ToolMode) -> wire::ChatRequest {
         // Auto では**強制せず必ず "auto"** — 名前指定も "required" も通らないサーバがある。
         // 提示するツールが emit_delta 1 本だけなので選択肢は実質 1 つで、呼ばなかった場合は
         // GM_SYSTEM の提出行 + parse::extract のフェンス JSON フォールバックが受ける。
+        // Auto では**モデルがツールを使わない道を選べる** — 実機 (Meta) はツール定義を
+        // 見た上で content に JSON を書き、しかも schema を知らないので `ops` を配列でなく
+        // 文字列にした。ツールを提示するだけでは形は伝わらないので、Auto でも schema を
+        // prompt に載せる (Off の json_instruction とは**文面が違う** — あちらは
+        // 「このサーバはツール非対応」と言い切るので、Auto でそのまま使うとツール利用を
+        // 自分で妨げる)。末尾に積むので安定プレフィックスは動かない = キャッシュ影響なし。
+        if mode == ToolMode::Auto {
+            messages.push(wire::ChatMessage::system(tool_or_json_instruction(
+                &req.tools[0].parameters,
+            )));
+        }
         let choice = match (mode, &req.tool_choice) {
             (ToolMode::Auto, _) => Some(wire::ToolChoice::auto()),
             // v1 の利用は Specific (単一ツール強制) のみ。Auto/Required/None は送らない
@@ -209,6 +220,24 @@ pub(crate) fn decode(resp: wire::ChatResponse) -> Result<ChatResponse, LlmError>
     }
 
     Ok(ChatResponse { text: choice.message.content, tool_calls, finish, usage })
+}
+
+/// `ToolMode::Auto` 用の指示文。**ツール利用を第一に促しつつ**、使わなかった場合の形も
+/// 示す (`tool_choice` を強制できないサーバでは、モデルが content に書く道を選べるため)。
+///
+/// `ops` が配列であることを名指しするのは、実機の崩れが**まさにそこ**だったから
+/// (Meta が `"ops": "\n"` を出した — schema を知らないまま tool 定義の形を推測した結果)。
+/// `parse::fix_ops_as_string` (#40) が救済する崩れだが、**救済に頼る前に起こさせない**。
+pub(crate) fn tool_or_json_instruction(schema: &serde_json::Value) -> String {
+    format!(
+        "出力の形式について: ツール `emit_delta` が使えます。**可能な限りツール呼び出しで提出**してください。\
+        このサーバはツールの強制指定に対応していないため、ツールを使わずに本文で返す場合は、\
+        次の JSON Schema に厳密に従う JSON オブジェクトを **1つだけ** 出力し、前置き・説明・\
+        コードフェンスのラベル等を含めないでください。**`ops` は必ず配列です — 変化が無いターンは \
+        `\"ops\": []` と書き、文字列や null にしないでください。**\n\
+        JSON Schema:\n{}",
+        serde_json::to_string(schema).unwrap_or_default()
+    )
 }
 
 /// no-tools モードで「schema に従う JSON だけを出力せよ」と指示する system メッセージ本文。

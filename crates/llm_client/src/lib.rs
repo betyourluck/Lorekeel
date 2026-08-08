@@ -541,6 +541,60 @@ mod tests {
         assert_eq!(LlmConfig::new("u", "k", "m").tool_mode, ToolMode::Forced, "既定は名前指定の強制");
     }
 
+    /// 【#40 の救済は content 経路でも効く / 実機 Meta の形】ツールを強制できないサーバでは
+    /// モデルが content に JSON を書く。schema を知らないと `ops` を配列でなく文字列にする
+    /// (2026-08-08 Meta 実機 = ops が改行 1 文字の文字列)。救済は tool 経路と content 経路の
+    /// **両方**に要る。
+    #[test]
+    fn ops_as_string_is_rescued_in_content_path_too() {
+        // 実機の形をプログラムで組む (テスト側のエスケープ取り違えを排除する)。
+        let obj = serde_json::json!({ "narration": "語り", "ops": "\n" }).to_string();
+        // 素の JSON / 前後に散文 / フェンス — どの包み方でも拾う。
+        for (label, text) in [
+            ("素の JSON", obj.clone()),
+            ("後ろに散文", format!("{obj}\n\nこの後に補足を書きました。")),
+            ("前に散文", format!("以下が結果です:\n{obj}")),
+            ("フェンス", format!("```json\n{obj}\n```")),
+        ] {
+            let resp = canonical::ChatResponse {
+                text: Some(text),
+                tool_calls: Vec::new(),
+                finish: canonical::Finish::Stop,
+                usage: Default::default(),
+            };
+            let d: StateDelta = parse::extract(&resp).unwrap_or_else(|e| panic!("{label}: {e}"));
+            assert!(d.ops.is_empty(), "{label}: 空白のみの ops は空配列へ");
+            assert_eq!(d.narration, "語り", "{label}");
+        }
+    }
+
+    /// 【エラーの選び方が診断そのもの】型付きパースは前から読むので、**後ろが壊れた**応答でも
+    /// 先に見つかった型の不一致を報告してしまう。素の JSON としても読めないなら詰まっている
+    /// のは型ではなく構文 — そちらを返す。
+    ///
+    /// 旧実装は救済の失敗を `.map_err(|_| first)` で握り潰しており、画面には「ops が文字列」と
+    /// 出続けるのに実際の詰まりは別、という**恒久的に真因が見えない**状態を作っていた。
+    #[test]
+    fn truncated_output_reports_the_syntax_error_not_the_type_symptom() {
+        // narration は読めるが ops の途中で切れている (出力上限で途中終了した応答の形)。
+        // 型付きパースは ops に**先に**到達して「配列であるべき」と言うが、真の詰まりは
+        // 「本文が閉じていない」ほう。この 2 つを取り違えると調査が症状の側へ逸れる。
+        let truncated = "{\"narration\": \"長い語り\", \"ops\": \"";
+        let resp = canonical::ChatResponse {
+            text: Some(truncated.to_string()),
+            tool_calls: Vec::new(),
+            finish: canonical::Finish::Length,
+            usage: Default::default(),
+        };
+        let err = parse::extract::<StateDelta>(&resp).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("EOF") || msg.contains("eof") || msg.contains("end of input"),
+            "途中で切れたことが読める文面であること: {msg}"
+        );
+        assert!(msg.contains("--- raw ---"), "raw を再生成の燃料として保持する (#34)");
+    }
+
     /// 【ops が文字列に化ける崩れの救済 (#40)】Gemini 実プレイで観測: `"ops": "\n"` (配列で
     /// あるべき場所に文字列) を出し、パース失敗で 9 ターン中 4 ターンが丸ごと蒸発した。
     /// 決定論的に救済する — 空白のみの文字列 → 空配列、JSON 配列の二重エンコード → その配列。
@@ -1061,6 +1115,23 @@ mod tests {
                 .unwrap();
         assert_eq!(body["tool_choice"], "auto", "オブジェクト形ではなく素の文字列");
         assert_eq!(body["tools"][0]["function"]["name"], EMIT_DELTA_TOOL, "定義は残す");
+
+        // **強制できない = モデルがツールを使わない道を選べる**。実機 (Meta) はツール定義を
+        // 見た上で content に JSON を書き、schema を知らないので ops を文字列にした。
+        // ゆえに Auto では schema も prompt に載せる。ただし Off の文面 (「このサーバは
+        // ツール呼び出しに対応していません」) を流用してはならない — ツール利用を自分で妨げる。
+        let auto = openai_compat::encode(&compat_req("Llama-4-Maverick"), ToolMode::Auto);
+        let hint = &auto.messages.last().expect("指示文が積まれること").content;
+        assert!(hint.contains("JSON Schema") && hint.contains("narration"), "schema を載せる");
+        assert!(hint.contains("emit_delta"), "まずツールで提出させる: {hint}");
+        assert!(hint.contains("必ず配列"), "実機の崩れ (ops が文字列) を名指しで防ぐ: {hint}");
+        assert!(
+            !hint.contains("対応していません"),
+            "Off の文面を流用しない (ツール利用を自分で妨げる): {hint}"
+        );
+        // 末尾に積む = 安定プレフィックスは動かない (キャッシュ影響なし)。
+        assert_eq!(auto.messages[0].role, Role::System, "先頭の静的 system は不動");
+        assert_eq!(auto.messages.last().unwrap().role, Role::System);
 
         // Forced は従来どおり名前指定 (回帰なし)。
         let forced =
