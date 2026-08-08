@@ -1046,6 +1046,36 @@ mod tests {
         }
     }
 
+    /// 【中継越しでも送り分けが効く】OpenRouter 等のアグリゲータは `vendor/model` 表記を使う。
+    ///
+    /// **送り分け 3 軸のうち 2 軸はモデル名で判定する**ので、接頭辞が付いた瞬間に素通りして
+    /// 既定へ落ちる — `openai/gpt-5.6-luna` なら旧欄 `max_tokens` を送って 400 (#76)、
+    /// 思考も明示しないので併用でまた 400 (#77)。**中継を挟むと、直接なら踏まない罠を
+    /// 同じ順で踏み直す**。接頭辞が無いときの挙動は変えない (直接続の回帰なし)。
+    #[test]
+    fn send_splitting_survives_aggregator_model_prefixes() {
+        use openai_compat::{reasoning_effort as effort, uses_max_completion_tokens as new_field};
+
+        // 中継越しでも素の名前と同じ判定になること (左: 中継 / 右: 直接)。
+        for (via_relay, direct) in [
+            ("openai/gpt-5.6-luna", "gpt-5.6-luna"),
+            ("openai/o3-mini", "o3-mini"),
+            ("x-ai/grok-4.3", "grok-4.3"),
+            ("meta-llama/llama-4-maverick", "llama-4-maverick"),
+        ] {
+            assert_eq!(new_field(via_relay), new_field(direct), "欄名: {via_relay}");
+            assert_eq!(effort(via_relay, None, true), effort(direct, None, true), "思考: {via_relay}");
+        }
+        // 具体値も固定する (等値だけだと両方 false へ退行しても通ってしまう)。
+        assert!(new_field("openai/gpt-5.6-luna"), "中継越しの gpt-5 も新欄を使う");
+        assert_eq!(effort("openai/gpt-5.6-luna", None, true), Some("none"));
+        assert_eq!(effort("x-ai/grok-4.3", None, true), Some("none"));
+
+        // パス風のローカルモデル名では誤爆しない (剥がしてもどの族にも一致しない)。
+        assert!(!new_field("models/foo.gguf"));
+        assert_eq!(effort("models/foo.gguf", None, true), None);
+    }
+
     /// 【軸① 出力上限の欄名】gpt-5 系 / o 系には `max_completion_tokens`、それ以外には
     /// `max_tokens`。**ワイヤには常に片方だけ**現れる。
     ///

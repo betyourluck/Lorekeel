@@ -79,6 +79,22 @@ pub(crate) fn encode(req: &ChatRequest, mode: ToolMode) -> wire::ChatRequest {
     }
 }
 
+/// アグリゲータの `vendor/model` 表記から**素のモデル名**を取り出す (純粋)。
+///
+/// OpenRouter 等の中継は `openai/gpt-5.6-luna` / `x-ai/grok-4.3` / `meta-llama/llama-4-maverick`
+/// のように**ベンダー接頭辞**を付ける。送り分け 3 軸のうち**モデル名で判定する 2 軸**
+/// (出力上限の欄名 / reasoning_effort) は素の名前を前提に書かれているので、
+/// 接頭辞が付いた瞬間に**全部素通りして既定へ落ちる** — gpt-5 系なら旧欄 `max_tokens` を
+/// 送って 400 (#76)、思考も明示しないので併用でまた 400 (#77)、grok なら思考が
+/// max_tokens を食い潰す。**中継を挟むと、直接なら踏まない罠を踏み直す。**
+///
+/// 最後の `/` 以降を採る。区切りが無ければそのまま (直接続の既存動作は 1 バイトも変わらない)。
+/// ローカルサーバがパス風のモデル名 (`models/foo.gguf`) を使っていても、
+/// 剥がした結果がどの族にも一致しないので**害は無い** (判定が緩む方向にしか動かない)。
+fn bare_model(model: &str) -> &str {
+    model.rsplit('/').next().unwrap_or(model)
+}
+
 /// OpenAI の o 系推論モデルか (o1 / o3 / o4-mini ...)。
 fn is_o_series(model: &str) -> bool {
     model.starts_with('o') && model.chars().nth(1).is_some_and(|c| c.is_ascii_digit())
@@ -91,6 +107,7 @@ fn is_o_series(model: &str) -> bool {
 /// (llama.cpp / vLLM / gpt-oss 系) には新欄を知らないものがあり、旧欄を落とすと今度は
 /// そちらの上限が消える。`reasoning_effort` と同じくモデル名で送り分ける。
 pub(crate) fn uses_max_completion_tokens(model: &str) -> bool {
+    let model = bare_model(model);
     model.starts_with("gpt-5") || is_o_series(model)
 }
 
@@ -120,6 +137,7 @@ pub(crate) fn reasoning_effort(
     effort: Option<Effort>,
     sends_function_tools: bool,
 ) -> Option<&'static str> {
+    let model = bare_model(model);
     if model.starts_with("gpt-5") {
         return sends_function_tools.then_some("none");
     }
