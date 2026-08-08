@@ -5,21 +5,28 @@
 //! (壊れるのは ser/de なので PoC で固める)。
 
 use crate::canonical::{ChatRequest, ChatResponse, Finish, ToolCall, ToolChoice, Usage};
-use crate::config::Effort;
+use crate::config::{Effort, ToolMode};
 use crate::error::LlmError;
 use crate::wire;
 
 /// canonical → OpenAI 互換 wire。
 ///
-/// `use_tools=false` (tool_choice を実装しないサーバ #29 — さくら AI Engine / ローカル互換) は
-/// tools を送らず、schema を載せた [`json_instruction`] を **messages 末尾の system** として積む
-/// (従来 `generate_structured` にあった no-tools 分岐の移設。K4)。
-pub(crate) fn encode(req: &ChatRequest, use_tools: bool) -> wire::ChatRequest {
+/// [`ToolMode`] の三値がここで形になる:
+/// - [`Forced`](ToolMode::Forced): tools + 名前指定の `tool_choice` (既定・構造化出力の主経路)
+/// - [`Auto`](ToolMode::Auto): tools + 素の `"auto"` (Meta は他の値を 400 で拒む)
+/// - [`Off`](ToolMode::Off): tools を送らず schema を載せた [`json_instruction`] を
+///   **messages 末尾の system** として積む (#29 さくら AI Engine / ローカル互換)
+pub(crate) fn encode(req: &ChatRequest, mode: ToolMode) -> wire::ChatRequest {
     let mut messages = req.messages.clone();
     let (tools, tool_choice) = if req.tools.is_empty() {
         (Vec::new(), None)
-    } else if use_tools {
-        let tools = req
+    } else if mode == ToolMode::Off {
+        messages.push(wire::ChatMessage::system(json_instruction(
+            &req.tools[0].parameters,
+        )));
+        (Vec::new(), None)
+    } else {
+        let tools: Vec<_> = req
             .tools
             .iter()
             .map(|t| wire::Tool {
@@ -31,42 +38,83 @@ pub(crate) fn encode(req: &ChatRequest, use_tools: bool) -> wire::ChatRequest {
                 },
             })
             .collect();
-        // v1 の利用は Specific (単一ツール強制) のみ。Auto/Required は送らない (= サーバ既定)。
-        let choice = match &req.tool_choice {
-            ToolChoice::Specific(name) => Some(wire::ToolChoice::force(name.clone())),
+        // Auto では**強制せず必ず "auto"** — 名前指定も "required" も通らないサーバがある。
+        // 提示するツールが emit_delta 1 本だけなので選択肢は実質 1 つで、呼ばなかった場合は
+        // GM_SYSTEM の提出行 + parse::extract のフェンス JSON フォールバックが受ける。
+        let choice = match (mode, &req.tool_choice) {
+            (ToolMode::Auto, _) => Some(wire::ToolChoice::auto()),
+            // v1 の利用は Specific (単一ツール強制) のみ。Auto/Required/None は送らない
+            // (= サーバ既定)。
+            (_, ToolChoice::Specific(name)) => Some(wire::ToolChoice::force(name.clone())),
             _ => None,
         };
         (tools, choice)
+    };
+    // 出力上限は常に片方の欄だけで送る (欄名の選択は uses_max_completion_tokens)。
+    let (max_tokens, max_completion_tokens) = if uses_max_completion_tokens(&req.model) {
+        (None, Some(req.max_tokens))
     } else {
-        messages.push(wire::ChatMessage::system(json_instruction(
-            &req.tools[0].parameters,
-        )));
-        (Vec::new(), None)
+        (Some(req.max_tokens), None)
     };
     wire::ChatRequest {
         model: req.model.clone(),
         messages,
         temperature: req.temperature,
-        max_tokens: req.max_tokens,
+        max_tokens,
+        max_completion_tokens,
+        reasoning_effort: reasoning_effort(&req.model, req.effort, !tools.is_empty()),
         tools,
         tool_choice,
-        reasoning_effort: grok_reasoning_effort(&req.model, req.effort),
     }
 }
 
-/// Grok の `reasoning_effort` を決める (spec 12 Phase D、純粋)。
+/// OpenAI の o 系推論モデルか (o1 / o3 / o4-mini ...)。
+fn is_o_series(model: &str) -> bool {
+    model.starts_with('o') && model.chars().nth(1).is_some_and(|c| c.is_ascii_digit())
+}
+
+/// 出力上限をどちらの欄名で送るかを決める (純粋)。
 ///
-/// 対象は grok-4.3 / grok-4.5 のみ (それ以外 = grok-4-1-fast 系や他プロバイダには送らない)。
-/// **対象モデルには既定で送る (opt-out)** — 未送出だと xAI 側の既定
-/// (4.3 = reasoning-first 常時思考・既定 low / 4.5 = 既定 high・無効化不可) が適用され、
-/// GM 用途 (毎ターン 1 往復・思考+本文は max_tokens の合算) では空デルタ/タイムアウトの
-/// 真因になる (grok-4.3 実測、上流 repo も同じ理由で明示上書きしている)。
-/// - 未設定 (LLM_EFFORT なし): grok-4.3 → `none` / grok-4.5 → `low` (`none` は 4.3 のみ許可)
-/// - LLM_EFFORT 明示: low/medium/high はそのまま、xhigh/max は Grok 未対応ゆえ `high` へ丸める
-pub(crate) fn grok_reasoning_effort(model: &str, effort: Option<Effort>) -> Option<&'static str> {
+/// gpt-5 系と o 系は思考トークンを含めて上限を管理する方式へ移っており、旧欄 `max_tokens` を
+/// 送ると 400 `unsupported_parameter` で拒否する。**全面置換にしない** — 互換サーバ
+/// (llama.cpp / vLLM / gpt-oss 系) には新欄を知らないものがあり、旧欄を落とすと今度は
+/// そちらの上限が消える。`reasoning_effort` と同じくモデル名で送り分ける。
+pub(crate) fn uses_max_completion_tokens(model: &str) -> bool {
+    model.starts_with("gpt-5") || is_o_series(model)
+}
+
+/// `reasoning_effort` を送るかどうかと、その値を決める (純粋)。
+///
+/// **推論制御を持つモデルにだけ送る** — 他モデルへ送るとキーを解釈できず 400 になる。
+///
+/// `sends_function_tools` は**この周で `tools` を実際に送るか**。gpt-5 系は
+/// `/v1/chat/completions` で「function tools と思考の併用」を拒むため、その周だけ
+/// `"none"` で固定する (下の分岐)。
+///
+/// - **gpt-5 系 + tools**: `"none"` を**明示**する。**キーを省いても回避できない** —
+///   省くとサーバ側の既定の思考が効き、同じ 400 (`Function tools with reasoning_effort
+///   are not supported`) になる。エラー本文が挙げる逃げ道 2 つのうち「`/v1/responses` へ
+///   移る」は Chat Completions とは別 API でワイヤをもう 1 本持つことになるので採らない。
+///   **tools を送らない周では触らない** — 制約は併用に掛かっており思考自体ではないので、
+///   一律に止めるとツール無しの生成 (あらすじ要約等) の思考まで殺す。
+/// - **Grok (4.3 / 4.5)**: 対象モデルには既定で送る (opt-out)。未送出だと xAI 側の既定
+///   (4.3 = 常時思考 / 4.5 = high) が適用され、思考が max_tokens (合算上限) を食い潰して
+///   空デルタ/タイムアウトになる (grok-4.3 実測、spec 12 Phase D)。
+/// - **o 系**: 未設定なら `low`。
+/// - それ以外 (grok-4-1-fast 系・gpt-4o・ローカル互換): 送らない。
+///
+/// LLM_EFFORT 明示は尊重し、xhigh/max は未対応プロバイダ向けに `high` へ丸める。
+pub(crate) fn reasoning_effort(
+    model: &str,
+    effort: Option<Effort>,
+    sends_function_tools: bool,
+) -> Option<&'static str> {
+    if model.starts_with("gpt-5") {
+        return sends_function_tools.then_some("none");
+    }
     let is_43 = model.starts_with("grok-4.3");
     let is_45 = model.starts_with("grok-4.5");
-    if !is_43 && !is_45 {
+    if !is_43 && !is_45 && !is_o_series(model) {
         return None;
     }
     Some(match effort {
@@ -83,18 +131,38 @@ pub(crate) fn grok_reasoning_effort(model: &str, effort: Option<Effort>) -> Opti
     })
 }
 
-/// empty-response 防御 (spec 12 Phase D・rev4 Should c で凍結した判定条件)。
+/// 出力上限で何も成立しなかった応答の検出 (spec 12 Phase D・rev4 Should c の判定条件を継承)。
 ///
-/// **text 空 かつ tool_calls 空 かつ finish == Length** = 推論モデルが budget を全部思考に
-/// 使い切った空応答 (OpenRouter パターン) → [`LlmError::EmptyResponse`] を返し、呼び出し側の
-/// リトライループ (一過性扱い) で再抽選に乗せる。length 以外の空 (通常の空応答) はここでは
-/// 弾かない — 従来どおり generate / extract が非リトライで surface する。
-pub(crate) fn reject_empty_reasoning(resp: ChatResponse) -> Result<ChatResponse, LlmError> {
+/// **text 空 かつ tool_calls 空 かつ finish == Length** のときだけ
+/// [`LlmError::OutputTruncated`] にする。原因は 2 通り — 推論モデルが budget を全部思考に
+/// 使い切った場合と、生成物 (長い narration・大きな ops 配列) が上限で切れた場合。
+///
+/// **どちらも同じ入力なら同じ所で切れる**ので、以前のように `EmptyResponse` へ畳んで
+/// 一過性 (再抽選) に乗せない — バックオフと課金だけが増え、画面には「空の応答」としか
+/// 出ないので受領者が上限に当たったことに辿り着けない。`limit` を載せるのは、次の一手が
+/// 「LLM_MAX_TOKENS をいくつまで上げるか」だから (現在値が分からないと上げ幅を決められない)。
+///
+/// length 以外の空 (通常の空応答) はここでは弾かない — 従来どおり generate / extract が surface。
+pub(crate) fn reject_empty_reasoning(
+    resp: ChatResponse,
+    limit: u32,
+) -> Result<ChatResponse, LlmError> {
     let text_empty = resp.text.as_deref().map_or(true, |t| t.trim().is_empty());
     if text_empty && resp.tool_calls.is_empty() && resp.finish == Finish::Length {
-        return Err(LlmError::EmptyResponse);
+        return Err(LlmError::OutputTruncated { limit });
     }
     Ok(resp)
+}
+
+/// 400 の本文が `tool_choice` を名指ししているか (純粋)。
+///
+/// Meta は `only "auto" is supported for \`tool_choice\`. "none", "required", and named
+/// function choices are not currently supported` と返す (`param: "tool_choice"`)。
+/// **本文とパラメータ名の両方を見ない** — 互換サーバはエラー JSON の形が揃っておらず、
+/// `param` を持たないものがあるので、部分文字列一致のほうが射程が広い。
+/// 誤検知しても代償は「一段降格して 1 回再送する」だけで、降格先でも通れば実害はない。
+pub(crate) fn blames_tool_choice(body: &str) -> bool {
+    body.to_ascii_lowercase().contains("tool_choice")
 }
 
 /// OpenAI 互換 wire → canonical。

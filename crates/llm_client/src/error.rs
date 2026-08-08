@@ -23,12 +23,22 @@ pub enum LlmError {
     #[error("API エラー (status={status}): {body}")]
     Api { status: u16, body: String },
 
-    /// 応答が空。二つの発生源がある:
-    /// - 推論モデルが budget を全部思考に使い切った空応答 (finish=length、spec 12 Phase D) —
-    ///   リトライループの中で発生し、一過性として再抽選に乗る
-    /// - 通常の空応答 (`generate` の text 空) — ループの外で発生し、そのまま呼び出し側へ
+    /// 応答が空 (`generate` の text 空など、理由が length 以外)。再抽選で回復しうるので一過性。
     #[error("LLM が空の応答を返した")]
     EmptyResponse,
+
+    /// **出力上限に達して、narration も ops も成立しなかった** (finish=length)。
+    ///
+    /// 原因は 2 通りが同じワイヤ形になる — (a) 推論モデルが出力予算を思考に使い切った
+    /// (b) 生成物が上限で切れた。**どちらも同じ入力なら同じ所で切れる**ので**非一過性**
+    /// (2026-08-08 に `EmptyResponse` から分離。畳んでいた頃はリトライがバックオフと課金だけを
+    /// 増やし、画面には「空の応答」としか出ず受領者が上限に辿り着けなかった)。
+    /// `limit` を載せるのは、次の一手が「`LLM_MAX_TOKENS` をいくつまで上げるか」だから。
+    #[error(
+        "出力上限に達し応答が途中で切れた ({limit} トークン) — LLM_MAX_TOKENS を上げてください\
+         (推論モデルは思考+本文の合算上限なので 16000 以上が目安)"
+    )]
+    OutputTruncated { limit: u32 },
 
     /// プロバイダが応答をブロックした (Gemini は安全フィルタ/規約でも **200 + 空応答**で
     /// 返すため、理由を捨てると一律「空の応答」になり診断不能 — あらすじ要約の恒久失敗の真因
@@ -65,8 +75,9 @@ impl From<reqwest::Error> for LlmError {
 }
 
 impl LlmError {
-    /// 一過性 (リトライで回復しうる) か。HTTP 障害と 5xx / 429、および推論モデルの
-    /// 空応答 (spec 12 Phase D — 思考の再抽選で回復しうる) を対象とする。
+    /// 一過性 (リトライで回復しうる) か。HTTP 障害と 5xx / 429、および理由不明の空応答
+    /// (再抽選で回復しうる) を対象とする。**`OutputTruncated` は含めない** — 上限は入力に
+    /// 対して決定的で、再送すれば同じ所で切れる。
     pub fn is_transient(&self) -> bool {
         match self {
             LlmError::Http { source, .. } => {

@@ -56,6 +56,74 @@ impl Provider {
     }
 }
 
+/// ツール呼び出しの強さ。**能力の一軸** (`Forced` > `Auto` > `Off`) —
+/// OpenAI 互換を名乗るサーバは `tool_choice` の実装範囲で三通りに割れる:
+///
+/// | 実態 | 例 | この enum |
+/// |---|---|---|
+/// | 名前指定の強制が通る | OpenAI / Grok / さくら以外の大半 | [`Forced`](Self::Forced) |
+/// | tools は通るが `tool_choice` は `"auto"` のみ | **Meta (api.llama.com)** | [`Auto`](Self::Auto) |
+/// | tools 自体を送れない | さくら AI Engine / ローカル互換 (#29) | [`Off`](Self::Off) |
+///
+/// 従来の `use_tools: bool` は下二つを同一視しており、Meta のような中間のサーバを
+/// no-tools へ**過剰に降格**させていた (実測 narration 量 tool-use = no-tools の 1.60× ゆえ
+/// 品質のダウングレード)。**`tool_choice` の実装範囲はワイヤ層の恒常的な仕事**で、
+/// `max_tokens` の欄名や `reasoning_effort` の送り分けと同じ形の三例目 (failures #76)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolMode {
+    /// tools を送らない。schema を載せた JSON 指示を system に積み content から拾う (#29)。
+    Off,
+    /// tools は送るが `tool_choice` は素の `"auto"`。**強制が接地に降格する** —
+    /// 提示するツールが `emit_delta` 1 本だけであること・GM_SYSTEM の提出行が mode 非依存で
+    /// あること・`parse::extract` のフェンス JSON フォールバックの三枚が受け皿になる。
+    Auto,
+    /// `{"type":"function","function":{"name":...}}` で名前指定の強制 (既定)。
+    Forced,
+}
+
+impl ToolMode {
+    /// base_url からの自動判定 ([`Provider::detect`] と同じ思想 = 受領者ゼロ設定)。
+    ///
+    /// Meta の Llama API は `tool_choice` が `"auto"` 一値しか通らない
+    /// (`only "auto" is supported for tool_choice` — 2026-08-08 実機 400)。
+    /// **モデル名でなくホストで判定する** — 拒否はサーバ側の実装範囲であって
+    /// モデルの性質ではなく、同じ Meta モデルでも OpenRouter 等の中継越しなら
+    /// 名前指定が通る (モデル名判定は偽陽性を作る)。
+    pub fn detect(base_url: &str) -> Self {
+        if base_url.contains("api.llama.com") {
+            ToolMode::Auto
+        } else {
+            ToolMode::Forced
+        }
+    }
+
+    /// 400 を受けたときの一段の降格先。`Forced → Auto → Off` で、`Off` が底。
+    /// 底まで落ちれば tools を送らないので `tool_choice` 起因の 400 は構造的に起きない。
+    pub(crate) fn downgrade(self) -> Option<Self> {
+        match self {
+            ToolMode::Forced => Some(ToolMode::Auto),
+            ToolMode::Auto => Some(ToolMode::Off),
+            ToolMode::Off => None,
+        }
+    }
+
+    /// `LLM_TOOL_MODE` の値をパースする (純粋)。
+    ///
+    /// 値語彙は `forced` / `auto` / `off`。**`off` を `none` と呼ばない**のは、
+    /// ワイヤの `tool_choice: "none"` (ツールを見せるが使わせない) と意味が違うため —
+    /// こちらは tools ごと送らない。互換のため `none` も受けるが正は `off`。
+    fn parse_env(raw: &str, var: &str) -> Result<Self, LlmError> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "forced" | "force" | "named" => Ok(ToolMode::Forced),
+            "auto" => Ok(ToolMode::Auto),
+            "off" | "none" | "false" | "0" => Ok(ToolMode::Off),
+            other => Err(LlmError::Config(format!(
+                "環境変数 {var} の値 '{other}' を解釈できません (forced / auto / off)"
+            ))),
+        }
+    }
+}
+
 /// 推論の深さ (spec 12 Phase B)。Claude は `thinking: adaptive` + `output_config.effort`、
 /// Grok (Phase D) は `reasoning_effort` へ写す — canonical の語彙は一つ、方言は adapter が持つ。
 ///
@@ -111,11 +179,12 @@ pub struct LlmConfig {
     pub request_timeout: Duration,
     /// chat 呼び出しの最大試行回数 (指数 backoff)。tenacity `stop_after_attempt` 同型。
     pub max_retries: u32,
-    /// tool-use (function calling) を使うか。`true`=`tool_choice` 強制で構造化出力 (OpenAI/Anthropic)。
-    /// `false`=tools を送らず prompt で JSON 出力を指示し content から拾う (tool_choice 非対応の
-    /// さくら AI Engine / ローカル OpenAI 互換サーバ向け)。`LLM_USE_TOOLS=false` で切替。既定 true。
-    /// **`Provider::Anthropic` では無視** (ネイティブ経路は常に tool-use)。
-    pub use_tools: bool,
+    /// ツール呼び出しの強さ (三値)。判定は優先順に `LLM_TOOL_MODE` 明示 →
+    /// `LLM_USE_TOOLS=false` (→`Off`) → base_url からの自動判定 ([`ToolMode::detect`])。
+    /// 実行時に `tool_choice` 起因の 400 を受けたら [`crate::LlmClient`] が一段降格して
+    /// latch する (未知ホストの受け皿)。
+    /// **`Provider::Anthropic` / `Provider::Gemini` では無視** (ネイティブ経路は常に tool-use)。
+    pub tool_mode: ToolMode,
     /// ワイヤプロトコル。`LLM_PROVIDER` (anthropic|openai) 明示、未設定なら base_url から自動判定。
     pub provider: Provider,
     /// 推論の深さ (`LLM_EFFORT`、spec 12 Phase B)。**None なら送らない** (opt-in・現行動作)。
@@ -176,6 +245,13 @@ impl LlmConfig {
             Some(raw) => Some(Effort::parse(&raw)?),
         };
 
+        // 明示 (LLM_TOOL_MODE) > 旧キー (LLM_USE_TOOLS=false → Off) > 自動判定 (base_url)。
+        let tool_mode = resolve_tool_mode(
+            env_opt("LLM_TOOL_MODE"),
+            env_opt("LLM_USE_TOOLS"),
+            &base_url,
+        )?;
+
         let config = Self {
             base_url,
             api_key,
@@ -184,10 +260,7 @@ impl LlmConfig {
             max_tokens: env_parse("LLM_MAX_TOKENS", 4096)?,
             request_timeout: Duration::from_secs(env_parse("LLM_REQUEST_TIMEOUT_SECS", 120)?),
             max_retries: env_parse("LLM_MAX_RETRIES", 3)?,
-            // 既定 true。"false"/"0"/"no"/"off" のみ false (tool 非対応サーバ向け)。
-            use_tools: env_opt("LLM_USE_TOOLS")
-                .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "false" | "0" | "no" | "off"))
-                .unwrap_or(true),
+            tool_mode,
             provider,
             effort,
             // spec 13: Gemini 明示キャッシュ (既定 on、Gemini 以外では無視)。
@@ -261,6 +334,14 @@ impl LlmConfig {
             None => Provider::detect(&effective_url),
             Some(raw) => Provider::parse_env(&raw, "SUMMARY_LLM_PROVIDER")?,
         };
+        // tool_mode が答えるのは「**この接続先**は tool_choice をどこまで受けるか」なので、
+        // 実効 url が本体と同じなら答えも同じ = そのまま継ぐ (LLM_TOOL_MODE の明示や
+        // LLM_USE_TOOLS=false を黙って捨てない)。url が変われば provider と同じ理由で再判定する。
+        let tool_mode = if effective_url == base.base_url {
+            base.tool_mode
+        } else {
+            ToolMode::detect(&effective_url)
+        };
         Ok(Some(Self {
             base_url: effective_url,
             api_key: api_key.unwrap_or_else(|| base.api_key.clone()),
@@ -269,7 +350,9 @@ impl LlmConfig {
             max_tokens: base.max_tokens,
             request_timeout: base.request_timeout,
             max_retries: base.max_retries,
-            use_tools: base.use_tools,
+            // provider と同じ理由で **実効 base_url から再判定** — url が変われば
+            // tool_choice の実装範囲も変わる (要約だけ別プロバイダに投げる構成が壊れない)。
+            tool_mode,
             provider,
             // 要約は安い/速い設定が目的 — GM の effort は継がない (深い思考は要約に不要)。
             effort: None,
@@ -284,6 +367,7 @@ impl LlmConfig {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>, model: impl Into<String>) -> Self {
         let base_url = base_url.into();
         let provider = Provider::detect(&base_url);
+        let tool_mode = ToolMode::detect(&base_url);
         Self {
             base_url,
             api_key: api_key.into(),
@@ -292,7 +376,7 @@ impl LlmConfig {
             max_tokens: 4096,
             request_timeout: Duration::from_secs(120),
             max_retries: 3,
-            use_tools: true,
+            tool_mode,
             provider,
             effort: None,
             gemini_cache_enabled: true,
@@ -333,6 +417,27 @@ impl LlmConfig {
             format!("{base}/v1beta/cachedContents")
         }
     }
+}
+
+/// [`ToolMode`] の決定 (純粋・テスト可)。優先順は **明示 > 旧キー > 自動判定**:
+///
+/// 1. `LLM_TOOL_MODE` — 誤値は起動時に弾く (ネットワーク前)
+/// 2. `LLM_USE_TOOLS` — **false 系だけを見る**。旧キーの `true` は「tools を使う」の意味しか
+///    持たず、名前指定が通るかどうかは言っていないので、自動判定に委ねる (既存 .env が
+///    `LLM_USE_TOOLS=true` のまま Meta を指しても正しく `Auto` に落ちる)
+/// 3. base_url からの自動判定 ([`ToolMode::detect`])
+pub(crate) fn resolve_tool_mode(
+    tool_mode: Option<String>,
+    use_tools: Option<String>,
+    base_url: &str,
+) -> Result<ToolMode, LlmError> {
+    if let Some(raw) = tool_mode {
+        return ToolMode::parse_env(&raw, "LLM_TOOL_MODE");
+    }
+    let disabled = use_tools.is_some_and(|v| {
+        matches!(v.trim().to_ascii_lowercase().as_str(), "false" | "0" | "no" | "off")
+    });
+    Ok(if disabled { ToolMode::Off } else { ToolMode::detect(base_url) })
 }
 
 fn env_opt(key: &str) -> Option<String> {

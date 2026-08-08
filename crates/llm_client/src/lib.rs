@@ -23,7 +23,7 @@ mod parse;
 mod wire;
 
 pub use client::{CachePoint, CacheStat, LlmClient};
-pub use config::{Effort, LlmConfig, Provider};
+pub use config::{Effort, LlmConfig, Provider, ToolMode};
 pub use error::LlmError;
 pub use parse::strip_reasoning_blocks;
 pub use wire::{ChatMessage, Role};
@@ -225,6 +225,24 @@ mod tests {
             .unwrap();
         assert_eq!(local.provider, Provider::OpenAiCompat, "実効 url から再判定");
 
+        // tool_mode も同じ規律 — url が同じなら継ぎ (明示設定を黙って捨てない)、変われば再判定。
+        let mut meta_base = LlmConfig::new("https://api.llama.com/compat/v1", "k", "Llama-4");
+        assert_eq!(meta_base.tool_mode, ToolMode::Auto, "Meta は自動判定で Auto");
+        let same_url = LlmConfig::summary_overrides(&meta_base, None, None, Some("Llama-3".into()), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(same_url.tool_mode, ToolMode::Auto, "同じ接続先なら答えも同じ");
+        meta_base.tool_mode = ToolMode::Off; // 受領者が LLM_USE_TOOLS=false を明示した状態
+        let kept = LlmConfig::summary_overrides(&meta_base, None, None, Some("Llama-3".into()), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept.tool_mode, ToolMode::Off, "明示設定を黙って捨てない");
+        let moved = LlmConfig::summary_overrides(
+            &meta_base, Some("https://api.openai.com/v1".into()), None, Some("gpt-4o-mini".into()), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(moved.tool_mode, ToolMode::Forced, "url が変われば再判定");
+
         // provider 明示は自動判定に勝つ / 不正値は Err。
         let forced = LlmConfig::summary_overrides(
             &base, Some("http://proxy.example/v1".into()), None, Some("m".into()),
@@ -367,7 +385,8 @@ mod tests {
             model: "m".into(),
             messages: user_msgs(),
             temperature: Some(0.1),
-            max_tokens: 256,
+            max_tokens: Some(256),
+            max_completion_tokens: None,
             tools: vec![wire::Tool {
                 kind: wire::ToolKind::Function,
                 function: wire::FunctionDef {
@@ -393,7 +412,8 @@ mod tests {
             model: "m".into(),
             messages: user_msgs(),
             temperature: None,
-            max_tokens: 256,
+            max_tokens: Some(256),
+            max_completion_tokens: None,
             tools: vec![],
             tool_choice: None,
             reasoning_effort: None,
@@ -518,7 +538,7 @@ mod tests {
     /// 【既定 tool-use】LlmConfig::new / 未設定時は use_tools=true (OpenAI/Anthropic 既定経路)。
     #[test]
     fn config_defaults_to_tool_use() {
-        assert!(LlmConfig::new("u", "k", "m").use_tools, "既定は tool-use ON");
+        assert_eq!(LlmConfig::new("u", "k", "m").tool_mode, ToolMode::Forced, "既定は名前指定の強制");
     }
 
     /// 【ops が文字列に化ける崩れの救済 (#40)】Gemini 実プレイで観測: `"ops": "\n"` (配列で
@@ -793,13 +813,13 @@ mod tests {
             effort: None,
         };
 
-        let with_tools = openai_compat::encode(&req, true);
+        let with_tools = openai_compat::encode(&req, ToolMode::Forced);
         let body = serde_json::to_value(&with_tools).unwrap();
         assert_eq!(body["tools"][0]["function"]["name"], EMIT_DELTA_TOOL);
         assert_eq!(body["tool_choice"]["function"]["name"], EMIT_DELTA_TOOL);
         assert_eq!(with_tools.messages.len(), 2, "tool-use では指示メッセージを足さない");
 
-        let no_tools = openai_compat::encode(&req, false);
+        let no_tools = openai_compat::encode(&req, ToolMode::Off);
         let nbody = serde_json::to_value(&no_tools).unwrap();
         assert!(nbody.get("tools").is_none(), "no-tools では tools を送らない");
         assert!(nbody.get("tool_choice").is_none());
@@ -914,16 +934,16 @@ mod tests {
     /// 非対象 (fast 系/他モデル) には送らない。
     #[test]
     fn grok_reasoning_effort_defaults_and_clamps() {
-        use openai_compat::grok_reasoning_effort as f;
+        use openai_compat::reasoning_effort as f;
         // 既定 (LLM_EFFORT なし): 対象モデルにだけ明示送出。
-        assert_eq!(f("grok-4.3", None), Some("none"), "4.3 は none (常時思考を切る)");
-        assert_eq!(f("grok-4.5", None), Some("low"), "4.5 は low (none 不可)");
-        assert_eq!(f("grok-4-1-fast-non-reasoning", None), None, "fast 系には送らない");
-        assert_eq!(f("gpt-4o-mini", None), None, "他モデルには送らない");
+        assert_eq!(f("grok-4.3", None, true), Some("none"), "4.3 は none (常時思考を切る)");
+        assert_eq!(f("grok-4.5", None, true), Some("low"), "4.5 は low (none 不可)");
+        assert_eq!(f("grok-4-1-fast-non-reasoning", None, true), None, "fast 系には送らない");
+        assert_eq!(f("gpt-4o-mini", None, true), None, "他モデルには送らない");
         // LLM_EFFORT 明示は尊重、Grok の語彙 (low/medium/high) へ丸める。
-        assert_eq!(f("grok-4.3", Some(Effort::Medium)), Some("medium"));
-        assert_eq!(f("grok-4.5", Some(Effort::XHigh)), Some("high"), "xhigh は high へ丸め");
-        assert_eq!(f("grok-4.5", Some(Effort::Max)), Some("high"));
+        assert_eq!(f("grok-4.3", Some(Effort::Medium), true), Some("medium"));
+        assert_eq!(f("grok-4.5", Some(Effort::XHigh), true), Some("high"), "xhigh は high へ丸め");
+        assert_eq!(f("grok-4.5", Some(Effort::Max), true), Some("high"));
 
         // encode 経由でも wire に載る (対象モデルのみ)。
         let mut req = canonical::ChatRequest {
@@ -939,26 +959,191 @@ mod tests {
             max_tokens: 4096,
             effort: None,
         };
-        let body = serde_json::to_value(openai_compat::encode(&req, true)).unwrap();
+        let body = serde_json::to_value(openai_compat::encode(&req, ToolMode::Forced)).unwrap();
         assert_eq!(body["reasoning_effort"], "none");
         req.model = "gpt-4o-mini".into();
-        let body = serde_json::to_value(openai_compat::encode(&req, true)).unwrap();
+        let body = serde_json::to_value(openai_compat::encode(&req, ToolMode::Forced)).unwrap();
         assert!(body.get("reasoning_effort").is_none(), "非対象にはキーごと送らない");
     }
 
-    /// 【Phase D empty-response 防御】text 空 ∧ tool_calls 空 ∧ finish==length (= 推論モデルが
-    /// budget を全部思考に使い切った) だけを EmptyResponse (一過性) として再抽選に乗せる。
+    // --- プロバイダ別の送り分け 3 軸 (2026-08-08) --------------------------------------
+    //
+    // OpenAI 互換は「メッセージの形」の互換であって「パラメータの寿命・実装範囲」ではない。
+    // 同じ encode の中に、モデル名/ホストで割れる軸が 3 本ある:
+    //   ① 出力上限の**欄名** (gpt-5/o 系は max_completion_tokens)
+    //   ② reasoning_effort の**明示** (gpt-5 + tools は "none" を送らないと 400)
+    //   ③ tool_choice の**実装範囲** (Meta は "auto" 一値のみ)
+    // 3 本とも「ワイヤに何が現れるか」で凍結する。
+
+    /// テスト用の canonical リクエスト (単一ツール強制 = 本番の構造化出力と同形)。
+    fn compat_req(model: &str) -> canonical::ChatRequest {
+        canonical::ChatRequest {
+            model: model.into(),
+            messages: user_msgs(),
+            tools: vec![canonical::ToolSpec {
+                name: EMIT_DELTA_TOOL.into(),
+                description: "d".into(),
+                parameters: state_delta_schema(),
+            }],
+            tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
+            temperature: None,
+            max_tokens: 4096,
+            effort: None,
+        }
+    }
+
+    /// 【軸① 出力上限の欄名】gpt-5 系 / o 系には `max_completion_tokens`、それ以外には
+    /// `max_tokens`。**ワイヤには常に片方だけ**現れる。
+    ///
+    /// 旧欄は gpt-5 系 / o 系が 400 (`Unsupported parameter: 'max_tokens' is not supported
+    /// with this model. Use 'max_completion_tokens' instead.`) で拒否し、新欄は知らない互換
+    /// サーバ (llama.cpp / vLLM / gpt-oss / さくら) がある — **全面置換はできない**。
+    #[test]
+    fn token_limit_field_splits_by_model_family() {
+        for reasoning in ["gpt-5.6-luna", "gpt-5.6-terra", "o3-mini"] {
+            let body =
+                serde_json::to_value(openai_compat::encode(&compat_req(reasoning), ToolMode::Forced))
+                    .unwrap();
+            assert_eq!(body["max_completion_tokens"], 4096, "{reasoning}");
+            assert!(body.get("max_tokens").is_none(), "{reasoning}: 旧欄は 400 になる");
+        }
+        for legacy in ["gpt-4o-mini", "grok-4.3", "gpt-oss-120b", "Llama-4-Maverick"] {
+            let body =
+                serde_json::to_value(openai_compat::encode(&compat_req(legacy), ToolMode::Forced))
+                    .unwrap();
+            assert_eq!(body["max_tokens"], 4096, "{legacy}");
+            assert!(
+                body.get("max_completion_tokens").is_none(),
+                "{legacy}: 新欄を知らない互換サーバが落ちる"
+            );
+        }
+    }
+
+    /// 【軸② gpt-5 の思考】ツールを送る周だけ `reasoning_effort: "none"` を**明示**する。
+    ///
+    /// **キーを省いても回避できない** — 省くとサーバ側の既定の思考が効き、
+    /// `Function tools with reasoning_effort are not supported ... in /v1/chat/completions`
+    /// で 400 になる (「黙っていることは値を決めていないことではない」)。
+    /// **ツールを送らない周では触らない** — 制約は併用に掛かっており思考自体ではないので、
+    /// 一律に止めるとツール無しの生成 (あらすじ要約) の思考まで殺す。
+    #[test]
+    fn gpt5_pins_effort_to_none_only_on_rounds_that_send_tools() {
+        let mut req = compat_req("gpt-5.6-luna");
+        req.effort = Some(Effort::High); // 利用者が段階を選んでいても、併用は許されない
+        let body = serde_json::to_value(openai_compat::encode(&req, ToolMode::Forced)).unwrap();
+        assert_eq!(body["tools"][0]["function"]["name"], EMIT_DELTA_TOOL);
+        assert_eq!(body["reasoning_effort"], "none");
+
+        // tools 無し (generate / あらすじ要約) では触らない = サーバ既定の思考を使う。
+        req.tools.clear();
+        let body = serde_json::to_value(openai_compat::encode(&req, ToolMode::Forced)).unwrap();
+        assert!(body.get("tools").is_none());
+        assert!(body.get("reasoning_effort").is_none(), "併用でなければ思考を殺さない");
+
+        // ToolMode::Off (tools を送らない #29 経路) も同じ — ツールを送らないので触らない。
+        let body = serde_json::to_value(openai_compat::encode(&compat_req("gpt-5.6-luna"), ToolMode::Off))
+            .unwrap();
+        assert!(body.get("reasoning_effort").is_none(), "no-tools 経路でも併用ではない");
+    }
+
+    /// 【軸③ tool_choice の実装範囲】`ToolMode::Auto` は**素の `"auto"`** を送り tools は残す。
+    ///
+    /// Meta (api.llama.com) は `only "auto" is supported for tool_choice. "none", "required",
+    /// and named function choices are not currently supported` と名指しで 400 を返す
+    /// (2026-08-08 実機)。強制が接地に降格するが、①提示するツールが emit_delta 1 本だけ
+    /// ②GM_SYSTEM の提出行が mode 非依存 ③`parse::extract` のフェンス JSON フォールバック
+    /// の三枚が受け皿になる。**`Off` へ落とすのは過剰** (実測 narration 量 tool-use = no-tools
+    /// の 1.60× ＝ 品質のダウングレード)。
+    #[test]
+    fn auto_tool_mode_sends_bare_auto_and_keeps_the_tool() {
+        let body =
+            serde_json::to_value(openai_compat::encode(&compat_req("Llama-4-Maverick"), ToolMode::Auto))
+                .unwrap();
+        assert_eq!(body["tool_choice"], "auto", "オブジェクト形ではなく素の文字列");
+        assert_eq!(body["tools"][0]["function"]["name"], EMIT_DELTA_TOOL, "定義は残す");
+
+        // Forced は従来どおり名前指定 (回帰なし)。
+        let forced =
+            serde_json::to_value(openai_compat::encode(&compat_req("gpt-4o-mini"), ToolMode::Forced))
+                .unwrap();
+        assert_eq!(forced["tool_choice"]["type"], "function");
+        assert_eq!(forced["tool_choice"]["function"]["name"], EMIT_DELTA_TOOL);
+
+        // ツールを持たない generate では Auto でも tool_choice を送らない (送る相手がいない)。
+        let mut plain = compat_req("Llama-4-Maverick");
+        plain.tools.clear();
+        let body = serde_json::to_value(openai_compat::encode(&plain, ToolMode::Auto)).unwrap();
+        assert!(body.get("tool_choice").is_none());
+    }
+
+    /// 【ToolMode の決定】明示 (`LLM_TOOL_MODE`) > 旧キー (`LLM_USE_TOOLS=false`) > base_url 自動。
+    ///
+    /// **旧キーの `true` は自動判定を上書きしない** — あれは「tools を使う」の意味しか持たず
+    /// 名前指定が通るかは言っていない。既存 .env が `LLM_USE_TOOLS=true` のまま Meta を指しても
+    /// 正しく `Auto` に落ちる (受領者が設定を書き換えずに済む)。
+    #[test]
+    fn tool_mode_resolution_prefers_explicit_then_legacy_then_host() {
+        use config::resolve_tool_mode as r;
+        let meta = "https://api.llama.com/compat/v1";
+        let openai = "https://api.openai.com/v1";
+
+        // 自動判定: ホストで割る (モデル名では割らない — 拒否はサーバの実装範囲であって
+        // モデルの性質ではなく、中継越しの同じモデルでは名前指定が通る)。
+        assert_eq!(r(None, None, meta).unwrap(), ToolMode::Auto);
+        assert_eq!(r(None, None, openai).unwrap(), ToolMode::Forced);
+        assert_eq!(r(None, None, "http://localhost:8080/v1").unwrap(), ToolMode::Forced);
+
+        // 旧キー: false 系だけを見る。true は自動判定に委ねる。
+        assert_eq!(r(None, Some("false".into()), openai).unwrap(), ToolMode::Off);
+        assert_eq!(r(None, Some("off".into()), openai).unwrap(), ToolMode::Off);
+        assert_eq!(r(None, Some("true".into()), meta).unwrap(), ToolMode::Auto, "true は上書きしない");
+
+        // 明示は両方に勝つ。誤値は起動時に弾く (ネットワーク前)。
+        assert_eq!(r(Some("forced".into()), Some("false".into()), meta).unwrap(), ToolMode::Forced);
+        assert_eq!(r(Some("auto".into()), None, openai).unwrap(), ToolMode::Auto);
+        assert_eq!(r(Some("off".into()), None, openai).unwrap(), ToolMode::Off);
+        assert!(r(Some("required".into()), None, openai).is_err(), "語彙外は Config エラー");
+    }
+
+    /// 【400 からの自己降格】`tool_choice` を名指しした 400 で一段降格する (`Forced→Auto→Off`)。
+    ///
+    /// ホスト名の自動判定は**既知の口しか救えない** — 中継や自前プロキシ越しの Meta は
+    /// base_url から判別できないので、実際の拒否から学ぶ経路を残す。判定を部分文字列一致に
+    /// するのは互換サーバのエラー JSON の形が揃っていないため (`param` を持たないものがある)。
+    /// 誤検知の代償は「一段降格して 1 回再送する」だけ。
+    #[test]
+    fn tool_choice_rejection_walks_down_the_capability_ladder() {
+        // 実機の 400 本文 (2026-08-08)。
+        let meta_400 = r#"{"error":{"code":null,"message":"only \"auto\" is supported for `tool_choice`. \"none\", \"required\", and named function choices are not currently supported","param":"tool_choice","type":"invalid_request_error"}}"#;
+        assert!(openai_compat::blames_tool_choice(meta_400));
+        // 無関係な 400 で降格させない (発火条件が緩すぎると余計な往復と品質低下を招く)。
+        assert!(!openai_compat::blames_tool_choice(
+            r#"{"error":{"message":"Unsupported parameter: 'max_tokens'","param":"max_tokens"}}"#
+        ));
+
+        // ラダーは一方向で、底 (Off) から先は無い = 無限降格しない。
+        assert_eq!(ToolMode::Forced.downgrade(), Some(ToolMode::Auto));
+        assert_eq!(ToolMode::Auto.downgrade(), Some(ToolMode::Off));
+        assert_eq!(ToolMode::Off.downgrade(), None, "底では降格せず 400 をそのまま返す");
+    }
+
+    /// 【出力上限の検出 (2026-08-08 で EmptyResponse から分離)】text 空 ∧ tool_calls 空 ∧
+    /// finish==length だけを `OutputTruncated` にする。**一過性にしない** — 上限は入力に対して
+    /// 決定的なので再送すれば同じ所で切れる (リトライはバックオフと課金だけを増やし、画面には
+    /// 「空の応答」としか出ないので受領者が上限に辿り着けなかった)。次の一手が
+    /// 「LLM_MAX_TOKENS をいくつまで上げるか」なので、現在値を文面に載せる。
     /// length 以外の空応答は従来どおり素通し (generate/extract が非リトライで surface)。
     #[test]
-    fn empty_reasoning_response_is_rejected_for_retry() {
+    fn output_truncation_is_not_retried_and_names_the_limit() {
         let length_empty = client::decode_chat_body(
             r#"{"choices":[{"finish_reason":"length","message":{"content":""}}]}"#.to_string(),
         )
         .unwrap();
         let resp = openai_compat::decode(length_empty).unwrap();
-        let err = openai_compat::reject_empty_reasoning(resp).unwrap_err();
-        assert!(matches!(err, LlmError::EmptyResponse));
-        assert!(err.is_transient(), "リトライループで再抽選に乗る");
+        let err = openai_compat::reject_empty_reasoning(resp, 4096).unwrap_err();
+        assert!(matches!(err, LlmError::OutputTruncated { limit: 4096 }));
+        assert!(!err.is_transient(), "同じ入力なら同じ所で切れる = 再試行に乗せない");
+        assert!(err.to_string().contains("4096"), "上げ幅を決められるよう現在値を出す: {err}");
 
         // finish が length でない空応答は弾かない (従来の経路のまま)。
         let stop_empty = client::decode_chat_body(
@@ -966,7 +1151,7 @@ mod tests {
         )
         .unwrap();
         let resp = openai_compat::decode(stop_empty).unwrap();
-        assert!(openai_compat::reject_empty_reasoning(resp).is_ok());
+        assert!(openai_compat::reject_empty_reasoning(resp, 4096).is_ok());
 
         // 本文か tool_calls があれば length でも正常 (途中切れは呼び出し側の解釈に任せる)。
         let with_text = client::decode_chat_body(
@@ -975,7 +1160,7 @@ mod tests {
         )
         .unwrap();
         let resp = openai_compat::decode(with_text).unwrap();
-        assert!(openai_compat::reject_empty_reasoning(resp).is_ok());
+        assert!(openai_compat::reject_empty_reasoning(resp, 4096).is_ok());
     }
 
     // --- Gemini ネイティブ経路 (spec 12 Phase C) --------------------------------------

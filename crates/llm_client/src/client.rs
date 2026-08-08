@@ -11,7 +11,7 @@ use std::sync::Mutex;
 
 use crate::anthropic;
 use crate::canonical;
-use crate::config::{LlmConfig, Provider};
+use crate::config::{LlmConfig, Provider, ToolMode};
 use crate::error::LlmError;
 use crate::gemini;
 use crate::openai_compat;
@@ -98,6 +98,12 @@ pub struct LlmClient {
     /// 落とし、LLM に様式を混ぜさせない (AUTHORED_ONLY_OPS の除外に合算)。セッション内不変
     /// (new_game 時に確定) なので schema = 静的プレフィックス性は保たれる。
     excluded_ops: Vec<String>,
+    /// **実効の [`ToolMode`] (セッション内 latch)**。初期値は設定由来 (明示 > 旧キー > base_url
+    /// 自動判定) で、`tool_choice` を名指しした 400 を受けたら一段降格して**ここへ覚える** —
+    /// ホスト名で判定できない経路 (中継・自前プロキシ) の受け皿。覚えるので余計な往復は
+    /// セッションで高々 2 回 (Forced→Auto→Off)。名前指定が通るサーバでは 400 が来ないので
+    /// **一度も発火しない**。`gemini_cache` と同じ interior mutability の流儀。
+    tool_mode: Mutex<ToolMode>,
 }
 
 impl LlmClient {
@@ -105,6 +111,7 @@ impl LlmClient {
         let http = reqwest::Client::builder()
             .timeout(config.request_timeout)
             .build()?;
+        let config_tool_mode = config.tool_mode;
         Ok(Self {
             http,
             config,
@@ -112,6 +119,7 @@ impl LlmClient {
             cache_stat: Mutex::new(CacheStat::default()),
             call_seq: std::sync::atomic::AtomicU64::new(0),
             gemini_cache: Mutex::new(None),
+            tool_mode: Mutex::new(config_tool_mode),
             // 既定 = additive 盤面 (従来どおり)。percentile 判定 op は隠す。
             excluded_ops: vec!["check_under".to_string()],
         })
@@ -241,12 +249,9 @@ impl LlmClient {
                 let raw = self.messages_with_retry(&native).await?;
                 anthropic::decode(raw)
             }
-            // OpenAI 互換経路: tool-use / no-tools (#29) の分岐は encode が担う。
-            // decode + empty-response 防御 (Phase D) は試行毎に掛かる = 再抽選に乗る。
-            Provider::OpenAiCompat => {
-                let wire_req = openai_compat::encode(&req, self.config.use_tools);
-                self.compat_with_retry(&wire_req).await?
-            }
+            // OpenAI 互換経路: ToolMode 三値 (#29 / Meta) の分岐は encode が担う。
+            // decode + 出力上限の検出は試行毎に掛かる。tool_choice 起因の 400 は降格して再送。
+            Provider::OpenAiCompat => self.compat_complete(&req).await?,
             // Gemini ネイティブ経路 (Phase C) + 明示キャッシュ (spec 13): 静的プレフィックスを
             // cachedContent に pin し、暗黙キャッシュの ~8000 崖 (failures #54) を迂回する。
             Provider::Gemini => self.gemini_complete(req).await?,
@@ -314,17 +319,53 @@ impl LlmClient {
     /// (tenacity 同型)。decode と empty-response 防御 (spec 12 Phase D — 推論モデルが
     /// budget を思考に使い切った finish=length の空応答) を**試行の中**に含めることで、
     /// 空応答が思考の再抽選に乗る (Parse エラーは非一過性のまま = 従来どおり即失敗)。
+    /// OpenAI 互換経路の完了。**`tool_choice` を名指しした 400 で一段降格して再送する**
+    /// (`Forced → Auto → Off`)。
+    ///
+    /// 動機: `tool_choice` の実装範囲はサーバごとに違い、Meta (api.llama.com) は `"auto"` 以外を
+    /// 400 で拒む。ホスト名の自動判定 ([`ToolMode::detect`]) は既知の口しか救えないので、
+    /// **未知のホスト (中継・自前プロキシ) は実際の拒否から学ぶ**。降格は
+    /// [`Self::tool_mode`] に latch するので、余計な往復はセッションで高々 2 回。
+    /// 名前指定が通るサーバでは 400 が来ないため一度も発火しない。
+    async fn compat_complete(
+        &self,
+        req: &canonical::ChatRequest,
+    ) -> Result<canonical::ChatResponse, LlmError> {
+        loop {
+            // lock は await を跨がない (判定して即 drop — spec 13 の gemini_cache と同じ規律)。
+            let mode = *self.tool_mode.lock().expect("tool_mode lock");
+            let wire_req = openai_compat::encode(req, mode);
+            match self.compat_with_retry(&wire_req, req.max_tokens).await {
+                Err(LlmError::Api { status: 400, body })
+                    if openai_compat::blames_tool_choice(&body) =>
+                {
+                    let Some(next) = mode.downgrade() else {
+                        // 底 (Off) でも tool_choice を名指しされた = こちらの送り分けの問題では
+                        // ない。本文をそのまま返して真因を見せる。
+                        return Err(LlmError::Api { status: 400, body });
+                    };
+                    eprintln!(
+                        "[LLM_TOOL_MODE] {mode:?} が 400 で拒否されたため {next:?} へ降格します \
+                         (このセッションでは以後 {next:?} で送ります): {body}"
+                    );
+                    *self.tool_mode.lock().expect("tool_mode lock") = next;
+                }
+                other => return other,
+            }
+        }
+    }
+
     async fn compat_with_retry(
         &self,
         req: &ChatRequest,
+        limit: u32,
     ) -> Result<canonical::ChatResponse, LlmError> {
         let mut attempt = 0;
         loop {
             attempt += 1;
             let result = match self.chat_once(req).await {
-                Ok(raw) => {
-                    openai_compat::decode(raw).and_then(openai_compat::reject_empty_reasoning)
-                }
+                Ok(raw) => openai_compat::decode(raw)
+                    .and_then(|r| openai_compat::reject_empty_reasoning(r, limit)),
                 Err(e) => Err(e),
             };
             match result {

@@ -226,7 +226,7 @@ export const messages = {
         apiKeyPlaceholder: "sk-... / さくらは UUID:シークレット",
         useTools: "ツール呼び出し (function calling) を使う",
         useToolsNote:
-          "OpenAI / Anthropic は ON。さくら AI Engine やローカル OpenAI 互換サーバなど tool_choice 非対応は OFF（プロンプトで JSON 出力を指示する経路に切替）。",
+          "基本は ON のままで大丈夫です。tool_choice の対応範囲はサーバごとに違いますが、接続先から自動判定し、拒否されたら自動で一段下げます（Meta のように「auto しか通らない」口も ON のまま動きます）。tools 自体を受け付けないサーバ（さくら AI Engine やローカル OpenAI 互換の一部）だけ OFF にしてください（プロンプトで JSON 出力を指示する経路に切替）。",
         save: "保存",
         saveNote:
           ".env を書き換えます（プロセスへ即時反映＋ファイル永続化）。次の「新しいゲーム」から新モデルで接続します。",
@@ -778,7 +778,7 @@ export const messages = {
         apiKeyPlaceholder: "sk-... / Sakura: UUID:secret",
         useTools: "Use tool calls (function calling)",
         useToolsNote:
-          "ON for OpenAI / Anthropic. OFF for servers without tool_choice support such as Sakura AI Engine or local OpenAI-compatible servers (switches to instructing JSON output via the prompt).",
+          "Leave this ON in most cases. How much of tool_choice a server implements varies, but Kataribe detects it from the endpoint and steps down automatically if the server refuses (endpoints that only accept \"auto\", such as Meta, work with this ON). Turn it OFF only for servers that reject tools entirely, such as Sakura AI Engine or some local OpenAI-compatible servers (switches to instructing JSON output via the prompt).",
         save: "Save",
         saveNote:
           "Rewrites .env (applied to the process immediately and persisted to file). Connects with the new model from the next “New game”.",

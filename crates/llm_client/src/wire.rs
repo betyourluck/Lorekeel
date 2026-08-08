@@ -44,7 +44,16 @@ pub struct ChatRequest {
     /// 非対応にしており、送ると 400 を返す。未設定 (None) なら provider 既定に委ねる。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
-    pub max_tokens: u32,
+    /// 最大出力トークン数 (旧欄)。**モデルにより欄名が割れる** — gpt-5 系と o 系は思考
+    /// トークン込みで上限を管理する方式へ移り、この欄を 400 `unsupported_parameter` で拒否して
+    /// `max_completion_tokens` を要求する。逆に互換サーバ (llama.cpp / vLLM / gpt-oss 系) には
+    /// 新欄を知らないものがあるので全面置換もできない → 常に**どちらか片方だけ**を送る
+    /// (選ぶのは [`crate::openai_compat::uses_max_completion_tokens`])。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    /// 推論系モデル用の出力上限 (思考トークン込み)。[`Self::max_tokens`] と排他。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_completion_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<Tool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -78,12 +87,21 @@ pub struct FunctionDef {
     pub parameters: serde_json::Value,
 }
 
-/// 特定関数の呼び出しを強制する (`{"type":"function","function":{"name":...}}`)。
+/// ツール選択の指定。**サーバによって受け付ける形が違う** — Meta (api.llama.com) は
+/// `only "auto" is supported for tool_choice. "none", "required", and named function choices
+/// are not currently supported` と名指しで 400 を返す (2026-08-08 実機)。
+/// どちらの形を送るかは [`crate::config::ToolMode`] が決める。
 #[derive(Debug, Clone, Serialize)]
-pub struct ToolChoice {
-    #[serde(rename = "type")]
-    pub kind: ToolKind,
-    pub function: ToolChoiceFunction,
+#[serde(untagged)]
+pub enum ToolChoice {
+    /// 素の文字列 (`"auto"`)。Meta が唯一受け付ける形。
+    Mode(&'static str),
+    /// `{"type":"function","function":{"name":...}}` で名前指定の強制。
+    Function {
+        #[serde(rename = "type")]
+        kind: ToolKind,
+        function: ToolChoiceFunction,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -92,11 +110,20 @@ pub struct ToolChoiceFunction {
 }
 
 impl ToolChoice {
+    /// 名前指定で強制する (`ToolMode::Forced`)。
     pub fn force(name: impl Into<String>) -> Self {
-        Self {
+        Self::Function {
             kind: ToolKind::Function,
             function: ToolChoiceFunction { name: name.into() },
         }
+    }
+
+    /// モデルの判断に委ねる (`ToolMode::Auto`)。**キーを省かず明示する** —
+    /// 省略時の既定は仕様上 `"auto"` だが、送っていない値でサーバ既定に決めさせると
+    /// 何が効いているか計器から消える (failures #77 の「黙っていることは値を決めて
+    /// いないことではない」)。`LLM_DEBUG` の送信ボディに意図が残る。
+    pub fn auto() -> Self {
+        Self::Mode("auto")
     }
 }
 
@@ -132,6 +159,16 @@ pub struct PromptTokensDetails {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Choice {
+    /// 応答メッセージ。**意図して必須のまま**にしてある (`serde(default)` を付けない)。
+    ///
+    /// 応答側を緩く取るのが本モジュールの一般則だが、ここだけは逆側の実測が勝つ (#34):
+    /// Gemini が 200 で `message` 無しを返した時、**欠落を許すと `content_filter` という
+    /// 真因が「空の応答」に潰れる**。必須のままなら Parse エラーが raw ごと本文を surface し、
+    /// 何が起きたか読める。緩さが安全なのは**情報を捨てないとき**だけで、
+    /// ここでは緩さそのものが情報を捨てる。
+    ///
+    /// 「`delta` を返すサーバ」は `stream: true` を送ったときの形で、Kataribe は
+    /// ストリーミングを使わないので該当しない (spec 12 Phase F は未着手)。
     pub message: ResponseMessage,
     /// 終了理由 (`stop`/`tool_calls`/`length`/...)。canonical `Finish` の材料
     /// (empty-response 防御 spec 12 Phase D)。返さないサーバでも壊れない。
