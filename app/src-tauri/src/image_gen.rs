@@ -166,6 +166,25 @@ impl SizeMap {
     }
 }
 
+// --- 設定画集 = 参照画像 (spec 25) ------------------------------------------------------
+
+/// 添付する参照画像 1 枚 (harness の `SheetImage` を backend へ写したもの)。
+#[derive(Debug, Clone)]
+pub struct RefImage {
+    pub name: String,
+    pub mime: String,
+    pub bytes: Vec<u8>,
+}
+
+/// プロバイダ別の参照枚数上限 (契約 settings_sheets。gemini-2.5-flash-image の公式上限 3)。
+pub fn max_refs(provider: Provider) -> usize {
+    match provider {
+        Provider::Openai => 3,
+        Provider::Gemini => 3,
+        Provider::Comfy => 3,
+    }
+}
+
 // --- エラー (契約 `errors`) -----------------------------------------------------------
 
 #[derive(Debug)]
@@ -314,6 +333,60 @@ pub fn openai_probe_endpoint(cfg: &ImageGenConfig) -> String {
     }
 }
 
+pub fn openai_edits_endpoint(cfg: &ImageGenConfig) -> String {
+    let base = cfg.base();
+    if base.ends_with("/v1") {
+        format!("{base}/images/edits")
+    } else {
+        format!("{base}/v1/images/edits")
+    }
+}
+
+/// multipart の 1 部品 (純粋データ。HTTP ドライバが `reqwest::multipart::Form` に写す)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FormPart {
+    Text { key: String, value: String },
+    File { key: String, file_name: String, mime: String, bytes: Vec<u8> },
+}
+
+/// 参照ありのときの `POST /v1/images/edits` 部品列 (spec 25 rev2 で凍結):
+/// `image[]` ×N, `prompt`, `model`, `size`, `quality`, `n`。**`input_fidelity` は v1 では送らない**
+/// (未決 1・実測後)。キー名は OpenAI 公式 curl の `-F "image[]=@..."` に合わせる。
+pub fn openai_edit_parts(cfg: &ImageGenConfig, prompt: &str, refs: &[RefImage]) -> Vec<FormPart> {
+    let mut parts = Vec::new();
+    for r in refs {
+        parts.push(FormPart::File {
+            key: "image[]".into(),
+            file_name: r.name.clone(),
+            mime: r.mime.clone(),
+            bytes: r.bytes.clone(),
+        });
+    }
+    parts.push(FormPart::Text { key: "prompt".into(), value: prompt.to_string() });
+    parts.push(FormPart::Text { key: "model".into(), value: cfg.model_or_default().to_string() });
+    parts.push(FormPart::Text { key: "size".into(), value: SizeMap::openai_size(cfg.shape).to_string() });
+    parts.push(FormPart::Text { key: "quality".into(), value: SizeMap::openai_quality(cfg.detail).to_string() });
+    parts.push(FormPart::Text { key: "n".into(), value: "1".into() });
+    parts
+}
+
+fn form_from_parts(parts: Vec<FormPart>) -> Result<reqwest::multipart::Form, ImageGenError> {
+    let mut form = reqwest::multipart::Form::new();
+    for p in parts {
+        form = match p {
+            FormPart::Text { key, value } => form.text(key, value),
+            FormPart::File { key, file_name, mime, bytes } => {
+                let part = reqwest::multipart::Part::bytes(bytes)
+                    .file_name(file_name)
+                    .mime_str(&mime)
+                    .map_err(|e| ImageGenError::Config(format!("mime: {e}")))?;
+                form.part(key, part)
+            }
+        };
+    }
+    Ok(form)
+}
+
 /// `data[0].b64_json` → bytes。`url` だけの応答は Shape (v1 では取りに行かない)。
 pub fn decode_openai(body: &str) -> Result<Vec<u8>, ImageGenError> {
     let v: Value = serde_json::from_str(body).map_err(|e| ImageGenError::Shape {
@@ -335,9 +408,15 @@ pub fn decode_openai(body: &str) -> Result<Vec<u8>, ImageGenError> {
 
 // --- Gemini 画像 (契約 `gemini`) ----------------------------------------------------------
 
-pub fn encode_gemini(cfg: &ImageGenConfig, prompt: &str) -> Value {
+/// `refs` は **テキストの前**に `inlineData` で並べる (spec 25)。0 枚なら spec 24 と同じ形。
+pub fn encode_gemini(cfg: &ImageGenConfig, prompt: &str, refs: &[RefImage]) -> Value {
+    let mut parts: Vec<Value> = refs
+        .iter()
+        .map(|r| json!({ "inlineData": { "mimeType": r.mime, "data": base64_encode(&r.bytes) } }))
+        .collect();
+    parts.push(json!({ "text": prompt }));
     json!({
-        "contents": [{ "role": "user", "parts": [{ "text": prompt }] }],
+        "contents": [{ "role": "user", "parts": parts }],
         "generationConfig": {
             "responseModalities": ["IMAGE", "TEXT"],
             "imageConfig": {
@@ -418,6 +497,9 @@ pub struct ComfyVars<'a> {
     pub seed: u64,
     pub width: u32,
     pub height: u32,
+    /// `/upload/image` で上げた参照の返名 (spec 25)。`%ref_1%`.. を**ある分だけ**置換し、
+    /// 足りない分のプレースホルダは**残す** (空文字で埋めると LoadImage の File not found)。
+    pub refs: &'a [String],
 }
 
 /// プレースホルダ置換。**`serde_json::Value` を歩いて型を保つ**: 文字列値が**ちょうど**
@@ -448,6 +530,12 @@ pub fn comfy_substitute(workflow: &Value, vars: &ComfyVars<'_>) -> Value {
                 }
                 if t.contains("%seed%") {
                     t = t.replace("%seed%", &vars.seed.to_string());
+                }
+                for (i, name) in vars.refs.iter().enumerate() {
+                    let ph = format!("%ref_{}%", i + 1);
+                    if t.contains(&ph) {
+                        t = t.replace(&ph, name);
+                    }
                 }
                 Value::String(t)
             }
@@ -558,6 +646,17 @@ pub fn comfy_view_url(base: &str, r: &ComfyImageRef) -> String {
     )
 }
 
+/// `/upload/image` の応答 `{name, subfolder, type}` から LoadImage に差す名前 (subfolder があれば
+/// `subfolder/name`)。
+pub fn comfy_uploaded_name(body: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    let name = v.get("name")?.as_str()?.to_string();
+    match v.get("subfolder").and_then(Value::as_str) {
+        Some(sub) if !sub.is_empty() => Some(format!("{sub}/{name}")),
+        _ => Some(name),
+    }
+}
+
 // --- 保存名 (契約 `storage`) ------------------------------------------------------------
 
 /// `{stamp}_{slug}_T{turn}.png`。slug = フォルダ名を ASCII 英数と `-_` だけに落とし、空なら
@@ -593,7 +692,9 @@ pub async fn generate(
     api_key: &str,
     prompt: &str,
     seed: u64,
+    refs: &[RefImage],
 ) -> Result<Generated, ImageGenError> {
+    let refs = &refs[..refs.len().min(max_refs(cfg.provider))];
     let http = reqwest::Client::builder()
         .timeout(cfg.timeout())
         .build()
@@ -603,14 +704,15 @@ pub async fn generate(
             if api_key.trim().is_empty() {
                 return Err(ImageGenError::Config("OpenAI の API キーが未設定です".into()));
             }
-            let body = encode_openai(cfg, prompt);
-            let resp = http
-                .post(openai_endpoint(cfg))
-                .bearer_auth(api_key)
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| timeout_or(e, cfg.provider))?;
+            // 参照ありのときだけ /images/edits (multipart)。無ければ従来の /generations (JSON)。
+            let resp = if refs.is_empty() {
+                let body = encode_openai(cfg, prompt);
+                http.post(openai_endpoint(cfg)).bearer_auth(api_key).json(&body).send().await
+            } else {
+                let form = form_from_parts(openai_edit_parts(cfg, prompt, refs))?;
+                http.post(openai_edits_endpoint(cfg)).bearer_auth(api_key).multipart(form).send().await
+            }
+            .map_err(|e| timeout_or(e, cfg.provider))?;
             let status = resp.status().as_u16();
             let text = resp.text().await.map_err(ImageGenError::from)?;
             if !(200..300).contains(&status) {
@@ -623,7 +725,7 @@ pub async fn generate(
             if api_key.trim().is_empty() {
                 return Err(ImageGenError::Config("Gemini の API キーが未設定です".into()));
             }
-            let body = encode_gemini(cfg, prompt);
+            let body = encode_gemini(cfg, prompt, refs);
             let resp = http
                 .post(gemini_endpoint(cfg))
                 .header("x-goog-api-key", api_key)
@@ -648,10 +750,37 @@ pub async fn generate(
             let wf: Value = serde_json::from_str(wf_text)
                 .map_err(|e| ImageGenError::Config(format!("ワークフロー JSON を読めません: {e}")))?;
             let (w, h) = SizeMap::comfy_dims(cfg.shape);
-            let vars = ComfyVars { prompt, negative: &cfg.negative, seed, width: w, height: h };
+            let base = cfg.base().to_string();
+            // 参照を先に /upload/image へ (spec 25)。返名を %ref_n% に差す。
+            let mut ref_names: Vec<String> = Vec::new();
+            for r in refs {
+                let part = reqwest::multipart::Part::bytes(r.bytes.clone())
+                    .file_name(r.name.clone())
+                    .mime_str(&r.mime)
+                    .map_err(|e| ImageGenError::Config(format!("mime: {e}")))?;
+                let form = reqwest::multipart::Form::new()
+                    .part("image", part)
+                    .text("overwrite", "true");
+                let resp = http
+                    .post(format!("{base}/upload/image"))
+                    .multipart(form)
+                    .send()
+                    .await
+                    .map_err(|e| timeout_or(e, cfg.provider))?;
+                let status = resp.status().as_u16();
+                let text = resp.text().await.map_err(ImageGenError::from)?;
+                if !(200..300).contains(&status) {
+                    return Err(classify_status(status, text));
+                }
+                let name = comfy_uploaded_name(&text).ok_or_else(|| ImageGenError::Shape {
+                    detail: "/upload/image の応答に name が無い".into(),
+                    raw: text.clone(),
+                })?;
+                ref_names.push(name);
+            }
+            let vars = ComfyVars { prompt, negative: &cfg.negative, seed, width: w, height: h, refs: &ref_names };
             let substituted = comfy_substitute(&wf, &vars);
             let client_id = format!("kataribe-{}", seed);
-            let base = cfg.base().to_string();
             let resp = http
                 .post(format!("{base}/prompt"))
                 .json(&comfy_prompt_body(substituted, &client_id))
@@ -786,7 +915,7 @@ mod tests {
         assert_eq!(o.style(), PromptStyle::Prose);
 
         let g = cfg(Provider::Gemini);
-        let body = encode_gemini(&g, "a cat");
+        let body = encode_gemini(&g, "a cat", &[]);
         assert_eq!(body["generationConfig"]["imageConfig"]["aspectRatio"], "16:9");
         assert_eq!(body["generationConfig"]["imageConfig"]["imageSize"], "1K");
         assert_eq!(body["generationConfig"]["responseModalities"][0], "IMAGE");
@@ -851,7 +980,7 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let vars = ComfyVars { prompt: "a \"quoted\" cat", negative: "lowres", seed: 42, width: 1344, height: 768 };
+        let vars = ComfyVars { prompt: "a \"quoted\" cat", negative: "lowres", seed: 42, width: 1344, height: 768, refs: &[] };
         let out = comfy_substitute(&wf, &vars);
         assert_eq!(out["5"]["inputs"]["width"], json!(1344), "数値 JSON (クォート無し)");
         assert_eq!(out["5"]["inputs"]["height"], json!(768));
@@ -904,6 +1033,54 @@ mod tests {
         assert!(slug.chars().all(|c| c.is_ascii_hexdigit()));
         let evil = image_file_name("../x", "..\\..", "t", 1);
         assert!(!evil.contains('/') && !evil.contains('\\') && !evil.contains(".."), "{evil}");
+    }
+
+    /// 【設定画集 (spec 25)】Gemini は inlineData をテキストの前に並べ 0 枚なら spec 24 と同じ形 /
+    /// OpenAI は参照ありで edits の部品列 (image[] ×N, prompt, model, size, quality, n、input_fidelity 無し)
+    /// で 0 枚なら従来 JSON / ComfyUI は %ref_n% をある分だけ差し、足りない分は**残す**。
+    #[test]
+    fn reference_sheets_are_carried_per_provider_and_absent_means_byte_identical() {
+        let r = |n: &str| RefImage { name: n.into(), mime: "image/png".into(), bytes: vec![1, 2, 3] };
+        let refs = vec![r("01_cast.png"), r("02_bg.png")];
+
+        let g = cfg(Provider::Gemini);
+        let with = encode_gemini(&g, "a cat", &refs);
+        let parts = with["contents"][0]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0]["inlineData"]["mimeType"], "image/png");
+        assert_eq!(parts[0]["inlineData"]["data"], base64_encode(&[1, 2, 3]));
+        assert_eq!(parts[2]["text"], "a cat");
+        assert_eq!(encode_gemini(&g, "a cat", &[]), encode_gemini(&g, "a cat", &Vec::new()));
+        assert_eq!(encode_gemini(&g, "a cat", &[])["contents"][0]["parts"].as_array().unwrap().len(), 1);
+
+        let o = cfg(Provider::Openai);
+        let parts = openai_edit_parts(&o, "a cat", &refs);
+        let keys: Vec<&str> = parts
+            .iter()
+            .map(|p| match p {
+                FormPart::Text { key, .. } | FormPart::File { key, .. } => key.as_str(),
+            })
+            .collect();
+        assert_eq!(keys, vec!["image[]", "image[]", "prompt", "model", "size", "quality", "n"]);
+        assert!(!keys.contains(&"input_fidelity"), "v1 では送らない");
+        assert!(matches!(&parts[3], FormPart::Text { value, .. } if value == "gpt-image-1"));
+        assert!(matches!(&parts[5], FormPart::Text { value, .. } if value == "low"));
+        assert_eq!(openai_edits_endpoint(&o), "https://api.openai.com/v1/images/edits");
+        assert_eq!(max_refs(Provider::Gemini), 3);
+
+        let wf: Value = serde_json::from_str(
+            r#"{"10":{"class_type":"LoadImage","inputs":{"image":"%ref_1%"}},
+                "11":{"class_type":"LoadImage","inputs":{"image":"%ref_2%"}},
+                "6":{"class_type":"CLIPTextEncode","inputs":{"text":"%prompt%"}}}"#,
+        )
+        .unwrap();
+        let names = vec!["sheet_a.png".to_string()];
+        let vars = ComfyVars { prompt: "p", negative: "", seed: 1, width: 1024, height: 1024, refs: &names };
+        let out = comfy_substitute(&wf, &vars);
+        assert_eq!(out["10"]["inputs"]["image"], "sheet_a.png");
+        assert_eq!(out["11"]["inputs"]["image"], "%ref_2%", "足りない分は残す (空埋めしない)");
+        assert_eq!(comfy_uploaded_name(r#"{"name":"x.png","subfolder":"","type":"input"}"#).as_deref(), Some("x.png"));
+        assert_eq!(comfy_uploaded_name(r#"{"name":"x.png","subfolder":"refs","type":"input"}"#).as_deref(), Some("refs/x.png"));
     }
 
     /// 【base64】往復と URL-safe の受理。
@@ -959,7 +1136,7 @@ mod live {
         eprintln!("{provider:?} probe: {:?}", probe.as_ref().map_err(|e| e.to_string()));
         let prompt = "A dusty entrance hall of an old lakeside mansion at dusk, a chandelier covered in dust,                       a man in his thirties in a worn coat holding a bag, soft warm light from a window,                       watercolor illustration, muted colors.";
         let t0 = std::time::Instant::now();
-        match generate(&cfg, key, prompt, 42).await {
+        match generate(&cfg, key, prompt, 42, &[]).await {
             Ok(g) => {
                 let ext = if g.mime == "image/jpeg" { "jpg" } else { "png" };
                 let path = out_dir().join(format!("kataribe_live_{provider:?}.{ext}"));

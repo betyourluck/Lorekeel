@@ -1078,12 +1078,18 @@ async fn generate_image(
     config: image_gen::ImageGenConfig,
     session: tauri::State<'_, SharedSession>,
 ) -> Result<GeneratedImageView, String> {
-    // ① 素材を写す。
-    let (messages, llm_config, seq) = {
+    // ① 素材を写す (設定画集 spec 25 もここで読む — パッケージのフォルダは session が知る)。
+    let (messages, llm_config, seq, refs) = {
         let guard = session.lock().await;
         let sess = guard
             .as_ref()
             .ok_or("ゲームが開始されていません (先に new_game を呼んでください)")?;
+        let (sheets, _skipped) =
+            harness::load_settings_sheets(&sess.package_root, image_gen::max_refs(config.provider));
+        let refs: Vec<image_gen::RefImage> = sheets
+            .into_iter()
+            .map(|s| image_gen::RefImage { name: s.name, mime: s.mime.to_string(), bytes: s.bytes })
+            .collect();
         let style = match config.style() {
             image_gen::PromptStyle::Tags => harness::ImagePromptStyle::Tags,
             image_gen::PromptStyle::Prose => harness::ImagePromptStyle::Prose,
@@ -1094,9 +1100,9 @@ async fn generate_image(
             &sess.last_narration,
             &config.user_prefix,
             style,
-            0, // spec 25 の設定画集は Phase B で結線
+            refs.len(),
         );
-        (harness::image_prompt_messages(&req), sess.client.config().clone(), sess.scene_seq)
+        (harness::image_prompt_messages(&req), sess.client.config().clone(), sess.scene_seq, refs)
     };
     // プロンプト書き (GM と同じ設定の別 client。会話 id は別だがツール無しの単発なので無関係)。
     let writer = LlmClient::new(llm_config).map_err(|e| e.to_string())?;
@@ -1115,7 +1121,7 @@ async fn generate_image(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0));
-    let generated = image_gen::generate(&config, &key, &prompt, seed)
+    let generated = image_gen::generate(&config, &key, &prompt, seed, &refs)
         .await
         .map_err(|e| e.to_string())?;
     // ② 世代が一致するときだけ置く。
@@ -1127,6 +1133,43 @@ async fn generate_image(
     let data_url = image_gen::data_url(&generated.mime, &generated.bytes);
     sess.last_image = Some((generated.mime.clone(), generated.bytes));
     Ok(GeneratedImageView { data_url, prompt, mime: generated.mime })
+}
+
+/// 設定タブの「今の盤面で見つかった設定画集」(spec 25)。置いたのに効かないとき理由が見える。
+#[derive(Serialize)]
+struct SettingsSheetsView {
+    /// `images/settings_sheets/` の絶対パス (フォルダを開くボタン用)。
+    dir: String,
+    /// 送る順 (名前, bytes)。
+    picked: Vec<(String, u64)>,
+    /// スキップ (名前, 理由 oversize|unsupported|over_limit)。
+    skipped: Vec<(String, String)>,
+}
+
+#[tauri::command]
+async fn list_settings_sheets(
+    provider: image_gen::Provider,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<SettingsSheetsView, String> {
+    let guard = session.lock().await;
+    let sess = guard.as_ref().ok_or("ゲームが開始されていません")?;
+    let dir = sess.package_root.join("images").join(harness::SETTINGS_SHEETS_DIR);
+    let (sheets, skipped) = harness::load_settings_sheets(&sess.package_root, image_gen::max_refs(provider));
+    Ok(SettingsSheetsView {
+        dir: dir.to_string_lossy().into_owned(),
+        picked: sheets.into_iter().map(|s| (s.name, s.bytes.len() as u64)).collect(),
+        skipped: skipped
+            .into_iter()
+            .map(|k| {
+                let reason = match k.reason {
+                    harness::SkipReason::Oversize => "oversize",
+                    harness::SkipReason::Unsupported => "unsupported",
+                    harness::SkipReason::OverLimit => "over_limit",
+                };
+                (k.name, reason.to_string())
+            })
+            .collect(),
+    })
 }
 
 /// 直近の挿絵を設定フォルダへ保存する (契約 storage)。返り値は書いた絶対パス。
@@ -4144,6 +4187,7 @@ pub fn run() {
             image_gen_probe,
             generate_image,
             save_generated_image,
+            list_settings_sheets,
             open_package_folder,
             pick_package_folder,
             delete_autosave,

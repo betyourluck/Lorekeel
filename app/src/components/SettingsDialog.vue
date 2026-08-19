@@ -213,6 +213,35 @@ async function loadDefaultImageDir() {
 function insertGenericWorkflow() {
   setImg({ workflowJson: genericComfyWorkflow() });
 }
+// 設定画集 (spec 25): 今の盤面で見つかったもの。置いたのに効かないとき理由が見える。
+const sheets = ref<{ dir: string; picked: [string, number][]; skipped: [string, string][] } | null>(null);
+const sheetsError = ref("");
+async function refreshSheets() {
+  sheetsError.value = "";
+  if (!game.started) {
+    sheets.value = null;
+    return;
+  }
+  try {
+    sheets.value = await invoke("list_settings_sheets", { provider: img.value.provider });
+  } catch (e) {
+    sheets.value = null;
+    sheetsError.value = String(e);
+  }
+}
+function sheetSkipLabel(reason: string): string {
+  if (reason === "oversize") return t("settings.image.sheetsOversize");
+  if (reason === "unsupported") return t("settings.image.sheetsUnsupported");
+  return t("settings.image.sheetsOverLimit");
+}
+async function openSheetsFolder() {
+  if (!sheets.value) return;
+  try {
+    await invoke("open_image_folder", { folder: sheets.value.dir });
+  } catch (e) {
+    sheetsError.value = String(e);
+  }
+}
 
 // --- ログ (保存先フォルダ) ---
 const logDirInput = ref(game.logDir);
@@ -397,6 +426,7 @@ onMounted(async () => {
   loadDefaultLogDir();
   loadDefaultImageDir();
   void loadImageKeys();
+  void refreshSheets();
   game.refreshDevMode();
   void refreshMicDevices(); // 開いた時点で候補を出す (権限前は名前が空 = 案内を出す)
 });
@@ -969,6 +999,36 @@ onMounted(async () => {
               </button>
               <span class="text-parchment/60 text-xs">{{ imageProbeStatus }}</span>
             </div>
+            <h4 class="text-parchment/80 font-bold text-sm pt-2">{{ t("settings.image.sheetsHeading") }}</h4>
+            <p class="text-parchment/60 text-xs">{{ t("settings.image.sheetsIntro") }}</p>
+            <div v-if="!game.started" class="text-parchment/40 text-xs">{{ t("settings.image.sheetsNoGame") }}</div>
+            <template v-else>
+              <div class="flex items-center gap-2">
+                <button class="rounded bg-ash/40 hover:bg-ash/70 px-3 py-1 text-sm text-parchment/80" @click="refreshSheets">
+                  {{ t("settings.image.sheetsRefresh") }}
+                </button>
+                <button
+                  class="rounded bg-ash/40 hover:bg-ash/70 px-3 py-1 text-sm text-parchment/80"
+                  :disabled="!sheets"
+                  :class="{ 'opacity-40': !sheets }"
+                  @click="openSheetsFolder"
+                >
+                  {{ t("settings.log.openFolder") }}
+                </button>
+                <span v-if="sheetsError" class="text-ember text-xs">{{ sheetsError }}</span>
+              </div>
+              <ul v-if="sheets" class="text-xs text-parchment/70 space-y-0.5">
+                <li v-for="[name, size] in sheets.picked" :key="'p' + name">
+                  <span class="text-glow">✓</span> {{ name }} <span class="text-parchment/40">({{ Math.round(size / 1024) }} KB)</span>
+                </li>
+                <li v-for="[name, reason] in sheets.skipped" :key="'s' + name" class="text-parchment/40">
+                  ✗ {{ name }} — {{ sheetSkipLabel(reason) }}
+                </li>
+                <li v-if="!sheets.picked.length && !sheets.skipped.length" class="text-parchment/40">
+                  {{ t("settings.image.sheetsNone", { dir: sheets.dir }) }}
+                </li>
+              </ul>
+            </template>
             <h4 class="text-parchment/80 font-bold text-sm pt-2">{{ t("settings.image.folderHeading") }}</h4>
             <label class="block text-sm text-parchment/70">
               {{ t("settings.image.folder") }}
