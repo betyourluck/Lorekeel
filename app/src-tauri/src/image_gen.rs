@@ -190,7 +190,10 @@ pub fn max_refs(provider: Provider) -> usize {
 #[derive(Debug)]
 pub enum ImageGenError {
     Unauthorized,
-    RateLimited,
+    /// 429。`detail` は本文の要点 — Google は**どのクォータに当たったか**を本文で名指しする
+    /// (`free_tier ... limit: 0` = キーのプロジェクトが無課金、が実際に出た。2026-08-20 実測:
+    /// 捨てていたせいで「課金は入っているのに 429」の切り分けに手が要った)。
+    RateLimited { detail: String },
     Blocked { reason: String },
     Timeout { provider: Provider },
     ComfyNodeError { node: String, msg: String },
@@ -205,7 +208,9 @@ impl std::fmt::Display for ImageGenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ImageGenError::Unauthorized => write!(f, "認証に失敗しました (API キーを確認してください)"),
-            ImageGenError::RateLimited => write!(f, "レート制限に達しました (少し待って押し直してください)"),
+            ImageGenError::RateLimited { detail } => {
+                write!(f, "レート制限に達しました: {detail}")
+            }
             ImageGenError::Blocked { reason } => {
                 write!(f, "プロバイダが生成をブロックしました (理由: {reason})")
             }
@@ -250,8 +255,27 @@ impl From<reqwest::Error> for ImageGenError {
 pub fn classify_status(status: u16, body: String) -> ImageGenError {
     match status {
         401 | 403 => ImageGenError::Unauthorized,
-        429 => ImageGenError::RateLimited,
+        429 => ImageGenError::RateLimited { detail: rate_limit_detail(&body) },
         _ => ImageGenError::Api { status, body },
+    }
+}
+
+/// 429 本文から人が読む 1 行を絞る (純粋)。Google は `Quota exceeded for metric: ...` の行で
+/// free_tier / 分あたり等を名指しするので、あればその行 (先頭 1 本)。無ければ本文の先頭 200 字。
+fn rate_limit_detail(body: &str) -> String {
+    if let Ok(v) = serde_json::from_str::<Value>(body) {
+        if let Some(msg) = v.pointer("/error/message").and_then(Value::as_str) {
+            if let Some(line) = msg.lines().find(|l| l.contains("Quota exceeded")) {
+                return line.trim_start_matches('*').trim().to_string();
+            }
+            return msg.chars().take(200).collect();
+        }
+    }
+    let head: String = body.chars().take(200).collect();
+    if head.trim().is_empty() {
+        "少し待って押し直してください".to_string()
+    } else {
+        head
     }
 }
 
@@ -967,7 +991,14 @@ mod tests {
         let err = decode_openai(r#"{"data":[{"url":"https://x/y.png"}]}"#).unwrap_err();
         assert!(matches!(err, ImageGenError::Shape { raw, .. } if raw.contains("url")));
         assert!(matches!(classify_status(401, String::new()), ImageGenError::Unauthorized));
-        assert!(matches!(classify_status(429, String::new()), ImageGenError::RateLimited));
+        assert!(matches!(classify_status(429, String::new()), ImageGenError::RateLimited { .. }));
+        // Google の 429 はどのクォータかを本文で名指しする — free_tier limit: 0 (= キーの
+        // プロジェクトが無課金) をトーストまで運ぶ (2026-08-20 実測の観測穴)。
+        let google = r#"{"error":{"code":429,"message":"You exceeded your current quota.
+* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, model: gemini-2.5-flash-preview-image
+Please retry in 13s.","status":"RESOURCE_EXHAUSTED"}}"#;
+        assert!(matches!(classify_status(429, google.into()),
+            ImageGenError::RateLimited { detail } if detail.contains("free_tier") && detail.contains("limit: 0")));
     }
 
     /// 【Gemini decode】inlineData を拾う / **200+空のブロック**は理由つき Blocked
