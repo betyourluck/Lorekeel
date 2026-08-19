@@ -286,7 +286,7 @@ onUnmounted(() => {
                (main の暗幕は背景にしか掛からない)。pointer-events は持たない。 -->
           <div
             v-if="game.generatedImage && game.showGeneratedImage"
-            class="absolute inset-0 pointer-events-none flex items-center justify-center"
+            class="absolute inset-0 z-0 pointer-events-none flex items-center justify-center"
             style="background-color: rgba(0, 0, 0, 0.35)"
           >
             <img
@@ -298,8 +298,10 @@ onUnmounted(() => {
             />
           </div>
           <!-- 文字トグル (spec 24): invisible はレイアウトを保つが pointer-events は残すので、
-               透明なログがクリックを奪わないよう pointer-events-none を添える。 -->
-          <ConversationLog :class="game.showText ? '' : 'invisible pointer-events-none'" />
+               透明なログがクリックを奪わないよう pointer-events-none を添える。
+               `relative z-10` は第三層より上に描くため — absolute な層は DOM 順が先でも
+               非 positioned な兄弟の**上**に描かれる (実機で文字が挿絵の下に沈んだ)。 -->
+          <ConversationLog :class="['relative z-10', game.showText ? '' : 'invisible pointer-events-none']" />
           <!-- 作者が use_tts を宣言した盤面にだけ出す (宣言のない配布物は無音のまま)。 -->
           <TtsControls v-if="game.useTts" />
           <!-- 挿絵の操作 (spec 24): 設定で画像生成を有効にした人にだけ出す。 -->

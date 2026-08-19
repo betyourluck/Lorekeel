@@ -19,7 +19,7 @@ const label = computed(() =>
 
 <template>
   <div
-    class="absolute bottom-3 right-4 flex items-center gap-1 rounded-full bg-ink/70 backdrop-blur-sm
+    class="absolute bottom-3 right-4 z-20 flex items-center gap-1 rounded-full bg-ink/70 backdrop-blur-sm
            px-1.5 py-1 shadow-lg ring-1 ring-glow/10
            opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity duration-200"
   >

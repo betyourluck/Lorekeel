@@ -21,7 +21,7 @@ const textToggleLabel = computed(() => (game.showText ? t("image.hideText") : t(
 
 <template>
   <div
-    class="absolute bottom-3 flex items-center gap-1 rounded-full bg-ink/70 backdrop-blur-sm
+    class="absolute bottom-3 z-20 flex items-center gap-1 rounded-full bg-ink/70 backdrop-blur-sm
            px-1.5 py-1 shadow-lg ring-1 ring-glow/10
            opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity duration-200"
     :class="game.useTts ? 'right-28' : 'right-4'"
