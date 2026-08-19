@@ -2,7 +2,7 @@
 
 **Status**: Done（2026-08-20 起草 → 同日査読 rev2 → Phase 0〜D 同日実装。workspace 348 green / app 40 green・clippy clean・vue-tsc + vite build green。
 Phase D: OpenAI / Gemini とも実ワイヤで 1 枚ずつ Green、プロンプト書き 3 通り良好 (`data_contract` `ImageGeneration.live_20260820`)。
-残 = ComfyUI の実機 (手元に環境なし) と GUI 通しの目視 — commits 0ea2d89 (P0) / aedddc7 (A) / 64c2f2f (B) / backend・bb83ce5 (C) / 本コミット (D)）
+残なし (ComfyUI + GUI 通しは 2026-08-20 ユーザー実機で Green。Gemini は無料枠 429 のみ = 設計どおりの RateLimited) — commits 0ea2d89 (P0) / aedddc7 (A) / 64c2f2f (B) / backend・bb83ce5 (C) / 本コミット (D)）
 
 ## 動機
 
