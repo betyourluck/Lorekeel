@@ -1,6 +1,8 @@
 # spec 24: 画像生成 — 物語に合わせた挿絵を、背景と文字の間に重ねる
 
-**Status**: Draft rev2（2026-08-20 起草 → 同日ユーザー査読 10 点 + 外部接地 + 未決 5 点の回答を反映。Phase 0 着手前の確認待ち）
+**Status**: Done（2026-08-20 起草 → 同日査読 rev2 → Phase 0〜D 同日実装。workspace 348 green / app 40 green・clippy clean・vue-tsc + vite build green。
+Phase D: OpenAI / Gemini とも実ワイヤで 1 枚ずつ Green、プロンプト書き 3 通り良好 (`data_contract` `ImageGeneration.live_20260820`)。
+残 = ComfyUI の実機 (手元に環境なし) と GUI 通しの目視 — commits 0ea2d89 (P0) / aedddc7 (A) / 64c2f2f (B) / backend・bb83ce5 (C) / 本コミット (D)）
 
 ## 動機
 
@@ -140,10 +142,11 @@ GM ではない。
     `CharacterDef.profile` = プロフィールカードで見える / 直前の語り = 会話ログ / `world` =
     scenario_brief 経由で GM に出るがプレイヤーにも世界観として提示済み。`state_brief`・`hidden_*`・
     `secret_*`・`internal_*`・facts は素材に含めない。PoC で「secret/hidden 属性の値が request 本文に
-    現れない」を固定。**presence の予算**: 上位 3 名は profile 400 字まで、4 人目以降は**名前だけ**、
-    素材合計 2000 字以内（10 人盤面で 4000 字に溢れる問題）。
-18. **設定は 2 ソース**（rev2）: frontend が `invoke generate_image({config: <localStorage の非秘密>,
-    scene_seq})` で非秘密を渡し、backend が `app_data/.env` から `IMAGE_API_KEY_{PROVIDER}` を
+    現れない」を固定。**presence の予算**: 上位 3 名は profile 400 字まで、4 人目以降は **120 字**
+    （名前だけにはしない — 容姿の手掛かりは全員に残す。順序は主人公先頭・NPC は id 順＝決定論。
+    実装時に改訂）、素材合計 2000 字以内（10 人盤面で 4000 字に溢れる問題）。
+18. **設定は 2 ソース**（rev2）: frontend が `invoke generate_image({config: <localStorage の非秘密>})`
+    で非秘密を渡し（場面世代は backend が自分で捕まえる — 実装時に改訂）、backend が `app_data/.env` から `IMAGE_API_KEY_{PROVIDER}` を
     **マージ**する。`image_gen_probe` も同じ 2 ソース。図の矢印は 1 本だが実装は 2 本 — 契約に
     `config_sources` として明記。
 19. **`image_gen_probe`（接続テスト）**は画像を生成しない: OpenAI = `GET {base}/v1/models`

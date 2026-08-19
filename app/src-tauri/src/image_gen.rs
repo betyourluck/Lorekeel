@@ -918,3 +918,83 @@ mod tests {
         assert!(data_url("image/png", b"x").starts_with("data:image/png;base64,"));
     }
 }
+
+/// live 実測 (spec 24 Phase D)。実キーが要るので ignore。
+/// `OPENAI_API_KEY` / `GEMINI_API_KEY` (または `IMAGE_API_KEY_*`) を読み、各 1 枚を最低コスト設定で
+/// 生成して `KATARIBE_IMAGE_OUT` のフォルダへ書く (目視用)。
+///
+/// ```text
+/// cargo test image_gen::live -- --ignored --nocapture
+/// ```
+#[cfg(test)]
+mod live {
+    use super::*;
+
+    fn key(names: &[&str]) -> Option<String> {
+        names.iter().find_map(|n| std::env::var(n).ok().filter(|v| !v.trim().is_empty()))
+    }
+
+    fn out_dir() -> std::path::PathBuf {
+        std::env::var("KATARIBE_IMAGE_OUT").map(Into::into).unwrap_or_else(|_| std::env::temp_dir())
+    }
+
+    async fn run(provider: Provider, key: &str) {
+        let cfg = ImageGenConfig {
+            provider,
+            base_url: match provider {
+                Provider::Openai => "https://api.openai.com/v1".into(),
+                Provider::Gemini => "https://generativelanguage.googleapis.com".into(),
+                Provider::Comfy => "http://127.0.0.1:8188".into(),
+            },
+            model: String::new(),
+            shape: Shape::Landscape,
+            detail: Detail::Standard,
+            style: None,
+            user_prefix: String::new(),
+            negative: String::new(),
+            workflow_json: None,
+            timeout_secs: None,
+        };
+        let probe = probe(&cfg, key).await;
+        eprintln!("{provider:?} probe: {:?}", probe.as_ref().map_err(|e| e.to_string()));
+        let prompt = "A dusty entrance hall of an old lakeside mansion at dusk, a chandelier covered in dust,                       a man in his thirties in a worn coat holding a bag, soft warm light from a window,                       watercolor illustration, muted colors.";
+        let t0 = std::time::Instant::now();
+        match generate(&cfg, key, prompt, 42).await {
+            Ok(g) => {
+                let ext = if g.mime == "image/jpeg" { "jpg" } else { "png" };
+                let path = out_dir().join(format!("kataribe_live_{provider:?}.{ext}"));
+                std::fs::write(&path, &g.bytes).unwrap();
+                eprintln!(
+                    "{provider:?} OK: mime={} bytes={} elapsed={:.1}s -> {}",
+                    g.mime,
+                    g.bytes.len(),
+                    t0.elapsed().as_secs_f32(),
+                    path.display()
+                );
+                assert!(g.bytes.len() > 1000);
+            }
+            Err(e) => panic!("{provider:?} failed: {e}"),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "実キーが要る live テスト"]
+    async fn openai_generates_one_image() {
+        let Some(k) = key(&["IMAGE_API_KEY_OPENAI", "OPENAI_API_KEY"]) else {
+            eprintln!("skip: no OpenAI key");
+            return;
+        };
+        run(Provider::Openai, &k).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "実キーが要る live テスト"]
+    async fn gemini_generates_one_image() {
+        let Some(k) = key(&["IMAGE_API_KEY_GEMINI", "GEMINI_API_KEY"]) else {
+            eprintln!("skip: no Gemini key");
+            return;
+        };
+        run(Provider::Gemini, &k).await;
+    }
+}
+
