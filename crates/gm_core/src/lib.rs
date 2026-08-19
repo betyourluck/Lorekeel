@@ -28,7 +28,7 @@ pub use expr::{parse_expr, Expr};
 pub use spine::{
     ChallengeDef, CharacterDef, CheckStyle, ContestDef, Exit, Gate, GoalDef, ImageHold, ImageMode, Location,
     LocationItem, FactsPolicy, Natural, Protagonist, Resolution, RoleAssignment, RollRef, RollSpec,
-    Scenario, ScenarioError, StatDecl, StatInit, TakeMode, TierDef, Trigger,
+    Scenario, ScenarioError, StatDecl, StatInit, TakeMode, TierDef, Trigger, IMAGE_STYLE_MAX_CHARS,
 };
 pub use state::{
     default_entity, AttrKey, ChallengeId, EntityId, FlagKey, GameState, GoalId, ItemId, LocationId,

@@ -49,6 +49,12 @@ pub fn scenario_lint_messages(scenario: &Scenario) -> Vec<String> {
                  主人公はその場所に立ちますが、出口も説明文も無いため先へ進めなくなります（エラーも出ません）。\
                  locations に定義された id を確認してください"
             ),
+            // spec 24: 画風指針は先頭だけ使われる (プレイは壊れない)。
+            gm_core::ScenarioError::ImageStyleTooLong { chars } => format!(
+                "image_style が {chars} 字あります (上限 {})。先頭 {} 字だけが挿絵のプロンプトに使われます — \
+                 画風の要点を前に寄せるか、短くしてください",
+                gm_core::IMAGE_STYLE_MAX_CHARS, gm_core::IMAGE_STYLE_MAX_CHARS
+            ),
             other => format!("{other:?}"),
         })
         .collect()

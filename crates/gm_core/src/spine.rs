@@ -836,6 +836,9 @@ pub enum ScenarioError {
     /// 「封印か討伐か死か」という結末の意味を生成に伝える接地素材 — 無いと生成失敗時に
     /// バナーだけの幕になる。**lint** (プレイは壊れない = load 拒否しない。spec 11)。
     EpilogueWithoutNarration { goal: GoalId },
+    /// `image_style` (spec 24) が [`IMAGE_STYLE_MAX_CHARS`] を超えている。**lint** — 先頭だけが
+    /// 使われるのでプレイは壊れない (load 拒否しない)。`chars` は実際の長さ。
+    ImageStyleTooLong { chars: usize },
     /// Gate の `location_is` が**宣言されていない場所**を指している (spec 21 同梱)。
     /// `state.location` と一致しようがないので、その Gate は**永久に false** — challenge の
     /// `requires` に書けば一度も選べず、出口 gate に書けば通れない。しかもエラーも警告も
@@ -1126,6 +1129,14 @@ pub struct Scenario {
     /// TTS はその上の再生手段、と分離する)。package.yaml の `use_tts` から注入もできる。
     #[serde(default)]
     pub use_tts: bool,
+    /// 挿絵の画風指針 (spec 24, 2026-08-20)。**engine 非使用・非検証の提示層素材** (world /
+    /// profile と同類)。プレイヤーが押す画像生成 (手動) のプロンプト書きに「作者の画風」として
+    /// 渡る (例「水彩画・淡い色・キャラはデフォルメ」)。[`IMAGE_STYLE_MAX_CHARS`] を超えると
+    /// lint 警告 ([`ScenarioError::ImageStyleTooLong`]) し、先頭だけが使われる。
+    /// `use_tts` のような ON/OFF の作者ゲートは作らない — 挿絵は語りに触れないプレイヤー側の
+    /// 鑑賞レイヤーで、押すのもプレイヤー。package.yaml の `image_style` から注入もできる。
+    #[serde(default)]
+    pub image_style: String,
     /// 役職のランダム割り当て (spec 06 Phase A)。宣言があれば [`Self::initial_state`] が
     /// 専用ストリームで shuffle して配る。詳細は [`RoleAssignment`]。
     #[serde(default)]
@@ -1404,6 +1415,11 @@ impl Scenario {
             if has_prompt && g.narration.trim().is_empty() {
                 warns.push(ScenarioError::EpilogueWithoutNarration { goal: g.id.clone() });
             }
+        }
+        // spec 24: 画風指針の上限 (超過は先頭だけ使う — プレイは壊れない)。
+        let style_chars = self.image_style.chars().count();
+        if style_chars > IMAGE_STYLE_MAX_CHARS {
+            warns.push(ScenarioError::ImageStyleTooLong { chars: style_chars });
         }
         // spec 21 同梱: 幻の場所を指す location_is (永久に false = 死んだ Gate)。
         // Gate は入れ子 (all/any/not) を取るので再帰で葉まで舐める。
@@ -2161,6 +2177,9 @@ impl Scenario {
         s
     }
 }
+
+/// `Scenario.image_style` の上限文字数 (spec 24)。超過は lint 警告して先頭だけ使う。
+pub const IMAGE_STYLE_MAX_CHARS: usize = 500;
 
 #[cfg(test)]
 mod tests {

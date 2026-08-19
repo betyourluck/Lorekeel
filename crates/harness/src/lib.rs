@@ -15,6 +15,7 @@ mod inspect;
 mod inspect_msg;
 mod loader;
 mod facts;
+mod image_prompt;
 mod memoria;
 mod package;
 pub mod prompt;
@@ -30,6 +31,7 @@ pub use campaign::{
 };
 pub use inspect::{inspect, inspect_package, inspect_scenario_file, InspectReport};
 pub use inspect_msg::scenario_lint_messages;
+pub use image_prompt::{build_image_prompt_request, image_prompt_messages, ImagePromptRequest, ImagePromptStyle};
 pub use package::{
     character_lints, inject_package, is_campaign_entry, load_campaign_package, load_package,
     manifest_lints, read_manifest, Globals,

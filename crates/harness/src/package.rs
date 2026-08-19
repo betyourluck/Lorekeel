@@ -53,6 +53,10 @@ pub struct PackageManifest {
     /// 宣言があれば全モジュールへ注入。省略時は各 scenario の宣言 (既定 false)。
     #[serde(default)]
     pub use_tts: Option<bool>,
+    /// 挿絵の画風指針 (spec 24)。宣言があれば全モジュールへ注入 (セッション単位 — 章の途中で
+    /// 画風が変わると違和感になる)。省略時は各 scenario の宣言 (既定 空)。
+    #[serde(default)]
+    pub image_style: Option<String>,
 }
 
 /// 主人公の宣言。各モジュールの `initial_stats`/`initial_skills` へ注入される。
@@ -182,6 +186,10 @@ pub fn inject_package(scenario: &mut Scenario, manifest: &PackageManifest) {
     // 読み上げの可否も同じくセッション単位 (章を跨いで一貫させる)。
     if let Some(use_tts) = manifest.use_tts {
         scenario.use_tts = use_tts;
+    }
+    // 挿絵の画風もセッション単位 (spec 24)。
+    if let Some(style) = &manifest.image_style {
+        scenario.image_style = style.clone();
     }
     if let Some(p) = &manifest.player {
         for (k, v) in &p.stats {
