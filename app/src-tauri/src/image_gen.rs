@@ -1,0 +1,920 @@
+//! 画像生成 (spec 24, 2026-08-20): 物語に合わせた挿絵を背景と文字の間に重ねる — の backend 側。
+//!
+//! **ここは提示層**。正本 (gm_core) にも語りにも prompt caching にも触れない。
+//! プロバイダのワイヤ (OpenAI Images / Gemini 画像 / ComfyUI) の **encode/decode は純関数**で
+//! PoC で固め、HTTP だけを [`generate`] が担う (llm_client の adapter seam と同じ流儀)。
+//!
+//! **HTTP は全部 backend** — CSP の `connect-src` は localhost のみで、クラウドのキーを WebView に
+//! 置かない。ComfyUI も backend から叩く (リモートでも CSP 対象外)。表示は data URL
+//! (`img-src data:` は開いている)。契約は data_contract `ImageGeneration` が正。
+
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
+// --- 設定 (frontend の localStorage から渡る非秘密。キーは backend が .env からマージ) ------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Provider {
+    Openai,
+    Gemini,
+    Comfy,
+}
+
+/// UI の 1 軸 (形)。プロバイダ語彙への写像は [`SizeMap`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Shape {
+    #[default]
+    Square,
+    Landscape,
+    Portrait,
+}
+
+/// UI の 1 軸 (解像度段)。`Highest` は openai の `quality: high` のみ (高コスト)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Detail {
+    #[default]
+    Standard,
+    High,
+    Highest,
+}
+
+/// プロンプト様式 (プロンプト書きの出力形)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptStyle {
+    Tags,
+    Prose,
+}
+
+impl PromptStyle {
+    /// 既定はプロバイダに倒す (openai/gemini=自然文、comfy=タグ)。
+    pub fn default_for(provider: Provider) -> Self {
+        match provider {
+            Provider::Openai | Provider::Gemini => PromptStyle::Prose,
+            Provider::Comfy => PromptStyle::Tags,
+        }
+    }
+}
+
+/// frontend から渡る非秘密の設定。API キーは含まない (backend が `.env` からマージする)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageGenConfig {
+    pub provider: Provider,
+    /// openai: `https://api.openai.com` / gemini: `https://generativelanguage.googleapis.com` /
+    /// comfy: `http://127.0.0.1:8188`。末尾スラッシュは正規化する。
+    pub base_url: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub shape: Shape,
+    #[serde(default)]
+    pub detail: Detail,
+    /// None なら [`PromptStyle::default_for`]。
+    #[serde(default)]
+    pub style: Option<PromptStyle>,
+    /// ユーザーのスタイル接頭辞 (プロンプト書きの素材)。
+    #[serde(default)]
+    pub user_prefix: String,
+    /// ネガティブプロンプト (comfy のみ使う)。
+    #[serde(default)]
+    pub negative: String,
+    /// comfy の API 形式ワークフロー JSON (文字列)。
+    #[serde(default)]
+    pub workflow_json: Option<String>,
+    /// タイムアウト秒の上書き (None ならプロバイダ別既定)。
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+}
+
+impl ImageGenConfig {
+    pub fn style(&self) -> PromptStyle {
+        self.style.unwrap_or_else(|| PromptStyle::default_for(self.provider))
+    }
+
+    pub fn base(&self) -> &str {
+        self.base_url.trim_end_matches('/')
+    }
+
+    /// プロバイダ別の既定タイムアウト (契約 `timeouts`)。
+    pub fn timeout(&self) -> Duration {
+        let secs = self.timeout_secs.unwrap_or(match self.provider {
+            Provider::Openai => 120,
+            Provider::Gemini => 90,
+            Provider::Comfy => 600,
+        });
+        Duration::from_secs(secs.max(5))
+    }
+
+    /// 既定モデル (欄が空のとき)。
+    pub fn model_or_default(&self) -> &str {
+        if !self.model.trim().is_empty() {
+            return self.model.trim();
+        }
+        match self.provider {
+            Provider::Openai => "gpt-image-1",
+            Provider::Gemini => "gemini-2.5-flash-image",
+            Provider::Comfy => "",
+        }
+    }
+}
+
+// --- サイズ写像 (契約 `size_preset`) ---------------------------------------------------
+
+pub struct SizeMap;
+
+impl SizeMap {
+    pub fn openai_size(shape: Shape) -> &'static str {
+        match shape {
+            Shape::Square => "1024x1024",
+            Shape::Landscape => "1536x1024",
+            Shape::Portrait => "1024x1536",
+        }
+    }
+    /// quality で消費が 16 倍動く (high 4160 tok / low 272 tok) → standard=low。
+    pub fn openai_quality(detail: Detail) -> &'static str {
+        match detail {
+            Detail::Standard => "low",
+            Detail::High => "medium",
+            Detail::Highest => "high",
+        }
+    }
+    pub fn gemini_aspect(shape: Shape) -> &'static str {
+        match shape {
+            Shape::Square => "1:1",
+            Shape::Landscape => "16:9",
+            Shape::Portrait => "9:16",
+        }
+    }
+    pub fn gemini_size(detail: Detail) -> &'static str {
+        match detail {
+            Detail::Standard => "1K",
+            Detail::High | Detail::Highest => "2K",
+        }
+    }
+    /// SDXL 系の既定 (`%width%`×`%height%`)。
+    pub fn comfy_dims(shape: Shape) -> (u32, u32) {
+        match shape {
+            Shape::Square => (1024, 1024),
+            Shape::Landscape => (1344, 768),
+            Shape::Portrait => (768, 1344),
+        }
+    }
+}
+
+// --- エラー (契約 `errors`) -----------------------------------------------------------
+
+#[derive(Debug)]
+pub enum ImageGenError {
+    Unauthorized,
+    RateLimited,
+    Blocked { reason: String },
+    Timeout { provider: Provider },
+    ComfyNodeError { node: String, msg: String },
+    Api { status: u16, body: String },
+    Network { detail: String },
+    /// 応答の形が合わない / 画像が入っていない (本文を保持 — #34 同型)。
+    Shape { detail: String, raw: String },
+    Config(String),
+}
+
+impl std::fmt::Display for ImageGenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ImageGenError::Unauthorized => write!(f, "認証に失敗しました (API キーを確認してください)"),
+            ImageGenError::RateLimited => write!(f, "レート制限に達しました (少し待って押し直してください)"),
+            ImageGenError::Blocked { reason } => {
+                write!(f, "プロバイダが生成をブロックしました (理由: {reason})")
+            }
+            ImageGenError::Timeout { provider } => {
+                write!(f, "{provider:?} の応答がタイムアウトしました")
+            }
+            ImageGenError::ComfyNodeError { node, msg } => {
+                write!(f, "ComfyUI のノード {node} でエラー: {msg}")
+            }
+            ImageGenError::Api { status, body } => {
+                let head: String = body.chars().take(300).collect();
+                write!(f, "API エラー (status={status}): {head}")
+            }
+            ImageGenError::Network { detail } => write!(f, "接続できません: {detail}"),
+            ImageGenError::Shape { detail, raw } => {
+                let head: String = raw.chars().take(300).collect();
+                write!(f, "応答の形が想定と違います ({detail}): {head}")
+            }
+            ImageGenError::Config(s) => write!(f, "設定エラー: {s}"),
+        }
+    }
+}
+
+impl From<reqwest::Error> for ImageGenError {
+    fn from(e: reqwest::Error) -> Self {
+        if e.is_timeout() {
+            // provider はここでは分からないので呼び出し側が詰め直す (Comfy)。
+            return ImageGenError::Network { detail: "timeout".into() };
+        }
+        let mut detail = e.to_string();
+        let mut cause: Option<&dyn std::error::Error> = std::error::Error::source(&e);
+        while let Some(inner) = cause {
+            detail.push_str(": ");
+            detail.push_str(&inner.to_string());
+            cause = inner.source();
+        }
+        ImageGenError::Network { detail }
+    }
+}
+
+/// HTTP ステータスからの分類 (純粋)。
+pub fn classify_status(status: u16, body: String) -> ImageGenError {
+    match status {
+        401 | 403 => ImageGenError::Unauthorized,
+        429 => ImageGenError::RateLimited,
+        _ => ImageGenError::Api { status, body },
+    }
+}
+
+// --- base64 (依存を増やさない最小実装: 標準 alphabet・パディングあり) -------------------
+
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+pub fn base64_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        out.push(B64[(n >> 18) as usize & 63] as char);
+        out.push(B64[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { B64[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { B64[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+pub fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len() / 4 * 3);
+    let mut buf = 0u32;
+    let mut bits = 0u32;
+    for c in s.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            b'=' | b'\n' | b'\r' | b' ' => continue,
+            _ => return None,
+        };
+        buf = (buf << 6) | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+            buf &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
+/// 表示用の data URL。
+pub fn data_url(mime: &str, bytes: &[u8]) -> String {
+    format!("data:{mime};base64,{}", base64_encode(bytes))
+}
+
+// --- OpenAI Images (契約 `openai`) -------------------------------------------------------
+
+pub fn encode_openai(cfg: &ImageGenConfig, prompt: &str) -> Value {
+    json!({
+        "model": cfg.model_or_default(),
+        "prompt": prompt,
+        "size": SizeMap::openai_size(cfg.shape),
+        "quality": SizeMap::openai_quality(cfg.detail),
+        "n": 1,
+        "output_format": "png",
+    })
+}
+
+pub fn openai_endpoint(cfg: &ImageGenConfig) -> String {
+    let base = cfg.base();
+    if base.ends_with("/v1") {
+        format!("{base}/images/generations")
+    } else {
+        format!("{base}/v1/images/generations")
+    }
+}
+
+pub fn openai_probe_endpoint(cfg: &ImageGenConfig) -> String {
+    let base = cfg.base();
+    if base.ends_with("/v1") {
+        format!("{base}/models")
+    } else {
+        format!("{base}/v1/models")
+    }
+}
+
+/// `data[0].b64_json` → bytes。`url` だけの応答は Shape (v1 では取りに行かない)。
+pub fn decode_openai(body: &str) -> Result<Vec<u8>, ImageGenError> {
+    let v: Value = serde_json::from_str(body).map_err(|e| ImageGenError::Shape {
+        detail: format!("JSON でない: {e}"),
+        raw: body.to_string(),
+    })?;
+    let b64 = v
+        .pointer("/data/0/b64_json")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ImageGenError::Shape {
+            detail: "data[0].b64_json が無い".into(),
+            raw: body.to_string(),
+        })?;
+    base64_decode(b64).ok_or_else(|| ImageGenError::Shape {
+        detail: "b64_json が base64 でない".into(),
+        raw: String::new(),
+    })
+}
+
+// --- Gemini 画像 (契約 `gemini`) ----------------------------------------------------------
+
+pub fn encode_gemini(cfg: &ImageGenConfig, prompt: &str) -> Value {
+    json!({
+        "contents": [{ "role": "user", "parts": [{ "text": prompt }] }],
+        "generationConfig": {
+            "responseModalities": ["IMAGE", "TEXT"],
+            "imageConfig": {
+                "aspectRatio": SizeMap::gemini_aspect(cfg.shape),
+                "imageSize": SizeMap::gemini_size(cfg.detail),
+            }
+        }
+    })
+}
+
+/// `v1beta` 必須。base がホスト直でも `/v1beta` 込みでも受ける (llm_client の gemini と同じ)。
+pub fn gemini_endpoint(cfg: &ImageGenConfig) -> String {
+    let base = cfg.base();
+    let model = cfg.model_or_default();
+    if base.ends_with("/v1beta") {
+        format!("{base}/models/{model}:generateContent")
+    } else {
+        format!("{base}/v1beta/models/{model}:generateContent")
+    }
+}
+
+pub fn gemini_probe_endpoint(cfg: &ImageGenConfig) -> String {
+    let base = cfg.base();
+    let model = cfg.model_or_default();
+    if base.ends_with("/v1beta") {
+        format!("{base}/models/{model}")
+    } else {
+        format!("{base}/v1beta/models/{model}")
+    }
+}
+
+/// `candidates[0].content.parts[].inlineData` → (mime, bytes)。**ブロックは 200 + 空** で来る
+/// ので `promptFeedback.blockReason` / 候補の `finishReason` を理由として返す (#61 の写し)。
+pub fn decode_gemini(body: &str) -> Result<(String, Vec<u8>), ImageGenError> {
+    let v: Value = serde_json::from_str(body).map_err(|e| ImageGenError::Shape {
+        detail: format!("JSON でない: {e}"),
+        raw: body.to_string(),
+    })?;
+    if let Some(reason) = v.pointer("/promptFeedback/blockReason").and_then(Value::as_str) {
+        return Err(ImageGenError::Blocked { reason: reason.to_string() });
+    }
+    let parts = v
+        .pointer("/candidates/0/content/parts")
+        .and_then(Value::as_array);
+    if let Some(parts) = parts {
+        for part in parts {
+            if let Some(data) = part.pointer("/inlineData/data").and_then(Value::as_str) {
+                let mime = part
+                    .pointer("/inlineData/mimeType")
+                    .and_then(Value::as_str)
+                    .unwrap_or("image/png")
+                    .to_string();
+                let bytes = base64_decode(data).ok_or_else(|| ImageGenError::Shape {
+                    detail: "inlineData.data が base64 でない".into(),
+                    raw: String::new(),
+                })?;
+                return Ok((mime, bytes));
+            }
+        }
+    }
+    // 画像が無い: 候補段の finishReason を理由に (SAFETY / RECITATION / PROHIBITED_CONTENT …)。
+    if let Some(reason) = v.pointer("/candidates/0/finishReason").and_then(Value::as_str) {
+        if reason != "STOP" {
+            return Err(ImageGenError::Blocked { reason: reason.to_string() });
+        }
+    }
+    Err(ImageGenError::Shape {
+        detail: "inlineData が無い (テキストだけ返った可能性)".into(),
+        raw: body.to_string(),
+    })
+}
+
+// --- ComfyUI (契約 `comfy`) ---------------------------------------------------------------
+
+pub struct ComfyVars<'a> {
+    pub prompt: &'a str,
+    pub negative: &'a str,
+    pub seed: u64,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// プレースホルダ置換。**`serde_json::Value` を歩いて型を保つ**: 文字列値が**ちょうど**
+/// `%width%` / `%height%` / `%seed%` なら数値 JSON に、`%prompt%` / `%negative%` は文字列内の
+/// 部分一致も含めて文字列のまま差し替える。未置換は呼び出し側が既定値を渡すので残らない
+/// (残すと ComfyUI が invalid literal で落ちる)。
+pub fn comfy_substitute(workflow: &Value, vars: &ComfyVars<'_>) -> Value {
+    match workflow {
+        Value::String(s) => match s.as_str() {
+            "%width%" => Value::from(vars.width),
+            "%height%" => Value::from(vars.height),
+            "%seed%" => Value::from(vars.seed),
+            _ => {
+                let mut t = s.clone();
+                if t.contains("%prompt%") {
+                    t = t.replace("%prompt%", vars.prompt);
+                }
+                if t.contains("%negative%") {
+                    t = t.replace("%negative%", vars.negative);
+                }
+                // 文字列欄に数値プレースホルダが部分一致で混じる形 (例 "%width%x%height%") も
+                // 文字列として埋める。
+                if t.contains("%width%") {
+                    t = t.replace("%width%", &vars.width.to_string());
+                }
+                if t.contains("%height%") {
+                    t = t.replace("%height%", &vars.height.to_string());
+                }
+                if t.contains("%seed%") {
+                    t = t.replace("%seed%", &vars.seed.to_string());
+                }
+                Value::String(t)
+            }
+        },
+        Value::Array(a) => Value::Array(a.iter().map(|v| comfy_substitute(v, vars)).collect()),
+        Value::Object(m) => Value::Object(
+            m.iter()
+                .map(|(k, v)| (k.clone(), comfy_substitute(v, vars)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// `POST /prompt` のボディ。
+pub fn comfy_prompt_body(workflow: Value, client_id: &str) -> Value {
+    json!({ "prompt": workflow, "client_id": client_id })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComfyImageRef {
+    pub filename: String,
+    pub subfolder: String,
+    pub kind: String,
+}
+
+/// `/history/{id}` の応答から最初の画像参照を拾う。**未完了 (空 / id 無し) は `Ok(None)`** =
+/// ポーリング継続。`status.status_str == "error"` や `node_errors` は `ComfyNodeError`。
+pub fn comfy_first_image(history: &Value, prompt_id: &str) -> Result<Option<ComfyImageRef>, ImageGenError> {
+    let entry = match history.get(prompt_id) {
+        Some(e) => e,
+        None => return Ok(None),
+    };
+    // エラーの抽出。
+    if let Some(status) = entry.get("status") {
+        let failed = status.get("status_str").and_then(Value::as_str) == Some("error");
+        if failed {
+            let (node, msg) = status
+                .get("messages")
+                .and_then(Value::as_array)
+                .and_then(|msgs| {
+                    msgs.iter().find_map(|m| {
+                        let arr = m.as_array()?;
+                        if arr.first()?.as_str()? != "execution_error" {
+                            return None;
+                        }
+                        let d = arr.get(1)?;
+                        Some((
+                            d.get("node_id").map(|n| n.to_string()).unwrap_or_default(),
+                            d.get("exception_message")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string(),
+                        ))
+                    })
+                })
+                .unwrap_or_else(|| ("?".into(), "execution error".into()));
+            return Err(ImageGenError::ComfyNodeError { node, msg });
+        }
+    }
+    if let Some(errs) = entry.get("node_errors").and_then(Value::as_object) {
+        if let Some((node, e)) = errs.iter().next() {
+            let msg = e
+                .pointer("/errors/0/message")
+                .and_then(Value::as_str)
+                .unwrap_or("node error")
+                .to_string();
+            return Err(ImageGenError::ComfyNodeError { node: node.clone(), msg });
+        }
+    }
+    let outputs = match entry.get("outputs").and_then(Value::as_object) {
+        Some(o) => o,
+        None => return Ok(None),
+    };
+    for (_node, out) in outputs {
+        if let Some(images) = out.get("images").and_then(Value::as_array) {
+            for img in images {
+                if let Some(filename) = img.get("filename").and_then(Value::as_str) {
+                    return Ok(Some(ComfyImageRef {
+                        filename: filename.to_string(),
+                        subfolder: img.get("subfolder").and_then(Value::as_str).unwrap_or("").to_string(),
+                        kind: img.get("type").and_then(Value::as_str).unwrap_or("output").to_string(),
+                    }));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+pub fn comfy_view_url(base: &str, r: &ComfyImageRef) -> String {
+    fn enc(s: &str) -> String {
+        let mut out = String::new();
+        for b in s.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+                _ => out.push_str(&format!("%{b:02X}")),
+            }
+        }
+        out
+    }
+    format!(
+        "{}/view?filename={}&subfolder={}&type={}",
+        base.trim_end_matches('/'),
+        enc(&r.filename),
+        enc(&r.subfolder),
+        enc(&r.kind)
+    )
+}
+
+// --- 保存名 (契約 `storage`) ------------------------------------------------------------
+
+/// `{stamp}_{slug}_T{turn}.png`。slug = フォルダ名を ASCII 英数と `-_` だけに落とし、空なら
+/// タイトルの FNV-1a 8 桁 hex。パス要素を含まない (PoC で固定)。
+pub fn image_file_name(stamp: &str, package_dir_name: &str, title: &str, turn: u32) -> String {
+    let mut slug: String = package_dir_name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(40)
+        .collect();
+    if slug.is_empty() {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in title.as_bytes() {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        slug = format!("{:08x}", (h & 0xffff_ffff) as u32);
+    }
+    let stamp: String = stamp.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+    format!("{stamp}_{slug}_T{turn}.png")
+}
+
+// --- HTTP ドライバ ------------------------------------------------------------------------
+
+pub struct Generated {
+    pub mime: String,
+    pub bytes: Vec<u8>,
+}
+
+/// 1 枚生成する。`api_key` は openai/gemini で必須 (comfy は無視)。
+pub async fn generate(
+    cfg: &ImageGenConfig,
+    api_key: &str,
+    prompt: &str,
+    seed: u64,
+) -> Result<Generated, ImageGenError> {
+    let http = reqwest::Client::builder()
+        .timeout(cfg.timeout())
+        .build()
+        .map_err(ImageGenError::from)?;
+    match cfg.provider {
+        Provider::Openai => {
+            if api_key.trim().is_empty() {
+                return Err(ImageGenError::Config("OpenAI の API キーが未設定です".into()));
+            }
+            let body = encode_openai(cfg, prompt);
+            let resp = http
+                .post(openai_endpoint(cfg))
+                .bearer_auth(api_key)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| timeout_or(e, cfg.provider))?;
+            let status = resp.status().as_u16();
+            let text = resp.text().await.map_err(ImageGenError::from)?;
+            if !(200..300).contains(&status) {
+                return Err(classify_status(status, text));
+            }
+            let bytes = decode_openai(&text)?;
+            Ok(Generated { mime: "image/png".into(), bytes })
+        }
+        Provider::Gemini => {
+            if api_key.trim().is_empty() {
+                return Err(ImageGenError::Config("Gemini の API キーが未設定です".into()));
+            }
+            let body = encode_gemini(cfg, prompt);
+            let resp = http
+                .post(gemini_endpoint(cfg))
+                .header("x-goog-api-key", api_key)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| timeout_or(e, cfg.provider))?;
+            let status = resp.status().as_u16();
+            let text = resp.text().await.map_err(ImageGenError::from)?;
+            if !(200..300).contains(&status) {
+                return Err(classify_status(status, text));
+            }
+            let (mime, bytes) = decode_gemini(&text)?;
+            Ok(Generated { mime, bytes })
+        }
+        Provider::Comfy => {
+            let wf_text = cfg
+                .workflow_json
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .ok_or_else(|| ImageGenError::Config("ComfyUI のワークフロー JSON が未設定です".into()))?;
+            let wf: Value = serde_json::from_str(wf_text)
+                .map_err(|e| ImageGenError::Config(format!("ワークフロー JSON を読めません: {e}")))?;
+            let (w, h) = SizeMap::comfy_dims(cfg.shape);
+            let vars = ComfyVars { prompt, negative: &cfg.negative, seed, width: w, height: h };
+            let substituted = comfy_substitute(&wf, &vars);
+            let client_id = format!("kataribe-{}", seed);
+            let base = cfg.base().to_string();
+            let resp = http
+                .post(format!("{base}/prompt"))
+                .json(&comfy_prompt_body(substituted, &client_id))
+                .send()
+                .await
+                .map_err(|e| timeout_or(e, cfg.provider))?;
+            let status = resp.status().as_u16();
+            let text = resp.text().await.map_err(ImageGenError::from)?;
+            if !(200..300).contains(&status) {
+                return Err(classify_status(status, text));
+            }
+            let v: Value = serde_json::from_str(&text).map_err(|e| ImageGenError::Shape {
+                detail: format!("/prompt の応答が JSON でない: {e}"),
+                raw: text.clone(),
+            })?;
+            let prompt_id = v
+                .get("prompt_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ImageGenError::Shape { detail: "prompt_id が無い".into(), raw: text.clone() })?
+                .to_string();
+            // 1 秒間隔ポーリング。発行直後の 404/空は正常。
+            let deadline = std::time::Instant::now() + cfg.timeout();
+            let image_ref = loop {
+                if std::time::Instant::now() > deadline {
+                    return Err(ImageGenError::Timeout { provider: Provider::Comfy });
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let r = http
+                    .get(format!("{base}/history/{prompt_id}"))
+                    .send()
+                    .await
+                    .map_err(|e| timeout_or(e, cfg.provider))?;
+                if !r.status().is_success() {
+                    continue;
+                }
+                let hist: Value = match r.json().await {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                if let Some(img) = comfy_first_image(&hist, &prompt_id)? {
+                    break img;
+                }
+            };
+            let r = http
+                .get(comfy_view_url(&base, &image_ref))
+                .send()
+                .await
+                .map_err(|e| timeout_or(e, cfg.provider))?;
+            let status = r.status().as_u16();
+            if !(200..300).contains(&status) {
+                return Err(classify_status(status, String::new()));
+            }
+            let bytes = r.bytes().await.map_err(ImageGenError::from)?.to_vec();
+            Ok(Generated { mime: "image/png".into(), bytes })
+        }
+    }
+}
+
+fn timeout_or(e: reqwest::Error, provider: Provider) -> ImageGenError {
+    if e.is_timeout() {
+        ImageGenError::Timeout { provider }
+    } else {
+        ImageGenError::from(e)
+    }
+}
+
+/// 接続テスト (契約 `commands.image_gen_probe`)。画像は作らない。
+pub async fn probe(cfg: &ImageGenConfig, api_key: &str) -> Result<String, ImageGenError> {
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(ImageGenError::from)?;
+    let resp = match cfg.provider {
+        Provider::Openai => http.get(openai_probe_endpoint(cfg)).bearer_auth(api_key).send().await,
+        Provider::Gemini => http
+            .get(gemini_probe_endpoint(cfg))
+            .header("x-goog-api-key", api_key)
+            .send()
+            .await,
+        Provider::Comfy => http.get(format!("{}/system_stats", cfg.base())).send().await,
+    }
+    .map_err(|e| timeout_or(e, cfg.provider))?;
+    let status = resp.status().as_u16();
+    if (200..300).contains(&status) {
+        return Ok("接続できました".into());
+    }
+    if status == 404 && cfg.provider == Provider::Gemini {
+        return Err(ImageGenError::Config(format!(
+            "モデル '{}' が見つかりません (404)",
+            cfg.model_or_default()
+        )));
+    }
+    let body = resp.text().await.unwrap_or_default();
+    Err(classify_status(status, body))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(provider: Provider) -> ImageGenConfig {
+        ImageGenConfig {
+            provider,
+            base_url: match provider {
+                Provider::Openai => "https://api.openai.com/v1/".into(),
+                Provider::Gemini => "https://generativelanguage.googleapis.com".into(),
+                Provider::Comfy => "http://127.0.0.1:8188/".into(),
+            },
+            model: String::new(),
+            shape: Shape::Landscape,
+            detail: Detail::Standard,
+            style: None,
+            user_prefix: String::new(),
+            negative: "lowres".into(),
+            workflow_json: None,
+            timeout_secs: None,
+        }
+    }
+
+    /// 【写像表と既定】UI の 1 軸がプロバイダ語彙に写る (契約 size_preset)。quality の既定は low
+    /// (16 倍のコスト差)。様式の既定はプロバイダに倒す。endpoint は /v1 の有無を吸収する。
+    #[test]
+    fn size_preset_maps_per_provider_and_defaults_follow_provider() {
+        let o = cfg(Provider::Openai);
+        let body = encode_openai(&o, "a cat");
+        assert_eq!(body["size"], "1536x1024");
+        assert_eq!(body["quality"], "low");
+        assert_eq!(body["model"], "gpt-image-1");
+        assert_eq!(body["n"], 1);
+        assert!(body.get("negative_prompt").is_none(), "OpenAI に欄は無い");
+        assert_eq!(openai_endpoint(&o), "https://api.openai.com/v1/images/generations");
+        assert_eq!(o.style(), PromptStyle::Prose);
+
+        let g = cfg(Provider::Gemini);
+        let body = encode_gemini(&g, "a cat");
+        assert_eq!(body["generationConfig"]["imageConfig"]["aspectRatio"], "16:9");
+        assert_eq!(body["generationConfig"]["imageConfig"]["imageSize"], "1K");
+        assert_eq!(body["generationConfig"]["responseModalities"][0], "IMAGE");
+        assert_eq!(
+            gemini_endpoint(&g),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent"
+        );
+        assert_eq!(g.style(), PromptStyle::Prose);
+
+        let c = cfg(Provider::Comfy);
+        assert_eq!(SizeMap::comfy_dims(c.shape), (1344, 768));
+        assert_eq!(c.style(), PromptStyle::Tags);
+        assert_eq!(c.timeout(), Duration::from_secs(600), "comfy は長い");
+        assert_eq!(o.timeout(), Duration::from_secs(120));
+    }
+
+    /// 【OpenAI decode】data[0].b64_json を bytes に / 無ければ raw を保持した Shape。
+    #[test]
+    fn openai_decode_reads_b64_json_and_keeps_raw_on_shape_mismatch() {
+        let png = [0x89u8, b'P', b'N', b'G', 0, 1, 2];
+        let body = format!(r#"{{"created":1,"data":[{{"b64_json":"{}"}}]}}"#, base64_encode(&png));
+        assert_eq!(decode_openai(&body).unwrap(), png);
+        let err = decode_openai(r#"{"data":[{"url":"https://x/y.png"}]}"#).unwrap_err();
+        assert!(matches!(err, ImageGenError::Shape { raw, .. } if raw.contains("url")));
+        assert!(matches!(classify_status(401, String::new()), ImageGenError::Unauthorized));
+        assert!(matches!(classify_status(429, String::new()), ImageGenError::RateLimited));
+    }
+
+    /// 【Gemini decode】inlineData を拾う / **200+空のブロック**は理由つき Blocked
+    /// (promptFeedback.blockReason と候補 finishReason の二段) / テキストだけは Shape。
+    #[test]
+    fn gemini_decode_reads_inline_data_and_surfaces_block_reason() {
+        let png = [1u8, 2, 3, 4];
+        let body = format!(
+            r#"{{"candidates":[{{"content":{{"parts":[{{"text":"here"}},{{"inlineData":{{"mimeType":"image/png","data":"{}"}}}}]}},"finishReason":"STOP"}}]}}"#,
+            base64_encode(&png)
+        );
+        let (mime, bytes) = decode_gemini(&body).unwrap();
+        assert_eq!(mime, "image/png");
+        assert_eq!(bytes, png);
+
+        let blocked = r#"{"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"}}"#;
+        assert!(matches!(decode_gemini(blocked).unwrap_err(), ImageGenError::Blocked { reason } if reason == "PROHIBITED_CONTENT"));
+        let safety = r#"{"candidates":[{"finishReason":"SAFETY","safetyRatings":[]}]}"#;
+        assert!(matches!(decode_gemini(safety).unwrap_err(), ImageGenError::Blocked { reason } if reason == "SAFETY"));
+        let text_only = r#"{"candidates":[{"content":{"parts":[{"text":"no image"}]},"finishReason":"STOP"}]}"#;
+        assert!(matches!(decode_gemini(text_only).unwrap_err(), ImageGenError::Shape { .. }));
+    }
+
+    /// 【ComfyUI 置換は型を保つ】"%width%" 単独の文字列値は**数値 JSON** に、%prompt% は文字列
+    /// (部分一致・エスケープ込み) に、"%width%x%height%" のような文字列内は文字列のまま埋まる。
+    /// 未知のプレースホルダは無いので残らない。
+    #[test]
+    fn comfy_substitute_keeps_json_types_and_fills_every_placeholder() {
+        let wf: Value = serde_json::from_str(
+            r#"{
+              "3": {"class_type":"KSampler","inputs":{"seed":"%seed%","steps":20,"latent_image":["5",0]}},
+              "5": {"class_type":"EmptyLatentImage","inputs":{"width":"%width%","height":"%height%","batch_size":1}},
+              "6": {"class_type":"CLIPTextEncode","inputs":{"text":"masterpiece, %prompt%"}},
+              "7": {"class_type":"CLIPTextEncode","inputs":{"text":"%negative%"}},
+              "9": {"class_type":"SaveImage","inputs":{"filename_prefix":"kataribe_%width%x%height%"}}
+            }"#,
+        )
+        .unwrap();
+        let vars = ComfyVars { prompt: "a \"quoted\" cat", negative: "lowres", seed: 42, width: 1344, height: 768 };
+        let out = comfy_substitute(&wf, &vars);
+        assert_eq!(out["5"]["inputs"]["width"], json!(1344), "数値 JSON (クォート無し)");
+        assert_eq!(out["5"]["inputs"]["height"], json!(768));
+        assert_eq!(out["3"]["inputs"]["seed"], json!(42));
+        assert_eq!(out["3"]["inputs"]["steps"], json!(20), "触らない欄は不変");
+        assert_eq!(out["6"]["inputs"]["text"], "masterpiece, a \"quoted\" cat");
+        assert_eq!(out["7"]["inputs"]["text"], "lowres");
+        assert_eq!(out["9"]["inputs"]["filename_prefix"], "kataribe_1344x768");
+        let dumped = serde_json::to_string(&out).unwrap();
+        assert!(!dumped.contains('%'), "プレースホルダが残らない: {dumped}");
+        let body = comfy_prompt_body(out, "cid");
+        assert_eq!(body["client_id"], "cid");
+        assert!(body["prompt"]["3"].is_object());
+    }
+
+    /// 【ComfyUI history】発行直後の空/別 id は Ok(None)=継続、完了で最初の画像参照、
+    /// status error / node_errors は ComfyNodeError。view URL はエンコード済み。
+    #[test]
+    fn comfy_history_polls_until_image_and_surfaces_node_errors() {
+        assert_eq!(comfy_first_image(&json!({}), "p1").unwrap(), None);
+        assert_eq!(comfy_first_image(&json!({"other": {}}), "p1").unwrap(), None);
+        let pending = json!({"p1": {"status": {"status_str": "running", "completed": false}, "outputs": {}}});
+        assert_eq!(comfy_first_image(&pending, "p1").unwrap(), None);
+        let done = json!({"p1": {"status": {"status_str":"success","completed":true},
+            "outputs": {"9": {"images": [{"filename":"kataribe_00001_.png","subfolder":"sub dir","type":"output"}]}}}});
+        let r = comfy_first_image(&done, "p1").unwrap().unwrap();
+        assert_eq!(r.filename, "kataribe_00001_.png");
+        assert_eq!(
+            comfy_view_url("http://127.0.0.1:8188/", &r),
+            "http://127.0.0.1:8188/view?filename=kataribe_00001_.png&subfolder=sub%20dir&type=output"
+        );
+        let failed = json!({"p1": {"status": {"status_str":"error","completed":false,
+            "messages":[["execution_start",{}],["execution_error",{"node_id":"3","exception_message":"CUDA out of memory"}]]}}});
+        assert!(matches!(comfy_first_image(&failed, "p1").unwrap_err(),
+            ImageGenError::ComfyNodeError { node, msg } if node.contains('3') && msg.contains("CUDA")));
+        let node_err = json!({"p1": {"node_errors": {"6": {"errors": [{"message":"Required input is missing"}]}}}});
+        assert!(matches!(comfy_first_image(&node_err, "p1").unwrap_err(),
+            ImageGenError::ComfyNodeError { node, .. } if node == "6"));
+    }
+
+    /// 【保存名】パス要素を含まない / 日本語フォルダ名は空 slug → タイトルの FNV 8 桁 / turn 付き。
+    #[test]
+    fn image_file_name_is_path_safe_and_falls_back_to_fnv_for_non_ascii() {
+        let n = image_file_name("20260820_123456", "lakeside_manor", "湖畔の洋館", 12);
+        assert_eq!(n, "20260820_123456_lakeside_manor_T12.png");
+        let j = image_file_name("20260820_123456", "湖畔の洋館", "湖畔の洋館", 3);
+        assert!(j.starts_with("20260820_123456_") && j.ends_with("_T3.png"), "{j}");
+        let slug = &j["20260820_123456_".len()..j.len() - "_T3.png".len()];
+        assert_eq!(slug.len(), 8, "FNV 8 桁 hex: {slug}");
+        assert!(slug.chars().all(|c| c.is_ascii_hexdigit()));
+        let evil = image_file_name("../x", "..\\..", "t", 1);
+        assert!(!evil.contains('/') && !evil.contains('\\') && !evil.contains(".."), "{evil}");
+    }
+
+    /// 【base64】往復と URL-safe の受理。
+    #[test]
+    fn base64_round_trips() {
+        for n in 0..8 {
+            let v: Vec<u8> = (0..n).map(|i| (i * 37 + 11) as u8).collect();
+            assert_eq!(base64_decode(&base64_encode(&v)).unwrap(), v);
+        }
+        assert_eq!(base64_encode(b"hi"), "aGk=");
+        assert_eq!(base64_decode("aGk").unwrap(), b"hi");
+        assert!(data_url("image/png", b"x").starts_with("data:image/png;base64,"));
+    }
+}

@@ -9,6 +9,7 @@
 //! - `new_game(scenario_path?)`: シナリオ + characters + 伏線をロードし初期 state を作って session に格納
 //! - `play_turn(action)`: session を lock し run_turn → 発火 recall を pending_lore に持ち越し → view を返す
 
+mod image_gen;
 mod relay;
 mod site;
 mod update;
