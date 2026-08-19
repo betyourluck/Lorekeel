@@ -726,6 +726,20 @@ struct GameSession {
     /// ダイス開帳の順序カウンタ (spec 23 Phase B で spec 18 の frontend ローカル状態から昇格)。
     /// ホストが順序づけの正 — 単騎でも同じ経路 (reveal_next command) を通す。
     reveal: RevealView,
+    /// spec 24: 場面の世代。新しいゲーム / ロード / campaign 遷移で進む。画像生成は非同期
+    /// (OpenAI high で 60〜90 秒・ComfyUI は分単位) なので、発行時の世代を持って走り、
+    /// 完了時に一致しなければ**古い場面の絵を新場面に敷かず破棄**する (契約 volatility)。
+    scene_seq: u64,
+    /// spec 24: 直近に生成した挿絵の原本 (mime, bytes)。保存 command がこれを書く (frontend から
+    /// 1MB を送り返さない)。1 枚分だけ・差し替えで捨てる・セーブには入れない (揮発)。
+    last_image: Option<(String, Vec<u8>)>,
+}
+
+/// spec 24: 場面世代の発番 (プロセス内で単調)。GameSession の構築と campaign 遷移で進める。
+fn next_scene_seq() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+    SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
 /// new_game 前は None。
@@ -958,6 +972,188 @@ fn save_log_file(
     std::fs::create_dir_all(&dir).map_err(|e| format!("フォルダを作成できません: {e}"))?;
     let path = dir.join(&file_name);
     std::fs::write(&path, content).map_err(|e| format!("書き込みに失敗しました: {e}"))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+// --- spec 24: 画像生成 (挿絵) ------------------------------------------------------------
+
+/// 既定の挿絵フォルダ (`app_data_dir/images`、ログと同じ流儀)。
+fn default_image_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("images"))
+}
+
+fn resolve_image_dir(app: &tauri::AppHandle, folder: &str) -> Result<PathBuf, String> {
+    if folder.trim().is_empty() {
+        default_image_dir(app).ok_or_else(|| "アプリデータ置き場を解決できません".to_string())
+    } else {
+        Ok(PathBuf::from(folder.trim()))
+    }
+}
+
+#[tauri::command]
+fn get_default_image_dir(app: tauri::AppHandle) -> String {
+    default_image_dir(&app).map(|d| d.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+#[tauri::command]
+fn open_image_folder(app: tauri::AppHandle, folder: String) -> Result<(), String> {
+    let dir = resolve_image_dir(&app, &folder)?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("フォルダを作成できません: {e}"))?;
+    open_in_file_manager(&dir)
+}
+
+/// API キーの env 名 (契約 config_sources)。comfy は鍵を持たない。
+fn image_api_key_env(provider: image_gen::Provider) -> Option<&'static str> {
+    match provider {
+        image_gen::Provider::Openai => Some("IMAGE_API_KEY_OPENAI"),
+        image_gen::Provider::Gemini => Some("IMAGE_API_KEY_GEMINI"),
+        image_gen::Provider::Comfy => None,
+    }
+}
+
+fn image_api_key(provider: image_gen::Provider) -> String {
+    image_api_key_env(provider)
+        .and_then(|k| std::env::var(k).ok())
+        .unwrap_or_default()
+}
+
+/// 画像生成の API キー (設定タブの初期値。LLM キーと同じ信頼水準で UI は伏せ字表示)。
+#[derive(Serialize)]
+struct ImageApiKeysView {
+    openai: String,
+    gemini: String,
+}
+
+#[tauri::command]
+fn get_image_api_keys() -> ImageApiKeysView {
+    ImageApiKeysView {
+        openai: image_api_key(image_gen::Provider::Openai),
+        gemini: image_api_key(image_gen::Provider::Gemini),
+    }
+}
+
+/// API キーの保存: プロセス env を即時差し替え + `app_data/.env` へ永続化 (set_llm_config 同型)。
+#[tauri::command]
+fn set_image_api_key(
+    app: tauri::AppHandle,
+    provider: image_gen::Provider,
+    api_key: String,
+) -> Result<(), String> {
+    let Some(key_name) = image_api_key_env(provider) else {
+        return Ok(()); // comfy は鍵を持たない
+    };
+    std::env::set_var(key_name, &api_key);
+    let path = config_env_path(&app).ok_or_else(|| "app_data_dir を解決できない".to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("設定フォルダの作成に失敗: {e}"))?;
+    }
+    upsert_env(&path, &[(key_name.to_string(), api_key)]).map_err(|e| format!(".env の保存に失敗: {e}"))
+}
+
+/// 接続テスト (画像は作らない)。
+#[tauri::command]
+async fn image_gen_probe(config: image_gen::ImageGenConfig) -> Result<String, String> {
+    let key = image_api_key(config.provider);
+    image_gen::probe(&config, &key).await.map_err(|e| e.to_string())
+}
+
+/// 生成結果 (frontend へ)。
+#[derive(Serialize)]
+struct GeneratedImageView {
+    /// 表示用 data URL (img-src data: は開いている)。
+    data_url: String,
+    /// プロンプト書きが出した画像プロンプト (UI で見せる・再生成の参考)。
+    prompt: String,
+    mime: String,
+}
+
+/// 挿絵を 1 枚生成する (契約 commands.generate_image)。
+///
+/// ロックは**二度に分けて**取る: ①素材 (scenario/state/語り) と GM の LLM 設定・場面世代を写す
+/// → ロックを離す → プロンプト書き (generate) と画像 HTTP (数十秒〜分) を**ロック無しで**待つ →
+/// ②再ロックして世代が一致すれば原本を置く。生成の間ターンが回せなくなるのを避けるため。
+/// 世代不一致 (生成中に新規/ロード/遷移) は破棄して Err (トーストに理由)。
+#[tauri::command]
+async fn generate_image(
+    config: image_gen::ImageGenConfig,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<GeneratedImageView, String> {
+    // ① 素材を写す。
+    let (messages, llm_config, seq) = {
+        let guard = session.lock().await;
+        let sess = guard
+            .as_ref()
+            .ok_or("ゲームが開始されていません (先に new_game を呼んでください)")?;
+        let style = match config.style() {
+            image_gen::PromptStyle::Tags => harness::ImagePromptStyle::Tags,
+            image_gen::PromptStyle::Prose => harness::ImagePromptStyle::Prose,
+        };
+        let req = harness::build_image_prompt_request(
+            &sess.scenario,
+            &sess.state,
+            &sess.last_narration,
+            &config.user_prefix,
+            style,
+        );
+        (harness::image_prompt_messages(&req), sess.client.config().clone(), sess.scene_seq)
+    };
+    // プロンプト書き (GM と同じ設定の別 client。会話 id は別だがツール無しの単発なので無関係)。
+    let writer = LlmClient::new(llm_config).map_err(|e| e.to_string())?;
+    let prompt = tokio::time::timeout(std::time::Duration::from_secs(60), writer.generate(messages))
+        .await
+        .map_err(|_| "プロンプト書きがタイムアウトしました (60 秒)".to_string())?
+        .map_err(|e| format!("プロンプト書きに失敗: {e}"))?;
+    let prompt = llm_client::strip_reasoning_blocks(&prompt).trim().trim_matches('"').to_string();
+    if prompt.is_empty() {
+        return Err("プロンプト書きが空の応答を返しました".into());
+    }
+    // 画像 HTTP (ロック無し)。
+    let key = image_api_key(config.provider);
+    let seed = u64::from(std::process::id()) ^ (seq.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+        ^ (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0));
+    let generated = image_gen::generate(&config, &key, &prompt, seed)
+        .await
+        .map_err(|e| e.to_string())?;
+    // ② 世代が一致するときだけ置く。
+    let mut guard = session.lock().await;
+    let sess = guard.as_mut().ok_or("ゲームが終了しています")?;
+    if sess.scene_seq != seq {
+        return Err("場面が変わったため生成した挿絵を破棄しました".into());
+    }
+    let data_url = image_gen::data_url(&generated.mime, &generated.bytes);
+    sess.last_image = Some((generated.mime.clone(), generated.bytes));
+    Ok(GeneratedImageView { data_url, prompt, mime: generated.mime })
+}
+
+/// 直近の挿絵を設定フォルダへ保存する (契約 storage)。返り値は書いた絶対パス。
+#[tauri::command]
+async fn save_generated_image(
+    app: tauri::AppHandle,
+    folder: String,
+    stamp: String,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<String, String> {
+    let guard = session.lock().await;
+    let sess = guard.as_ref().ok_or("ゲームが開始されていません")?;
+    let (mime, bytes) = sess.last_image.as_ref().ok_or("保存する挿絵がありません")?;
+    let pkg_name = sess
+        .package_root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut name = image_gen::image_file_name(&stamp, &pkg_name, &sess.scenario.title, sess.state.turn);
+    if mime == "image/jpeg" {
+        name = name.replace(".png", ".jpg");
+    } else if mime == "image/webp" {
+        name = name.replace(".png", ".webp");
+    }
+    let dir = resolve_image_dir(&app, &folder)?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("フォルダを作成できません: {e}"))?;
+    let path = dir.join(&name);
+    std::fs::write(&path, bytes).map_err(|e| format!("書き込みに失敗しました: {e}"))?;
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -2300,6 +2496,8 @@ async fn new_game(
         host_peer: None,
         pending_inputs: std::collections::BTreeMap::new(),
         reveal: RevealView::default(),
+        scene_seq: next_scene_seq(),
+        last_image: None,
         // 言語設定タブ由来の lang を優先、無ければ env 既定。
         lang: match lang.as_deref() {
             Some("en") | Some("En") | Some("EN") => Lang::En,
@@ -2462,6 +2660,8 @@ async fn restore_session(
         host_peer: None,
         pending_inputs: std::collections::BTreeMap::new(),
         reveal: RevealView::default(),
+        scene_seq: next_scene_seq(),
+        last_image: None,
         lang: match lang.as_deref() {
             Some("en") | Some("En") | Some("EN") => Lang::En,
             Some("ja") | Some("Ja") | Some("JA") => Lang::Ja,
@@ -3346,6 +3546,9 @@ async fn do_play_turn(
                 // 持続 CG は前章のものを持ち越さない (章が変われば情景も変わる = frontend が
                 // 遷移ターンに CG を出さないのと同じ判断)。
                 sess.sustained_cg = None;
+                // spec 24: 挿絵も章を跨がない (場面世代を進め、原本を捨てる)。
+                sess.scene_seq = next_scene_seq();
+                sess.last_image = None;
                 view.state = state_view(&sess.state, &sess.scenario, &sess.history, &sess.viewer_entity());
                 view.background = effective_background(sess);
                 view.bgm = bgm_for(&sess.scenario, &sess.state);
@@ -3933,6 +4136,13 @@ pub fn run() {
             get_default_log_dir,
             save_log_file,
             open_log_folder,
+            get_default_image_dir,
+            open_image_folder,
+            get_image_api_keys,
+            set_image_api_key,
+            image_gen_probe,
+            generate_image,
+            save_generated_image,
             open_package_folder,
             pick_package_folder,
             delete_autosave,
