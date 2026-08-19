@@ -1154,6 +1154,56 @@ mod live {
         }
     }
 
+    /// 設定画集つき (spec 25 Phase C)。`KATARIBE_SHEET` に参照画像のパス。
+    async fn run_with_sheet(provider: Provider, key: &str) {
+        let Ok(sheet) = std::env::var("KATARIBE_SHEET") else {
+            eprintln!("skip: KATARIBE_SHEET 未設定");
+            return;
+        };
+        let bytes = std::fs::read(&sheet).expect("参照画像が読める");
+        let refs = vec![RefImage { name: "01_cast.png".into(), mime: "image/png".into(), bytes }];
+        let cfg = ImageGenConfig {
+            provider,
+            base_url: match provider {
+                Provider::Openai => "https://api.openai.com/v1".into(),
+                Provider::Gemini => "https://generativelanguage.googleapis.com".into(),
+                Provider::Comfy => "http://127.0.0.1:8188".into(),
+            },
+            model: String::new(),
+            shape: Shape::Landscape,
+            detail: Detail::Standard,
+            style: None,
+            user_prefix: String::new(),
+            negative: String::new(),
+            workflow_json: None,
+            timeout_secs: None,
+        };
+        let prompt = "The same man as in the reference sheets (same face, beard, green coat and brown boots)                       now sits at the dusty grand piano in the same hall, one hand on the keys, looking over                       his shoulder toward the viewer. Watercolor illustration, muted colors.";
+        let t0 = std::time::Instant::now();
+        match generate(&cfg, key, prompt, 43, &refs).await {
+            Ok(g) => {
+                let path = out_dir().join(format!("kataribe_live_{provider:?}_ref.png"));
+                std::fs::write(&path, &g.bytes).unwrap();
+                eprintln!("{provider:?} with ref OK: bytes={} elapsed={:.1}s -> {}", g.bytes.len(), t0.elapsed().as_secs_f32(), path.display());
+            }
+            Err(e) => panic!("{provider:?} with ref failed: {e}"),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "実キーが要る live テスト"]
+    async fn openai_with_reference_sheet() {
+        let Some(k) = key(&["IMAGE_API_KEY_OPENAI", "OPENAI_API_KEY"]) else { return };
+        run_with_sheet(Provider::Openai, &k).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "実キーが要る live テスト"]
+    async fn gemini_with_reference_sheet() {
+        let Some(k) = key(&["IMAGE_API_KEY_GEMINI", "GEMINI_API_KEY"]) else { return };
+        run_with_sheet(Provider::Gemini, &k).await;
+    }
+
     #[tokio::test]
     #[ignore = "実キーが要る live テスト"]
     async fn openai_generates_one_image() {
