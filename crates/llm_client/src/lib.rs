@@ -20,6 +20,7 @@ mod error;
 mod gemini;
 mod openai_compat;
 mod parse;
+mod responses;
 mod wire;
 
 pub use client::{CachePoint, CacheStat, LlmClient};
@@ -1777,4 +1778,143 @@ mod tests {
             .collect();
         assert_eq!(roles, vec!["user", "user"], "先頭以外の system は user に降格");
     }
+
+    // --- Responses ワイヤ (Perplexity Agent API `/v1/responses`、2026-08-20) ------------
+
+    /// 【Provider 自動判定】`api.perplexity.ai` には `/chat/completions` の口が**無い**
+    /// (404・本文なし = アプリの実観測・Fuseforks 2026-08-19 と同じ)。互換の口は
+    /// `/router/v1/chat/completions` (有料クレジット要) で、鍵だけで使えるのは
+    /// `/v1/responses` (Agent API の OpenAI Responses 互換別名)。ホストで判定し、
+    /// `/router/` を含む base_url は互換のまま (Gemini の `/openai` 例外と同じ形)。
+    #[test]
+    fn provider_detects_perplexity_as_responses_but_router_as_compat() {
+        assert_eq!(Provider::detect("https://api.perplexity.ai/v1"), Provider::Responses);
+        assert_eq!(Provider::detect("https://api.perplexity.ai"), Provider::Responses);
+        assert_eq!(
+            Provider::detect("https://api.perplexity.ai/router/v1"),
+            Provider::OpenAiCompat,
+            "Router API は chat/completions 互換 — 互換利用者を壊さない"
+        );
+        let mut cfg = LlmConfig::new("https://api.perplexity.ai/v1/", "sk", "perplexity/deepseek-v4-flash-0731");
+        assert_eq!(cfg.provider, Provider::Responses);
+        assert_eq!(cfg.responses_endpoint(), "https://api.perplexity.ai/v1/responses");
+        cfg.base_url = "https://api.perplexity.ai".into();
+        assert_eq!(
+            cfg.responses_endpoint(),
+            "https://api.perplexity.ai/v1/responses",
+            "ホスト直でも /v1 を補う (受領者ゼロ設定)"
+        );
+        // 明示指定の語彙。
+        assert_eq!(
+            Provider::parse_env("responses", "LLM_PROVIDER").unwrap(),
+            Provider::Responses
+        );
+        assert_eq!(
+            Provider::parse_env("perplexity", "LLM_PROVIDER").unwrap(),
+            Provider::Responses
+        );
+    }
+
+    /// 【encode】canonical → Responses wire。probe で確定した形 (2026-08-20 実測):
+    /// `input` は `{type:"message", role, content}` の列 (system ロール可) / 関数ツールは
+    /// **flat** (`{type:"function", name, description, parameters}`、互換層の `function` 入れ子
+    /// ではない) / 単一ツール強制は **`tool_choice: "required"`** — 名指し
+    /// `{type:function,name}` は 200 で受理されるが**黙殺**される (message が返った) ので、
+    /// 提示ツールが 1 本の Kataribe では `required` が等価で唯一効く形 / `store: false` 常送 /
+    /// 出力上限は `max_output_tokens` / temperature は明示時のみ / tools 無しなら tool_choice 無し。
+    #[test]
+    fn responses_encode_flat_tools_required_and_store_false() {
+        let req = compat_req("perplexity/deepseek-v4-flash-0731");
+        let wire_req = responses::encode(&req);
+        let body = serde_json::to_value(&wire_req).unwrap();
+        assert_eq!(body["model"], "perplexity/deepseek-v4-flash-0731");
+        assert_eq!(body["store"], false, "接続先に会話を保持させない");
+        assert_eq!(body["max_output_tokens"], 4096);
+        assert!(body.get("temperature").is_none(), "None なら送らない");
+        assert!(body.get("max_tokens").is_none(), "chat/completions の欄名は使わない");
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input[0]["type"], "message");
+        assert_eq!(input[0]["role"], "system");
+        assert_eq!(input[0]["content"], "あなたはGM");
+        assert_eq!(input.last().unwrap()["role"], "user");
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["type"], "function");
+        assert_eq!(tools[0]["name"], EMIT_DELTA_TOOL, "flat — `function` の入れ子ではない");
+        assert!(tools[0].get("function").is_none());
+        assert!(tools[0]["parameters"]["properties"]["ops"].is_object());
+        assert_eq!(body["tool_choice"], "required", "名指しは黙殺されるので required");
+
+        // tools 無し (generate) なら tools も tool_choice も出ない。
+        let plain = canonical::ChatRequest {
+            tools: Vec::new(),
+            tool_choice: canonical::ToolChoice::None,
+            ..req
+        };
+        let body = serde_json::to_value(responses::encode(&plain)).unwrap();
+        assert!(body.get("tools").is_none());
+        assert!(body.get("tool_choice").is_none());
+    }
+
+    /// 【decode】Responses wire → canonical。`output` は種別の混在列: `function_call` の
+    /// `arguments` (JSON 文字列) は境界で 1 回だけ parse / `message` の `output_text` が text /
+    /// usage は `input_tokens`・`output_tokens`・`input_tokens_details.cached_tokens` /
+    /// `status: incomplete` は Length (OutputTruncated の判定材料) / 未知種別 (`search_results`
+    /// 等) は落として壊さない / 形が合わなければ raw を保持 (#34 同型)。
+    #[test]
+    fn responses_decode_function_call_message_usage_and_status() {
+        let body = r#"{
+            "id":"r1","status":"completed","model":"perplexity/deepseek-v4-flash-0731",
+            "output":[
+              {"type":"search_results","queries":["x"],"results":[]},
+              {"type":"function_call","id":"fc1","status":"completed","name":"emit_delta",
+               "call_id":"call_abc","arguments":"{\"narration\":\"扉が開く\",\"ops\":[{\"op\":\"set_flag\",\"key\":\"door_open\",\"value\":true}]}"}
+            ],
+            "usage":{"input_tokens":2169,"output_tokens":162,"total_tokens":2331,
+                     "input_tokens_details":{"cached_tokens":700},
+                     "output_tokens_details":{"reasoning_tokens":0},
+                     "cost":{"currency":"USD","total_cost":0.00032}}
+        }"#;
+        let resp = client::decode_responses_body(body.to_string()).unwrap();
+        let c = responses::decode(resp).unwrap();
+        assert_eq!(c.tool_calls.len(), 1);
+        assert_eq!(c.tool_calls[0].id, "call_abc");
+        assert_eq!(c.tool_calls[0].name, "emit_delta");
+        assert_eq!(c.finish, canonical::Finish::ToolUse);
+        assert_eq!(c.usage.prompt, 2169);
+        assert_eq!(c.usage.completion, 162);
+        assert_eq!(c.usage.cache_read, 700);
+        let delta: StateDelta = parse::extract(&c).unwrap();
+        assert_eq!(delta.narration, "扉が開く");
+        assert!(matches!(delta.ops[0], StateOp::SetFlag { .. }));
+
+        // message だけ (ツールを使わなかった回) は text に落ち、finish は Stop。
+        let body = r#"{"status":"completed","output":[
+            {"type":"message","role":"assistant","content":[{"type":"output_text","text":"こんにちは","annotations":[]}]}
+        ]}"#;
+        let c = responses::decode(client::decode_responses_body(body.to_string()).unwrap()).unwrap();
+        assert_eq!(c.text.as_deref(), Some("こんにちは"));
+        assert!(c.tool_calls.is_empty());
+        assert_eq!(c.finish, canonical::Finish::Stop);
+        assert_eq!(c.usage.prompt, 0, "usage 無しでも壊れない");
+
+        // incomplete → Length。空なら OutputTruncated に乗る (openai_compat と同じ防御を共有)。
+        let body = r#"{"status":"incomplete","output":[]}"#;
+        let c = responses::decode(client::decode_responses_body(body.to_string()).unwrap()).unwrap();
+        assert_eq!(c.finish, canonical::Finish::Length);
+        assert!(matches!(
+            openai_compat::reject_empty_reasoning(c, 4096),
+            Err(LlmError::OutputTruncated { limit: 4096 })
+        ));
+
+        // 壊れた arguments は raw を保持した Parse エラー (再生成の燃料)。
+        let body = r#"{"status":"completed","output":[{"type":"function_call","name":"emit_delta","call_id":"c","arguments":"{\"narration\": "}]}"#;
+        let err = responses::decode(client::decode_responses_body(body.to_string()).unwrap()).unwrap_err();
+        assert!(matches!(err, LlmError::Parse { raw, .. } if raw.contains("narration")));
+
+        // 形が合わない本文 (HTML 等) は raw ごと保持。
+        let err = client::decode_responses_body("<html>502</html>".to_string()).unwrap_err();
+        assert!(matches!(err, LlmError::Parse { raw, .. } if raw.contains("502")));
+    }
 }
+

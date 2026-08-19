@@ -31,7 +31,7 @@ After launching, go to **Settings → AI Model** and set the `base_url` / `model
 | Branch | Role | Implementation | Status |
 |---|---|---|---|
 | **Engine (source of truth)** | Deterministically adjudicates every mutable state — HP/stats, inventory, dice, flags, location, skills, attributes | `crates/gm_core` (Rust) | ✅ Done |
-| **LLM (proposal)** | Narration, NPC lines, action proposals. Holds no numeric truth (structurally can't) | `crates/llm_client` (Rust) | ✅ Done — 4 providers |
+| **LLM (proposal)** | Narration, NPC lines, action proposals. Holds no numeric truth (structurally can't) | `crates/llm_client` (Rust) | ✅ Done — 4 wire formats (OpenAI-compatible / Anthropic / Gemini / OpenAI Responses) |
 | **Memoria (memory)** | Semantic recall of foreshadowing & character personality (never mutable state) | `crates/harness` (memoria_bridge) | ✅ Done |
 | **Scenario (constraint)** | A location graph + gate conditions keep improvisation on the rails | YAML packages | ✅ Done |
 
@@ -51,7 +51,7 @@ Because of that boundary:
 
 ## Proven with real LLMs, across genres
 
-The same unchanged engine drives fantasy dungeons, dating-sim routes (raising a heroine's affection), mystery, and social deduction (a hidden-werewolf village). The engine is genre-neutral; the LLM supplies the flavor. Verified end-to-end with **Claude, Gemini, and Grok**, and with local OpenAI-compatible servers via a **no-tools JSON mode** (for models that don't support tool calling). Prompt caching (Anthropic `cache_control` / Gemini `cachedContent` / xAI sticky routing) keeps the repeated input cheap.
+The same unchanged engine drives fantasy dungeons, dating-sim routes (raising a heroine's affection), mystery, and social deduction (a hidden-werewolf village). The engine is genre-neutral; the LLM supplies the flavor. Verified end-to-end with **Claude, Gemini, Grok, OpenAI, Meta, and Perplexity (Agent API via `/v1/responses`)**, and with local OpenAI-compatible servers via a **no-tools JSON mode** (for models that don't support tool calling). Prompt caching (Anthropic `cache_control` / Gemini `cachedContent` / xAI sticky routing) keeps the repeated input cheap.
 
 The signature demonstration: tell the GM you use a "prophecy skill you never had," and it grounds the lie away — *"there was never such a power"* — with zero state change. **The source of truth beats the LLM's fluency.**
 
@@ -79,7 +79,7 @@ Kataribe/
 ├── data_contract.yaml   # ★ Frozen nouns (the GameState / StateDelta / Gate / Scenario contract)
 ├── crates/
 │   ├── gm_core/         # Source of truth: state, scenario spine, adjudicate/apply engine
-│   ├── llm_client/      # Narrator leg: 4-provider unified tool layer, schemars-generated schema,
+│   ├── llm_client/      # Narrator leg: 4-wire unified tool layer, schemars-generated schema,
 │   │                    #   prompt caching, no-tools JSON fallback for cheap/local models
 │   └── harness/         # Turn loop, memoria_bridge, synopsis/chronicle (long-term memory), campaigns
 ├── app/                 # Tauri 2 + Vue 3 desktop app (save/load, immersion assets, i18n ja/en, 書庫)

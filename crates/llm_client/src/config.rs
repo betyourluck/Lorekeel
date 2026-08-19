@@ -21,6 +21,13 @@ pub enum Provider {
     /// `POST {base}/v1beta/models/{model}:generateContent` + x-goog-api-key (spec 12 Phase C)。
     /// tool-use を常に使う (tool_choice = functionCallingConfig を確実に尊重する)。
     Gemini,
+    /// `POST {base_url}/responses` + Bearer — OpenAI Responses 形のワイヤ (2026-08-20)。
+    /// 第一の利用者は **Perplexity Agent API** (`/v1/agent` の互換別名 `/v1/responses`):
+    /// Perplexity には `/chat/completions` の口が**無く** (404・本文なし)、互換の口
+    /// `/router/v1/chat/completions` は有料クレジットが要る。鍵だけで通るのがこの経路。
+    /// tool-use を常に使う (`tool_choice: "required"` が効く。名指しは黙殺されるが
+    /// 提示ツールが 1 本なので等価)。
+    Responses,
 }
 
 impl Provider {
@@ -31,6 +38,10 @@ impl Provider {
     /// base_url にも generativelanguage.googleapis.com が含まれる — 既存の互換利用者を
     /// 壊さないよう `/openai` を含む URL は互換のまま。判定不能なプロキシホストは
     /// OpenAiCompat に落ちる (安全側。明示 `LLM_PROVIDER` を .env.example で誘導)。
+    ///
+    /// **Perplexity (2026-08-20)**: `api.perplexity.ai` は Responses ワイヤ。ただし
+    /// `/router/` を含む base_url (Router API = chat/completions 互換) は互換のまま —
+    /// Gemini の `/openai` 例外と同じ形で、互換の口を選んだ利用者を壊さない。
     pub fn detect(base_url: &str) -> Self {
         if base_url.contains("api.anthropic.com") {
             Provider::Anthropic
@@ -38,19 +49,22 @@ impl Provider {
             && !base_url.contains("/openai")
         {
             Provider::Gemini
+        } else if base_url.contains("api.perplexity.ai") && !base_url.contains("/router/") {
+            Provider::Responses
         } else {
             Provider::OpenAiCompat
         }
     }
 
     /// `LLM_PROVIDER` / `SUMMARY_LLM_PROVIDER` の値をパースする (純粋・両経路で共用)。
-    fn parse_env(raw: &str, var: &str) -> Result<Self, LlmError> {
+    pub(crate) fn parse_env(raw: &str, var: &str) -> Result<Self, LlmError> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "anthropic" | "native" => Ok(Provider::Anthropic),
             "openai" | "openai_compat" | "compat" => Ok(Provider::OpenAiCompat),
             "gemini" | "google" => Ok(Provider::Gemini),
+            "responses" | "openai_responses" | "perplexity" => Ok(Provider::Responses),
             other => Err(LlmError::Config(format!(
-                "環境変数 {var} の値 '{other}' を解釈できません (anthropic / openai / gemini)"
+                "環境変数 {var} の値 '{other}' を解釈できません (anthropic / openai / gemini / responses)"
             ))),
         }
     }
@@ -393,6 +407,18 @@ impl LlmConfig {
     /// `{base_url}/messages` (Anthropic ネイティブ) を組み立てる (末尾スラッシュを正規化)。
     pub fn messages_endpoint(&self) -> String {
         format!("{}/messages", self.base_url.trim_end_matches('/'))
+    }
+
+    /// `{base_url}/responses` (OpenAI Responses 形。Perplexity は `/v1/responses`) を組み立てる。
+    /// base_url がホスト直 (`https://api.perplexity.ai`) なら `/v1` を補う — Gemini の
+    /// `/v1beta` 補完と同じ受領者ゼロ設定。
+    pub fn responses_endpoint(&self) -> String {
+        let base = self.base_url.trim_end_matches('/');
+        if base.ends_with("/v1") {
+            format!("{base}/responses")
+        } else {
+            format!("{base}/v1/responses")
+        }
     }
 
     /// Gemini ネイティブ `generateContent` エンドポイントを組み立てる (spec 12 Phase C)。

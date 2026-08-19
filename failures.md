@@ -1653,3 +1653,61 @@ authored トリガーでも GM の自己汚染でもなく**モデルの content
 作者が後から書き換えられる素材だが、GM の語りはそのままプレイヤーが読む製品で
 逃げ場がない。**「良いモデル」は仕事ごとに違う**ので、authoring と GM を
 一つの推奨に畳まない。
+
+### 80. 「OpenAI 互換」の口が無いプロバイダがある — Perplexity は `/chat/completions` を持たない
+
+**観察** (2026-08-20、ユーザー実機): app の `.env` を `LLM_BASE_URL=https://api.perplexity.ai/v1`・
+`LLM_MODEL=perplexity/deepseek-v4-flash-0731` にして開始すると即エラー。Fuseforks が
+2026-08-19 に同じ形で踏んでいた (**404・本文なし**)。probe 5 本 + 公式文書 (`docs.perplexity.ai`)
+で確定:
+
+| 口 | 実態 |
+|---|---|
+| `/v1/chat/completions` | **存在しない** (404・本文なし。互換経路が既定で叩く先) |
+| `/router/v1/chat/completions` | Router API = OpenAI 互換・接地なし。**有料クレジットが要る** (403 `restricted_api_key`、Fuseforks 実測) |
+| `/v1/agent` = `/v1/responses` | Agent API (OpenAI Responses 互換別名)。**鍵だけで通る** |
+
+**真因は #78 の延長**: 「互換」を名乗る層で保証されるのはメッセージの形だけ (#78) と書いたが、
+Perplexity は**その形を話す口自体が既定の場所に無い**。`base_url + /chat/completions` という
+組み立て規約が、プロバイダによっては存在しないパスを指す。404 に本文が無いので、
+受領者には「URL を間違えた」としか見えない。
+
+**修正**: 第 4 の adapter **`responses.rs`** (OpenAI Responses 形 `POST {base_url}/responses`)。
+`api.perplexity.ai` かつ `/router/` を含まない base_url は `Provider::Responses` へ自動判定
+(Gemini の `/openai` 例外と同じ形 — 互換の口を選んだ利用者は壊さない)。明示は
+`LLM_PROVIDER=responses`。写経元は Fuseforks `openai_responses.rs` (Spec 34) だが、
+Kataribe が使う欄だけを送る (web 検索・思考の要約・`include` は持ち込まない)。
+
+**probe で分かったこの口の癖 3 つ** (実装の前提):
+1. **`tool_choice` の名指し `{type:"function", name}` は 200 で受理されるが黙殺される**
+   (message が返る)。文書の request schema にも `tool_choice` は無い。一方 **`"required"` は
+   効く** (3/3 で function_call、無指定は 2/3)。提示ツールが `emit_delta` 1 本の Kataribe では
+   `required` が名指しと等価なので、`ToolChoice::Specific` を `required` へ畳む。
+   **「受理された」≠「効いた」** は #52 (Gemini の oneOf 黙殺) と同族 — 受理テストでなく
+   **出力形のテスト**でしか検出できない。
+2. 関数ツールは **flat** (`{type, name, description, parameters}`)。互換層の `function` 入れ子
+   ではない。Kataribe の実 schema (oneOf 入り・$ref inline 済) はそのまま受理され、
+   `ops` を正しい配列で返した (`set_flag` + `move` の 2 op)。
+3. 出典は `annotations` でなく **`search_results` という output item**、usage に **`cost` (USD)**
+   が載る (検索 1 回 $0.0025)。Kataribe は web 検索を送らないので出典は来ないが、
+   decode は未知種別を落として壊さない形にしてある。
+
+**キャッシュ計数は `input_tokens_details.cached_tokens`** (実ワイヤ)。文書は
+`cache_read_input_tokens` と書くので両方受ける。**live では CLI 2 ターン (prompt ~7k) とも
+cached=0** — ただし **n=2 で「返さない」とは断定しない** (2026-08-09 に Meta で同じ早合点を
+した直後である。#53 / Meta 訂正と同じ方法論の罠)。「今回は 0 だった」で止める。
+
+**【一般化】`base_url + 固定パス` の組み立て規約は、プロバイダがその口を持つことを前提に
+している。** 404 は「パスが無い」であって「鍵が違う」でも「モデルが違う」でもないのに、
+本文が無いと受領者には区別がつかない。**判定はホストで行い、互換の口 (`/router/`) を
+選んだ利用者は壊さない** — 自動判定の例外は常に「より狭い条件を先に見る」で書く
+(Gemini `/openai` / Perplexity `/router/`)。
+
+**鍵の名の罠 (小)**: 公式文書は `PERPLEXITY_API_KEY` と書くが Kataribe の欄は
+`LLM_API_KEY` で変わらない。ユーザー端末には `PPLX_API_KEY` (Fuseforks 由来) も在る。
+live テスト (`tests/live_responses.rs`、`--ignored`) は両方を読む。
+
+**未測定**: 他の Responses 形の口 (OpenAI 本家 `/v1/responses`) でこの adapter が通るか
+(名指し `tool_choice` が効く口では `required` でも同じ結果になるはずだが未検証) /
+Perplexity のキャッシュが長セッションで効くか / `reasoning_tokens` の扱い
+(`generate` で 15 字の答えに output=398 が出た — 思考が混じっている可能性。計測のみ)。

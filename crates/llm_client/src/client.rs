@@ -16,6 +16,7 @@ use crate::error::LlmError;
 use crate::gemini;
 use crate::openai_compat;
 use crate::parse;
+use crate::responses;
 use crate::wire::{ChatMessage, ChatRequest, ChatResponse};
 
 /// プロンプトキャッシュの健全性の計測値。`cache_read`>0 = 安定プレフィックスがキャッシュから
@@ -255,6 +256,13 @@ impl LlmClient {
             // Gemini ネイティブ経路 (Phase C) + 明示キャッシュ (spec 13): 静的プレフィックスを
             // cachedContent に pin し、暗黙キャッシュの ~8000 崖 (failures #54) を迂回する。
             Provider::Gemini => self.gemini_complete(req).await?,
+            // OpenAI Responses 形 (2026-08-20): Perplexity Agent API の `/v1/responses`。
+            // 常に tool-use (`required` が効く)。ToolMode の降格は持たない — tool_choice で
+            // 400 を返す口ではなく (名指しは黙殺)、Off へ落ちる道が無い。
+            Provider::Responses => {
+                let wire_req = responses::encode(&req);
+                self.responses_with_retry(&wire_req, req.max_tokens).await?
+            }
         };
         self.record_cache(resp.usage.cache_read, resp.usage.prompt);
         Ok(resp)
@@ -453,6 +461,81 @@ impl LlmClient {
         }
     }
 
+    // --- OpenAI Responses 形 (Perplexity `/v1/responses`、2026-08-20) ------------------
+
+    /// `POST {base_url}/responses` を 1 回叩く (リトライ無し)。認証は Bearer。
+    async fn responses_once(
+        &self,
+        req: &responses::ResponsesRequest,
+    ) -> Result<responses::ResponsesResponse, LlmError> {
+        let debug = std::env::var("LLM_DEBUG").is_ok();
+        if debug {
+            eprintln!(
+                "[LLM_DEBUG] request -> {}",
+                serde_json::to_string(req).unwrap_or_default()
+            );
+        }
+        let resp = self
+            .http
+            .post(self.config.responses_endpoint())
+            .bearer_auth(&self.config.api_key)
+            .json(req)
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(LlmError::Api { status: status.as_u16(), body });
+        }
+        let body = resp.text().await?;
+        if debug {
+            eprintln!("[LLM_DEBUG] response <- {body}");
+        }
+        let decoded = decode_responses_body(body)?;
+        if debug || std::env::var("LLM_CACHE_DEBUG").is_ok() {
+            if let Some(u) = &decoded.usage {
+                let cached = u
+                    .input_tokens_details
+                    .as_ref()
+                    .map(|d| d.cached_tokens.max(d.cache_read_input_tokens))
+                    .unwrap_or(0);
+                eprintln!(
+                    "[LLM_CACHE] cached={} input={} output={}",
+                    cached, u.input_tokens, u.output_tokens
+                );
+            }
+        }
+        Ok(decoded)
+    }
+
+    /// 指数 backoff 付きで Responses を叩き canonical まで解決する ([`Self::compat_with_retry`]
+    /// 同型 — decode と出力上限の検出を**試行の中**に含める)。
+    async fn responses_with_retry(
+        &self,
+        req: &responses::ResponsesRequest,
+        limit: u32,
+    ) -> Result<canonical::ChatResponse, LlmError> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let result = match self.responses_once(req).await {
+                Ok(raw) => responses::decode(raw)
+                    .and_then(|r| openai_compat::reject_empty_reasoning(r, limit)),
+                Err(e) => Err(e),
+            };
+            match result {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    if attempt >= self.config.max_retries || !e.is_transient() {
+                        return Err(e);
+                    }
+                    let secs = (1u64 << (attempt - 1)).min(10);
+                    tokio::time::sleep(Duration::from_secs(secs)).await;
+                }
+            }
+        }
+    }
+
     // --- Gemini ネイティブ generateContent (spec 12 Phase C) ------------------------
 
     /// `POST {base}/v1beta/models/{model}:generateContent` を 1 回叩く (リトライ無し)。
@@ -628,6 +711,12 @@ pub(crate) fn decode_chat_body(body: String) -> Result<ChatResponse, LlmError> {
 /// Messages API 版の [`decode_chat_body`]。同じく **raw を保持** (#34 同型)。
 pub(crate) fn decode_messages_body(body: String) -> Result<anthropic::MessagesResponse, LlmError> {
     serde_json::from_str::<anthropic::MessagesResponse>(&body)
+        .map_err(|source| LlmError::Parse { source, raw: body })
+}
+
+/// Responses 版の [`decode_chat_body`]。同じく **raw を保持** (#34 同型)。
+pub(crate) fn decode_responses_body(body: String) -> Result<responses::ResponsesResponse, LlmError> {
+    serde_json::from_str::<responses::ResponsesResponse>(&body)
         .map_err(|source| LlmError::Parse { source, raw: body })
 }
 
