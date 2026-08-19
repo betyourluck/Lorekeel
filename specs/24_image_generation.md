@@ -1,6 +1,6 @@
 # spec 24: 画像生成 — 物語に合わせた挿絵を、背景と文字の間に重ねる
 
-**Status**: Draft（2026-08-20 起草。ユーザー要望 → 三点測量（先行アプリ 2 本・Kataribe の提示層・Memoria）→ rev1。査読待ち）
+**Status**: Draft rev2（2026-08-20 起草 → 同日ユーザー査読 10 点 + 外部接地 + 未決 5 点の回答を反映。Phase 0 着手前の確認待ち）
 
 ## 動機
 
@@ -42,30 +42,45 @@ GM ではない。
    先行 2 本の和集合。Stable Diffusion WebUI（A1111 `/sdapi/v1/txt2img`）は Phase D で任意追加
    （ローカルで最も普及しているが先行には無い。実装コストは最小）。
 
-## 外部接地（2026-08-20 時点。**実装時に公式文書で形を再確認する** — #78/#80 の教訓）
+## 外部接地（2026-08-20 時点。rev2 = ユーザー査読の再接地を反映。**実装時に公式文書で再確認** — #78/#80）
 
-- **OpenAI Images**: `POST {base}/v1/images/generations` `{model: "gpt-image-1", prompt, size, n: 1}`
-  → `data[0].b64_json`。サイズ語彙はモデル依存（`1024x1024` / `1536x1024` / `1024x1536`）。
-  互換サーバ（`/v1/images/generations` を話すローカル）にも同じ口で届きうる。
-- **Gemini（Nano Banana）**: `POST {base}/v1beta/models/{model}:generateContent` +
-  `x-goog-api-key`、`generationConfig.responseModalities: ["IMAGE","TEXT"]`、
-  モデルは `gemini-2.5-flash-image` 系（Pro 版は別 id）→ `candidates[0].content.parts[]` の
-  `inlineData{mimeType, data(base64)}`。**安全ブロックは 200 + 空**で来る（#61 と同型）→
-  `promptFeedback.blockReason` / 候補 `finishReason` を理由として surface。
-- **ComfyUI**: `POST {base}/prompt` `{prompt: <workflow API 形式>, client_id}` → `{prompt_id}`
-  → `GET {base}/history/{prompt_id}` をポーリング → `outputs[*].images[{filename, subfolder, type}]`
-  → `GET {base}/view?filename=&subfolder=&type=` で PNG。ワークフローは**ユーザーが API 形式
-  JSON を設定に貼る**（alslime 方式: 汎用ワークフローを配布し、ComfyUI で一度開いて確認させる）。
-  **プレースホルダ**を Kataribe が置換: `%prompt%` / `%negative%` / `%seed%` / `%width%` / `%height%`。
-  同梱の汎用ワークフロー（SDXL/Anima 系の最小 txt2img）を `app/src/assets/comfy_generic.json` に置く。
-- **CSP**: `connect-src` は localhost のみ、`img-src` に `data:` あり（`tauri.conf.json`）。
-  → **HTTP は全部 backend（Rust/reqwest）**。クラウドのキーを WebView に置かず、CSP も触らない。
-  ComfyUI も backend から叩く（経路を 1 本に）。表示は `data:image/png;base64,…`（IPC で 1〜2MB、許容）。
+- **OpenAI Images**: `POST {base}/v1/images/generations`
+  `{model, prompt, size, quality, n: 1, output_format}` → `data[0].b64_json`（`url` は返らない実装が
+  主流）。モデルは `gpt-image-1`（現行既定）/ `gpt-image-1-mini`。`size` = `1024x1024 | 1024x1536 |
+  1536x1024 | auto`、`quality` = `low | medium | high | auto`。**quality で消費が 16 倍動く**
+  （`high 1024x1024 = 4160 tok` / `low = 272 tok`）→ 手動生成なので **`low` 既定**、UI で上げられる。
+  `style` 欄は無い・旧 DALL-E の `quality: hd` は `high` へ読み替え。互換サーバにも同じ口で届きうる。
+  **ネガティブプロンプト欄は無い。**
+- **Gemini（Nano Banana）**: `POST {base}/v1beta/models/{model}:generateContent` + `x-goog-api-key`
+  （**`v1beta` 必須**）。`generationConfig.responseModalities: ["IMAGE","TEXT"]`（または `["IMAGE"]`）+
+  **`generationConfig.imageConfig: {aspectRatio: "1:1"|"16:9"|…, imageSize: "1K"|"2K"|"4K"}`** —
+  サイズは OpenAI の `size` ではなく **アスペクト比 + 解像度段**。モデル id（2026 時点、**実装時に
+  `models.list` で再確認** — id は動く）: `gemini-2.5-flash-image`（Stable）/
+  `gemini-3-pro-image-preview`（Pro）/ `gemini-3.1-flash-image-preview`（2）。応答は
+  `candidates[0].content.parts[]` の `inlineData{mimeType, data}`。**安全ブロックは 200 + 空**（`parts`
+  が空）で来る → `promptFeedback.blockReason` / 候補 `finishReason=SAFETY` + `safetyRatings` を
+  理由としてトーストに載せる（#61 の写し・必須）。**既知の癖**: `imageConfig` が無視されて 1:1 で
+  返る報告が複数 → Phase D で観測されたらプロンプト末尾に `(aspect ratio 16:9)` を付ける二重化を
+  **opt-in** で足す（既定では付けない — プロンプトを汚す）。**ネガティブプロンプト欄は無い。**
+- **ComfyUI**: `POST {base}/prompt` `{prompt: <API 形式ワークフロー>, client_id}` → `{prompt_id}` →
+  `GET {base}/history/{prompt_id}` を **1 秒間隔でポーリング**（**発行直後の 404/空は正常** =
+  キュー消化後に初めて入る。`status` / `node_errors` からエラーを抽出）→ `outputs[*].images[{filename,
+  subfolder, type}]` → `GET {base}/view?filename=&subfolder=&type=` で PNG。ワークフローは **UI の
+  レイアウト JSON ではなく API 形式**をユーザーが設定に貼る（alslime 方式）。プレースホルダは
+  `%prompt%` に統一（SillyTavern 拡張と同じ流儀。`{{positive_prompt}}` 系は採らない）。
+  **置換は型を保つ**（決定 13）。**リモート ComfyUI（RunPod 等）も backend が叩くので CSP 対象外**
+  （reqwest は CORS 無関係）— 文書に明記。
+- **CSP**: `connect-src` は localhost のみ、`img-src` に `data:` あり（`tauri.conf.json`）→
+  **HTTP は全部 backend**。表示は `data:image/png;base64,…`。
 
 ## 決定事項（rev1 の提案。査読で確定）
 
 1. **HTTP は backend、表示は data URL**（上記）。生成画像のバイト列は `GameSession.last_image`
-   に保持し、保存 command はそれを書く（frontend から 1MB を送り返さない）。
+   に保持し、保存 command はそれを書く（frontend から 1MB を送り返さない）。**二重保持は
+   意図的**: backend = 保存用の原本 bytes（1 枚分のみ・差し替えで捨てる）/ frontend = 表示用の
+   data URL 文字列（`store.generatedImage.dataUrl`）。**data URL は文字列なので差し替えれば GC
+   される**（revoke が要るのは `URL.createObjectURL` の側 — rev2 査読の「GC されない」は逆で、
+   ObjectURL を採らない理由がこれ）。IPC は生成 1 回につき 1 往復（1〜2MB）。
 2. **プロンプト書きは GM クライアントの `generate`**（`SUMMARY_LLM_*` のような別指定は v1 では
    作らない。要るなら spec 10 と同型で後から足せる）。**秘密は渡さない** — 素材に `state_brief`
    を使わず、語り・場所説明・presence の profile・world だけを渡す。`hidden_*`/`secret_*` は
@@ -96,6 +111,60 @@ GM ではない。
 10. **多人数は v1 外**（ユーザー指示）。挿絵はホストのローカル表示のみ・ゲストへ配らない。
 11. **gm_core は `image_style` 1 フィールド以外無改修。** harness は `build_image_prompt_request`
     （純関数・テスト可）だけ。engine の検証・状態には一切触れない。
+12. **サイズはプリセット 1 軸 + プロバイダ別写像**（rev2）: UI は `正方形 / 横長 / 縦長` の 3 値
+    （+ 解像度段 `標準 / 高`）だけを持ち、data_contract の表で各プロバイダの語彙へ写す —
+    OpenAI `size`（`1024x1024 / 1536x1024 / 1024x1536`）+ `quality`（標準=`low` / 高=`medium`。
+    `high` は UI の「最高（高コスト）」でのみ）/ Gemini `imageConfig.aspectRatio`（`1:1 / 16:9 / 9:16`）+
+    `imageSize`（標準=`1K` / 高=`2K`）/ ComfyUI `%width%`/`%height%`（`1024×1024 / 1344×768 /
+    768×1344`、SDXL 系の既定）。プロバイダを切り替えても設定が壊れない（1 軸を写すだけ）。
+13. **ComfyUI の置換は `serde_json::Value` を歩いて型を保つ**（rev2）: ワークフロー JSON の文字列値が
+    **ちょうど** `"%width%"` / `"%height%"` / `"%seed%"` なら **数値 JSON**（bare integer）に差し替え、
+    `"%prompt%"` / `"%negative%"` は文字列値として差し替え（部分一致 = 文字列内の置換も可、serde が
+    エスケープするので JSON は壊れない）。**未置換は既定値で埋める**（seed = 乱数、width/height =
+    プリセット、negative = 設定値 or 空）— 残すと ComfyUI が `invalid literal` で落ちる。
+    単純な文字列置換は採らない（数値欄に `"1024"` とクォート付きで入って 400 になる）。
+14. **ネガティブプロンプトは ComfyUI（と A1111）だけ**（rev2）: OpenAI / Gemini には欄が無い。
+    UI はプロバイダがそれ以外のとき欄を無効化し、プロンプト書きも「ネガを本文に混ぜない」で固定
+    （ネガをプロンプトに書かせると「no hat」を描く類の逆効果が出る）。
+15. **第三層の可読性**（rev2・旧未決 4 を昇格）: `object-fit: contain` 既定 + **不透明度スライダ
+    （0.3〜1.0、既定 0.85）** + **第三層自体に暗幕 `rgba(0,0,0,0.35)`** を掛ける。`main` の暗幕は
+    `main` の背景にしか掛からず、第三層はその上に乗るので文字（白）とのコントラストが飛ぶ — 文字
+    トグル無しでも読める状態を既定にする。`cover` は顔が切れるので採らない。設定「グラフィック」
+    ではなく「画像生成」タブに置く（機能の所属で分ける）。
+16. **揮発境界のレース防御**（rev2）: 生成は非同期（OpenAI high で 60〜90 秒・ComfyUI は分単位）。
+    `GameSession.scene_seq: u64` を 新しいゲーム / ロード / campaign 遷移 で進め、`generate_image` は
+    発行時の `scene_seq` を持って走り、**完了時に現在値と一致しなければ破棄**してトースト
+    「場面が変わったため破棄しました」。frontend 側も `requestId` で古い完了を無視（二層）。
+17. **素材は全てプレイヤーが既に見ているもの**（rev2・旧決定 2 の明文化）: `Location.description`
+    = 開幕ログに出る文（GM 向けの隠し説明は `Location` に**存在しない**、spine.rs で確認）/
+    `CharacterDef.profile` = プロフィールカードで見える / 直前の語り = 会話ログ / `world` =
+    scenario_brief 経由で GM に出るがプレイヤーにも世界観として提示済み。`state_brief`・`hidden_*`・
+    `secret_*`・`internal_*`・facts は素材に含めない。PoC で「secret/hidden 属性の値が request 本文に
+    現れない」を固定。**presence の予算**: 上位 3 名は profile 400 字まで、4 人目以降は**名前だけ**、
+    素材合計 2000 字以内（10 人盤面で 4000 字に溢れる問題）。
+18. **設定は 2 ソース**（rev2）: frontend が `invoke generate_image({config: <localStorage の非秘密>,
+    scene_seq})` で非秘密を渡し、backend が `app_data/.env` から `IMAGE_API_KEY_{PROVIDER}` を
+    **マージ**する。`image_gen_probe` も同じ 2 ソース。図の矢印は 1 本だが実装は 2 本 — 契約に
+    `config_sources` として明記。
+19. **`image_gen_probe`（接続テスト）**は画像を生成しない: OpenAI = `GET {base}/v1/models`
+    （認証のみ）/ Gemini = `GET {base}/v1beta/models/{model}`（認証 + モデル存在）/ ComfyUI =
+    `GET {base}/system_stats`（到達性）。結果は「接続できました / 401 キー / 404 モデル / 接続不能」
+    の 1 行。サイズ語彙の検証は probe ではやらない（実生成で 400 の本文を surface する方が正確）。
+20. **ファイル名**（rev2）: `{YYYYMMDD_HHMMSS}_{slug}_T{turn}.png`。`turn` = `GameState.turn`
+    （campaign 跨ぎで持ち越す累積ターン。ロードしてもセーブ時の値から続く）。`slug` = パッケージ
+    フォルダ名を ASCII 英数と `-_` だけに落とし、**空になったら（日本語名）タイトルの FNV-1a 8 桁
+    hex** で代替（セーブファイルのキーと同じ流儀）。パス要素は拒否（`save_log_file` 同型）。
+21. **タイムアウトはプロバイダ別**（rev2）: OpenAI 120 秒 / Gemini 90 秒 / ComfyUI 600 秒
+    （ポーリング上限。ワークフロー次第で分単位）。UI で上書き可（`timeout_secs`）。
+22. **文字トグルは `invisible pointer-events-none`**（rev2）: `invisible` だけだと透明なログが
+    クリックを奪う。
+23. **`image_style` は 500 字上限の lint（非 fatal）**（rev2）: 超過は警告して先頭 500 字だけ使う。
+    複数行可（改行はそのまま素材に入る）。
+24. **プロンプト様式の既定はプロバイダに倒す**（rev2）: OpenAI / Gemini = 自然文、ComfyUI / A1111 =
+    タグ。ユーザーが変えられる（UI に「推奨」バッジ）。
+25. **エラー型**（rev2）: `Unauthorized / RateLimited / Blocked{reason} / Timeout{provider} /
+    ComfyNodeError{node, msg} / Api{status, body}` を 1 行理由でトーストに。`Retry-After` の尊重は
+    v1 外（手動なので押し直せばよい）。
 
 ## アーキテクチャ
 
@@ -165,22 +234,42 @@ GM ではない。
 - 会話ログ（テキスト保存）への画像パス併記。
 - NovelAI / Stability / Replicate 等（要望が出たら Provider を 1 つ足すだけ）。
 
-## 未決（査読で決める）
+## 未決 → rev2 で決着（ユーザー査読の回答）
 
-1. **プロバイダ v1 の範囲**: OpenAI / Gemini / ComfyUI の 3 つで足りるか。A1111 を v1 に
-   入れるか（ローカル派の最大公約数。私は Phase D 任意で十分と見る）。
-2. **プロンプト書きを GM クライアントに任せるか**（決定 2）: ローカル弱モデルが GM のとき
-   画像プロンプトの質が落ちる。`IMAGE_PROMPT_LLM_*` の別指定を v1 から持つか（spec 10 と同型
-   で安い）。私は v1 は GM 共用・別指定は Phase D の実測後。
-3. **揮発の境界**（決定 5）: 受理ターンで消さない、でよいか。場所が変わったら消す案もある
-   （CG と同じ「場所を離れたら」）。私は「プレイヤーが消すまで」を推す。
-4. **挿絵の敷き方**: `contain`（余白あり・全体が見える）か `cover`（背景のように満たす）か。
-   設定で切替可にするか（alslime は不透明度と配置を調整可）。私は `contain` 既定 + 不透明度
-   スライダ 1 本。
-5. **保存の形式**: PNG 固定か WebP 変換（配布サイズの作法 2026-07-18）か。保存は鑑賞用で
-   配布物ではないので **PNG 固定**でよいと見る（変換は依存が増える）。
+1. **プロバイダ v1 = OpenAI / Gemini / ComfyUI の 3 つ。** A1111 は Phase D 任意（`/sdapi/v1/txt2img`
+   は ComfyUI とほぼ同じ置換で済む・コスト最小）。
+2. **プロンプト書きは GM クライアント共用。** ローカル弱モデル時の質は `image_style` に
+   「タグで 50 語以内」等を書いて緩和。別指定 `IMAGE_PROMPT_LLM_*` は Phase D 実測後。
+3. **揮発は「プレイヤーが消す/差し替えるまで」。** 場所が変わっても残す（回想的に見たい時に不便）。
+4. **`contain` 既定 + 不透明度スライダ + 第三層の暗幕**（決定 15）。`cover` は顔が切れる。
+5. **PNG 固定。** 配布物ではないので変換依存を増やさない。
 
 ## 台帳
 
 - `data_contract.yaml` `ImageGeneration` 節（Phase 0）/ `CLAUDE.md` 現状節 / `failures.md`
   （実測で出た罠）/ outcast `package_spec.md`（`image_style`）/ `.env.example`（`IMAGE_API_KEY_*`）。
+
+## rev2 査読の反映記録（2026-08-20）
+
+ユーザー査読 10 点 + 軽微 3 点 + 外部接地。**採用 12 / 訂正して採用 1**:
+
+| # | 指摘 | 反映 |
+|---|---|---|
+| 1 | サイズ語彙が 3 プロバイダで違う | 決定 12: プリセット 1 軸 + 写像表 |
+| 2 | ネガの対応プロバイダが曖昧 | 決定 14: ComfyUI/A1111 のみ・UI 無効化・本文に混ぜない |
+| 3 | 二重保持と IPC、data URL が GC されない | **訂正して採用**: 二重保持は意図的 (原本 bytes / 表示文字列)。data URL は文字列で差し替えれば GC される — revoke が要るのは ObjectURL の側。ObjectURL を採らない理由として決定 1 に明記 |
+| 4 | 第三層に暗幕が掛からず文字が飛ぶ | 決定 15: contain + 不透明度 + 層自体の暗幕 (旧未決 4 を昇格) |
+| 5 | 生成中の遷移で古い絵が新場面に乗る | 決定 16: `scene_seq` ガード (backend) + `requestId` (frontend) の二層 |
+| 6 | プレースホルダの文字列置換は数値欄で 400 | 決定 13: `Value` を歩いて型を保つ・未置換は既定値で埋める |
+| 7 | 場所説明に GM 向け秘密が混じる余地 | 決定 17: `Location` に隠し説明は無い (spine.rs 確認)・素材は全てプレイヤー既視のもの・presence 予算 |
+| 8 | 設定が 2 ソースのマージ | 決定 18: 契約に `config_sources` |
+| 9 | probe が図に無い・範囲 | 決定 19: 認証/到達性のみ・画像は作らない |
+| 10 | ファイル名の turn 定義・日本語名の空 slug | 決定 20: `GameState.turn`・FNV 代替 |
+| B1 | `invisible` は pointer-events を残す | 決定 22 |
+| B2 | タイムアウト一律 180 秒 | 決定 21: プロバイダ別 |
+| B3 | `image_style` の上限 | 決定 23: 500 字 lint |
+
+外部接地の差分: OpenAI `quality` (16 倍) → `low` 既定 / Gemini `imageConfig` (aspectRatio+imageSize)
+と `v1beta` 必須・モデル id 3 つ・`imageConfig` 無視の癖 (opt-in 二重化) / ComfyUI の 1 秒ポーリング
+と発行直後 404 正常・API 形式 JSON・リモートは CSP 対象外。
+
