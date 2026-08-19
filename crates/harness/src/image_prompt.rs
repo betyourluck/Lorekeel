@@ -175,8 +175,9 @@ impl ImagePromptRequest {
             return String::new();
         }
         format!(
-            "
-- 参照画像 {n} 枚は設定画集です (人物の立ち絵に名前が書かれ、背景がまとめられている)。             登場人物と場所の見た目はそれに従い、プロンプト内で (as in the reference sheets) と指して             ください。参照に無い人物は profile の範囲で描きます。",
+            "\n- 参照画像 {n} 枚は設定画集です (人物の立ち絵に名前が書かれ、背景がまとめられている)。\
+             登場人物と場所の見た目はそれに従い、プロンプト内で (as in the reference sheets) と指して\
+             ください。参照に無い人物は profile の範囲で描きます。",
             n = self.refs
         )
     }
