@@ -550,6 +550,31 @@ pub fn comfy_substitute(workflow: &Value, vars: &ComfyVars<'_>) -> Value {
     }
 }
 
+/// ワークフロー JSON の形を検査する (純粋)。**UI 形式** (`nodes`/`links` 配列 = ComfyUI の通常保存)
+/// を貼ると `/prompt` は `prompt_no_outputs` としか言わないので、先回りして「API 形式で書き出せ」と
+/// 言う (2026-08-20 ユーザー実機で観測)。API 形式 = `{"<id>": {"class_type": ..., "inputs": {...}}, ...}`。
+pub fn check_comfy_workflow_shape(wf: &Value) -> Result<(), ImageGenError> {
+    let Some(obj) = wf.as_object() else {
+        return Err(ImageGenError::Config("ワークフロー JSON はオブジェクトでなければなりません".into()));
+    };
+    let looks_ui = obj.get("nodes").is_some_and(Value::is_array)
+        && (obj.contains_key("links") || obj.contains_key("version") || obj.contains_key("last_node_id"));
+    if looks_ui {
+        return Err(ImageGenError::Config(
+            "UI 形式のワークフロー (nodes/links) が貼られています。ComfyUI で「Save (API Format)」\
+             (設定で Dev mode を有効化) から書き出した API 形式の JSON を貼ってください"
+                .into(),
+        ));
+    }
+    let has_node = obj.values().any(|v| v.get("class_type").is_some());
+    if !has_node {
+        return Err(ImageGenError::Config(
+            "API 形式のワークフローに見えません (class_type を持つノードが 1 つも無い)".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// `POST /prompt` のボディ。
 pub fn comfy_prompt_body(workflow: Value, client_id: &str) -> Value {
     json!({ "prompt": workflow, "client_id": client_id })
@@ -749,6 +774,7 @@ pub async fn generate(
                 .ok_or_else(|| ImageGenError::Config("ComfyUI のワークフロー JSON が未設定です".into()))?;
             let wf: Value = serde_json::from_str(wf_text)
                 .map_err(|e| ImageGenError::Config(format!("ワークフロー JSON を読めません: {e}")))?;
+            check_comfy_workflow_shape(&wf)?;
             let (w, h) = SizeMap::comfy_dims(cfg.shape);
             let base = cfg.base().to_string();
             // 参照を先に /upload/image へ (spec 25)。返名を %ref_n% に差す。
@@ -1081,6 +1107,19 @@ mod tests {
         assert_eq!(out["11"]["inputs"]["image"], "%ref_2%", "足りない分は残す (空埋めしない)");
         assert_eq!(comfy_uploaded_name(r#"{"name":"x.png","subfolder":"","type":"input"}"#).as_deref(), Some("x.png"));
         assert_eq!(comfy_uploaded_name(r#"{"name":"x.png","subfolder":"refs","type":"input"}"#).as_deref(), Some("refs/x.png"));
+    }
+
+    /// 【ComfyUI ワークフローの形】UI 形式 (nodes/links) は API 形式で書き出せと名指し / ノードの無い
+    /// オブジェクトも拒否 / API 形式は通る (実機の prompt_no_outputs を先回りする)。
+    #[test]
+    fn comfy_workflow_shape_rejects_ui_format_with_guidance() {
+        let ui = json!({"last_node_id": 9, "nodes": [{"id": 1, "type": "KSampler"}], "links": [], "version": 0.4});
+        let err = check_comfy_workflow_shape(&ui).unwrap_err();
+        assert!(matches!(&err, ImageGenError::Config(m) if m.contains("API Format")), "{err}");
+        assert!(matches!(check_comfy_workflow_shape(&json!({"foo": 1})).unwrap_err(), ImageGenError::Config(_)));
+        assert!(matches!(check_comfy_workflow_shape(&json!([])).unwrap_err(), ImageGenError::Config(_)));
+        let api = json!({"3": {"class_type": "KSampler", "inputs": {}}, "9": {"class_type": "SaveImage", "inputs": {}}});
+        assert!(check_comfy_workflow_shape(&api).is_ok());
     }
 
     /// 【base64】往復と URL-safe の受理。
