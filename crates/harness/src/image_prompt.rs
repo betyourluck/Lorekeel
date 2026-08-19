@@ -47,6 +47,8 @@ pub struct ImagePromptRequest {
     pub author_style: String,
     /// ユーザーのスタイル接頭辞 (設定)。
     pub user_prefix: String,
+    /// 添付する設定画集の枚数 (spec 25)。0 なら文言は spec 24 と byte 一致 (規律を一切足さない)。
+    pub refs: usize,
 }
 
 fn take_chars(s: &str, budget: usize) -> String {
@@ -66,6 +68,7 @@ pub fn build_image_prompt_request(
     last_narration: &str,
     user_prefix: &str,
     style: ImagePromptStyle,
+    refs: usize,
 ) -> ImagePromptRequest {
     let location = scenario
         .locations
@@ -115,6 +118,7 @@ pub fn build_image_prompt_request(
         world: take_chars(&scenario.world, WORLD_BUDGET),
         author_style: take_chars(&scenario.image_style, IMAGE_STYLE_MAX_CHARS),
         user_prefix: user_prefix.trim().to_string(),
+        refs,
     };
     // 合計予算: 溢れたら語り → world の順で削る (人物と場所は被写体なので最後まで残す)。
     let total = |r: &ImagePromptRequest| {
@@ -160,7 +164,20 @@ impl ImagePromptRequest {
              固有名詞を発明しない。\n\
              - 状態 (勝敗・生死・感情) を断定しない — 語りに描かれている以上のことを決めない。\n\
              - ネガティブプロンプト (描かないもの) は書かない。\n\
-             - 出力はプロンプト本文のみ。前置き・説明・引用符・コードフェンスを付けない。"
+             - 出力はプロンプト本文のみ。前置き・説明・引用符・コードフェンスを付けない。{refs}",
+            refs = self.refs_rule()
+        )
+    }
+
+    /// 設定画集 (spec 25) があるときだけ足す規律。0 枚なら空文字 = spec 24 と byte 一致。
+    fn refs_rule(&self) -> String {
+        if self.refs == 0 {
+            return String::new();
+        }
+        format!(
+            "
+- 参照画像 {n} 枚は設定画集です (人物の立ち絵に名前が書かれ、背景がまとめられている)。             登場人物と場所の見た目はそれに従い、プロンプト内で (as in the reference sheets) と指して             ください。参照に無い人物は profile の範囲で描きます。",
+            n = self.refs
         )
     }
 
@@ -246,6 +263,7 @@ allowed_flags: [done]
             "メイドが紅茶を運んできた。執事は黙って窓を見ている。",
             "anime style",
             ImagePromptStyle::Prose,
+            0,
         );
         assert_eq!(req.present.len(), 5, "主人公 + present 4 名");
         assert!(req.present[0].starts_with("調査員: 三十代"), "主人公が先頭・profile つき: {:?}", req.present);
@@ -262,7 +280,7 @@ allowed_flags: [done]
         assert!(text.contains("anime style"));
         assert!(text.contains("紅茶を運んできた"));
         assert!(req.system_prompt().contains("自然文"), "様式 prose の形式指示");
-        let tags = build_image_prompt_request(&sc, &state, "x", "", ImagePromptStyle::Tags);
+        let tags = build_image_prompt_request(&sc, &state, "x", "", ImagePromptStyle::Tags, 0);
         assert!(tags.system_prompt().contains("danbooru"));
         assert!(!tags.user_prompt().contains("スタイル指定"), "空の接頭辞は節ごと省く");
         let msgs = image_prompt_messages(&req);
@@ -274,7 +292,7 @@ allowed_flags: [done]
     fn request_never_carries_secrets() {
         let sc = scenario();
         let state = sc.initial_state(1);
-        let req = build_image_prompt_request(&sc, &state, "静かな夜。", "", ImagePromptStyle::Prose);
+        let req = build_image_prompt_request(&sc, &state, "静かな夜。", "", ImagePromptStyle::Prose, 0);
         let all = format!("{}\n{}", req.system_prompt(), req.user_prompt());
         assert!(!all.contains("人狼"), "hidden 属性の値が本文に出ない: {all}");
         assert!(!all.contains("正体"), "hidden 属性のキーも出ない");
@@ -293,7 +311,7 @@ allowed_flags: [done]
         }
         let state = sc.initial_state(1);
         let long = "う".repeat(3000);
-        let req = build_image_prompt_request(&sc, &state, &long, "", ImagePromptStyle::Tags);
+        let req = build_image_prompt_request(&sc, &state, &long, "", ImagePromptStyle::Tags, 0);
         assert!(req.author_style.chars().count() <= IMAGE_STYLE_MAX_CHARS + 1);
         assert!(req.narration.chars().count() <= NARRATION_BUDGET + 1);
         let total = req.narration.chars().count()
@@ -306,8 +324,26 @@ allowed_flags: [done]
         assert!(req.present[1].chars().count() <= PROFILE_BUDGET + 10, "上位は 400 字枠");
         assert!(req.present[4].chars().count() <= PROFILE_SHORT_BUDGET + 10, "以降は 120 字枠: {}", req.present[4].chars().count());
         // 語りが空なら「現在地の情景を描く」へ倒す。
-        let empty = build_image_prompt_request(&sc, &state, "", "", ImagePromptStyle::Tags);
+        let empty = build_image_prompt_request(&sc, &state, "", "", ImagePromptStyle::Tags, 0);
         assert!(empty.user_prompt().contains("まだ語りが無い"));
+    }
+
+    /// 【設定画集の規律 (spec 25)】refs=0 なら system/user とも従来文言と byte 一致 (規律を一切足さない)。
+    /// refs>0 で末尾に 1 箇条だけ増え、枚数と「設定画集」「reference sheets」が出る。
+    #[test]
+    fn reference_sheets_rule_is_appended_only_when_present() {
+        let sc = scenario();
+        let state = sc.initial_state(1);
+        let zero = build_image_prompt_request(&sc, &state, "静かな夜。", "anime", ImagePromptStyle::Prose, 0);
+        let two = build_image_prompt_request(&sc, &state, "静かな夜。", "anime", ImagePromptStyle::Prose, 2);
+        assert!(!zero.system_prompt().contains("設定画集") && !zero.system_prompt().contains("reference sheets"));
+        assert_eq!(zero.user_prompt(), two.user_prompt(), "user 側は枚数で変わらない");
+        let sys2 = two.system_prompt();
+        assert!(sys2.starts_with(&zero.system_prompt()), "既存文言はそのまま・末尾に足すだけ");
+        assert!(sys2.contains("参照画像 2 枚は設定画集") && sys2.contains("(as in the reference sheets)"));
+        assert_eq!(sys2.matches("
+- ").count(), zero.system_prompt().matches("
+- ").count() + 1, "箇条は 1 つだけ増える");
     }
 
     /// 【image_style の注入と lint】package.yaml の image_style が scenario へ注入され、

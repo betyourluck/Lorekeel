@@ -21,6 +21,7 @@ mod package;
 pub mod prompt;
 mod proposer;
 mod save;
+mod settings_sheets;
 mod synopsis;
 mod turn;
 
@@ -32,6 +33,10 @@ pub use campaign::{
 pub use inspect::{inspect, inspect_package, inspect_scenario_file, InspectReport};
 pub use inspect_msg::scenario_lint_messages;
 pub use image_prompt::{build_image_prompt_request, image_prompt_messages, ImagePromptRequest, ImagePromptStyle};
+pub use settings_sheets::{
+    load_settings_sheets, pick_settings_sheets, sheet_mime, PickedSheets, SheetImage, SkipReason,
+    SkippedSheet, SETTINGS_SHEETS_DIR, SHEET_MAX_BYTES,
+};
 pub use package::{
     character_lints, inject_package, is_campaign_entry, load_campaign_package, load_package,
     manifest_lints, read_manifest, Globals,

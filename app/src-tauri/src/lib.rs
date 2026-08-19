@@ -1094,6 +1094,7 @@ async fn generate_image(
             &sess.last_narration,
             &config.user_prefix,
             style,
+            0, // spec 25 の設定画集は Phase B で結線
         );
         (harness::image_prompt_messages(&req), sess.client.config().clone(), sess.scene_seq)
     };

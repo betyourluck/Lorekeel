@@ -34,7 +34,7 @@ async fn image_prompt_writer_on_lakeside_manor() {
         ("prose / 語りあり", ImagePromptStyle::Prose, narration),
         ("tags / 語りあり", ImagePromptStyle::Tags, narration),
     ] {
-        let req = build_image_prompt_request(&scenario, &state, text, "anime style", style);
+        let req = build_image_prompt_request(&scenario, &state, text, "anime style", style, 0);
         let t0 = std::time::Instant::now();
         let out = client.generate(image_prompt_messages(&req)).await.expect("generate が通る");
         let out = llm_client::strip_reasoning_blocks(&out).trim().to_string();
