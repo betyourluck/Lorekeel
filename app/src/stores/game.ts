@@ -3,6 +3,13 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { tableHooks, transport } from "../transport";
 import { t } from "../i18n";
 import * as tts from "../tts";
+import {
+  imageStamp,
+  loadImageGenSettings,
+  saveImageGenSettings,
+  toBackendConfig,
+  type ImageGenSettings,
+} from "../imageGen";
 import type {
   GameView,
   TurnView,
@@ -536,6 +543,19 @@ interface GameState {
   facts: FactView[];
   // 既成事実のユーザー権限 (spec 20): open=ユーザーが宣言できる / locked=非表示 (既定)。
   factsPolicy: string;
+  // --- 画像生成 / 挿絵 (spec 24) — 提示層だけの状態。セーブには入らない (揮発)。 ---
+  // 設定 (非秘密、localStorage)。enabled が操作列の表示条件。
+  imageGen: ImageGenSettings;
+  // 直近に生成した挿絵 (表示用 data URL + 書かれたプロンプト)。null = 無し。
+  generatedImage: { dataUrl: string; prompt: string } | null;
+  // 生成中 (ボタン無効 + スピナー)。
+  imageBusy: boolean;
+  // 生成要求の世代 (古い完了を無視する frontend 側の二層目。backend は scene_seq で守る)。
+  imageRequestId: number;
+  // 挿絵の表示/非表示・文字の表示/非表示 (セッション内の一時状態。localStorage に持たない —
+  // 次回起動で文字が消えていたら事故)。
+  showGeneratedImage: boolean;
+  showText: boolean;
   // 盤面が読み上げを想定しているか (作者宣言 use_tts)。false なら操作を一切出さない。
   useTts: boolean;
   // ユーザーの読み上げ ON/OFF (localStorage 永続、未設定は ON)。盤面が use_tts を宣言していても
@@ -616,6 +636,12 @@ export const useGameStore = defineStore("game", {
       // 一切入らない。読み上げの ON/OFF (ttsEnabled) は宣言された盤面の中でだけ効く。
       useTts: false,
       ttsEnabled: tts.loadEnabled(),
+      imageGen: loadImageGenSettings(),
+      generatedImage: null,
+      imageBusy: false,
+      imageRequestId: 0,
+      showGeneratedImage: true,
+      showText: true,
       compacting: false,
       writingEpilogue: false,
       map: { nodes: [], edges: [] },
@@ -715,6 +741,58 @@ export const useGameStore = defineStore("game", {
     // 今の読み上げを飛ばす。**物語は進めない** — 音を切るだけ (提示層の操作)。
     skipTts(): void {
       tts.stop();
+    },
+
+    // --- 画像生成 / 挿絵 (spec 24) -------------------------------------------------------
+    // 設定を部分更新して永続化 (設定タブから)。
+    setImageGen(patch: Partial<ImageGenSettings>): void {
+      this.imageGen = { ...this.imageGen, ...patch };
+      saveImageGenSettings(this.imageGen);
+    },
+    // 挿絵を生成する。処理中は押せない (busy)・何度でも押せる (差し替え)。
+    // HTTP は backend (キーは WebView に無い・CSP 対象外)。古い完了は requestId で無視。
+    async generateImage(): Promise<void> {
+      if (!this.started || this.imageBusy) return;
+      const reqId = ++this.imageRequestId;
+      this.imageBusy = true;
+      try {
+        const view = await invoke<{ data_url: string; prompt: string; mime: string }>("generate_image", {
+          config: toBackendConfig(this.imageGen),
+        });
+        if (reqId !== this.imageRequestId) return; // 場面が変わった (新規/ロード/遷移)
+        this.generatedImage = { dataUrl: view.data_url, prompt: view.prompt };
+        this.showGeneratedImage = true;
+      } catch (e) {
+        if (reqId === this.imageRequestId) this.logToast = t("store.imageFailed", { error: String(e) });
+      } finally {
+        if (reqId === this.imageRequestId) this.imageBusy = false;
+      }
+    },
+    // 直近の挿絵を保存 (backend が原本 bytes を設定フォルダへ書く)。
+    async saveGeneratedImage(): Promise<void> {
+      if (!this.generatedImage) return;
+      try {
+        const path = await invoke<string>("save_generated_image", {
+          folder: this.imageGen.folder,
+          stamp: imageStamp(),
+        });
+        this.logToast = t("store.imageSaved", { path });
+      } catch (e) {
+        this.logToast = t("store.saveFailed", { error: String(e) });
+      }
+    },
+    toggleGeneratedImage(): void {
+      this.showGeneratedImage = !this.showGeneratedImage;
+    },
+    toggleText(): void {
+      this.showText = !this.showText;
+    },
+    async openImageFolder(): Promise<void> {
+      try {
+        await invoke("open_image_folder", { folder: this.imageGen.folder });
+      } catch (e) {
+        this.logToast = t("store.openFolderFailed", { error: String(e) });
+      }
     },
 
     /**
@@ -1278,6 +1356,10 @@ export const useGameStore = defineStore("game", {
       this.pendingSe = [];
       this.pendingVisual = null;
       this.pendingSpeech = null;
+      // spec 24: 挿絵は盤面の揮発物 — 新規/再開/ロードで必ず捨てる (backend も世代を進める)。
+      this.generatedImage = null;
+      this.imageRequestId++;
+      this.imageBusy = false;
       // 決断待ち (B)・対決 (C) はセーブを跨いで生きる — 再開時に復元する (新規は null)。
       this.decision = view.decision ?? null;
       this.deciding = false;
@@ -1739,6 +1821,9 @@ export const useGameStore = defineStore("game", {
               });
               // 遷移先モジュールの開幕描写。
               pushLog({ kind: "opening", text: turn.transition.description });
+              // spec 24: 挿絵は章を跨がない (backend も scene_seq を進めて原本を捨てる)。
+              this.generatedImage = null;
+              this.imageRequestId++;
             } else {
               // 単発シナリオ/キャンペーン終端 = クリア。
               const label = goalLabel

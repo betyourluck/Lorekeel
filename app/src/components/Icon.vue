@@ -2,7 +2,7 @@
 // UI chrome のモノカラー線アイコン (Feather/Lucide 風)。stroke=currentColor ゆえ
 // 親のテキスト色に追従する = テーマ一貫のモノクロ。パッケージ同梱画像とは別物 (UI 装飾)。
 defineProps<{
-  name: "location" | "bag" | "flag" | "turn" | "gauge" | "sparkle" | "target" | "load" | "new" | "plus" | "trash" | "folder" | "book" | "save" | "play" | "map" | "pencil" | "speaker" | "speaker-off" | "skip";
+  name: "location" | "bag" | "flag" | "turn" | "gauge" | "sparkle" | "target" | "load" | "new" | "plus" | "trash" | "folder" | "book" | "save" | "play" | "map" | "pencil" | "speaker" | "speaker-off" | "skip" | "image" | "eye" | "eye-off" | "text" | "spinner";
   size?: number;
 }>();
 </script>
@@ -119,6 +119,34 @@ defineProps<{
     <template v-else-if="name === 'skip'">
       <path d="M5 4l9 8-9 8V4Z" />
       <path d="M19 5v14" />
+    </template>
+    <!-- 挿絵 (spec 24): 画像の枠と山 -->
+    <template v-else-if="name === 'image'">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <circle cx="8.5" cy="9.5" r="1.5" />
+      <path d="M21 15l-5-5-9 9" />
+    </template>
+    <!-- 表示 (目) -->
+    <template v-else-if="name === 'eye'">
+      <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12Z" />
+      <circle cx="12" cy="12" r="3" />
+    </template>
+    <!-- 非表示 (目に斜線) -->
+    <template v-else-if="name === 'eye-off'">
+      <path d="M17.94 17.94A10.9 10.9 0 0 1 12 19c-7 0-11-7-11-7a19 19 0 0 1 5.06-5.94" />
+      <path d="M9.9 4.24A9.9 9.9 0 0 1 12 4c7 0 11 7 11 7a19 19 0 0 1-2.16 3.19" />
+      <path d="M1 1l22 22" />
+      <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" />
+    </template>
+    <!-- 文字 (行) -->
+    <template v-else-if="name === 'text'">
+      <path d="M4 6h16" />
+      <path d="M4 12h16" />
+      <path d="M4 18h10" />
+    </template>
+    <!-- 処理中 (弧) -->
+    <template v-else-if="name === 'spinner'">
+      <path d="M21 12a9 9 0 1 1-6.2-8.56" />
     </template>
     <!-- 削除: ゴミ箱 -->
     <template v-else-if="name === 'trash'">

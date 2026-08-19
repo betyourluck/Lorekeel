@@ -25,6 +25,7 @@ import StatePanel from "./components/StatePanel.vue";
 import ActionInput from "./components/ActionInput.vue";
 import TableBar from "./components/TableBar.vue";
 import TtsControls from "./components/TtsControls.vue";
+import ImageControls from "./components/ImageControls.vue";
 import Icon from "./components/Icon.vue";
 
 const game = useGameStore();
@@ -280,9 +281,29 @@ onUnmounted(() => {
           :class="game.background ? '' : 'bg-ink'"
           :data-theme="game.paneThemeAttr"
         >
-          <ConversationLog />
+          <!-- 第三の画像層 (spec 24): 背景/CG (main の暗幕つき背景) の上・文字の下。
+               contain で全体を見せ、層自体に暗幕を掛けて白文字とのコントラストを保つ
+               (main の暗幕は背景にしか掛からない)。pointer-events は持たない。 -->
+          <div
+            v-if="game.generatedImage && game.showGeneratedImage"
+            class="absolute inset-0 pointer-events-none flex items-center justify-center"
+            style="background-color: rgba(0, 0, 0, 0.35)"
+          >
+            <img
+              :src="game.generatedImage.dataUrl"
+              :title="game.generatedImage.prompt"
+              alt=""
+              class="max-w-full max-h-full object-contain"
+              :style="{ opacity: game.imageGen.opacity }"
+            />
+          </div>
+          <!-- 文字トグル (spec 24): invisible はレイアウトを保つが pointer-events は残すので、
+               透明なログがクリックを奪わないよう pointer-events-none を添える。 -->
+          <ConversationLog :class="game.showText ? '' : 'invisible pointer-events-none'" />
           <!-- 作者が use_tts を宣言した盤面にだけ出す (宣言のない配布物は無音のまま)。 -->
           <TtsControls v-if="game.useTts" />
+          <!-- 挿絵の操作 (spec 24): 設定で画像生成を有効にした人にだけ出す。 -->
+          <ImageControls v-if="game.imageGen.enabled" />
         </div>
         <!-- 卓の入力窓の現況 (提出数・待ち・締切)。卓ダイアログはモーダルなので、
              ここに常設しないと「提出する」と「締める」が同時に見えない。 -->

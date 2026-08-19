@@ -24,6 +24,15 @@ import {
   type PaneTheme,
 } from "../stores/game";
 import * as tts from "../tts";
+import {
+  DEFAULT_BASE_URL,
+  DEFAULT_MODEL,
+  genericComfyWorkflow,
+  supportsNegative,
+  toBackendConfig,
+  type ImageGenSettings,
+  type ImageProvider,
+} from "../imageGen";
 // 卓の音声 (mesh)。この file の `voice` は TTS 設定の ref なので別名で取る。
 import { listMicDevices, micDeviceId, voice as voiceMesh } from "../voice";
 
@@ -126,10 +135,10 @@ function resetVoice() {
   persistVoice();
 }
 
-type Tab = "display" | "graphics" | "sound" | "log" | "language" | "model" | "dev" | "help";
+type Tab = "display" | "graphics" | "sound" | "image" | "log" | "language" | "model" | "dev" | "help";
 const tab = ref<Tab>("display");
 // ラベルは i18n（`settings.tabs.<id>`）。id は機械用のまま。
-const tabs: Tab[] = ["display", "graphics", "sound", "log", "language", "model", "dev", "help"];
+const tabs: Tab[] = ["display", "graphics", "sound", "image", "log", "language", "model", "dev", "help"];
 
 // --- 開発者モード (KATARIBE_DEV_MODE) ---
 const devStatus = ref("");
@@ -141,6 +150,68 @@ async function toggleDevMode(enabled: boolean) {
   } catch (e) {
     devStatus.value = t("settings.status.saveFailed", { error: String(e) });
   }
+}
+
+// --- 画像生成 / 挿絵 (spec 24) ---
+// 非秘密は store (localStorage)、API キーは backend の .env (契約 config_sources)。
+const img = computed(() => game.imageGen);
+function setImg(patch: Partial<ImageGenSettings>) {
+  game.setImageGen(patch);
+}
+// プロバイダを替えたら URL/モデルをそのプロバイダの既定へ (空や他社の既定のままだと 404 の素)。
+function onImageProviderChange(p: ImageProvider) {
+  const prev = img.value.provider;
+  const patch: Partial<ImageGenSettings> = { provider: p };
+  if (!img.value.baseUrl.trim() || img.value.baseUrl.trim() === DEFAULT_BASE_URL[prev]) {
+    patch.baseUrl = DEFAULT_BASE_URL[p];
+  }
+  if (!img.value.model.trim() || img.value.model.trim() === DEFAULT_MODEL[prev]) {
+    patch.model = DEFAULT_MODEL[p];
+  }
+  setImg(patch);
+}
+const imageKeys = ref<{ openai: string; gemini: string }>({ openai: "", gemini: "" });
+const imageKeyStatus = ref("");
+async function loadImageKeys() {
+  try {
+    imageKeys.value = await invoke<{ openai: string; gemini: string }>("get_image_api_keys");
+  } catch {
+    /* 読めなくても欄が空になるだけ */
+  }
+}
+async function saveImageKey() {
+  const p = img.value.provider;
+  if (p === "comfy") return;
+  try {
+    await invoke("set_image_api_key", { provider: p, apiKey: imageKeys.value[p].trim() });
+    imageKeyStatus.value = t("settings.image.keySaved");
+  } catch (e) {
+    imageKeyStatus.value = t("settings.status.saveFailed", { error: String(e) });
+  }
+}
+const imageProbeStatus = ref("");
+const imageProbing = ref(false);
+async function probeImageGen() {
+  imageProbing.value = true;
+  imageProbeStatus.value = "";
+  try {
+    imageProbeStatus.value = await invoke<string>("image_gen_probe", { config: toBackendConfig(img.value) });
+  } catch (e) {
+    imageProbeStatus.value = String(e);
+  } finally {
+    imageProbing.value = false;
+  }
+}
+const defaultImageDir = ref("");
+async function loadDefaultImageDir() {
+  try {
+    defaultImageDir.value = await invoke<string>("get_default_image_dir");
+  } catch {
+    /* placeholder が空になるだけ */
+  }
+}
+function insertGenericWorkflow() {
+  setImg({ workflowJson: genericComfyWorkflow() });
 }
 
 // --- ログ (保存先フォルダ) ---
@@ -324,6 +395,8 @@ onMounted(async () => {
   await loadLlm(); // .env を読んでから一致プロファイルを選択状態にする
   syncSelectionToConfig();
   loadDefaultLogDir();
+  loadDefaultImageDir();
+  void loadImageKeys();
   game.refreshDevMode();
   void refreshMicDevices(); // 開いた時点で候補を出す (権限前は名前が空 = 案内を出す)
 });
@@ -725,6 +798,204 @@ onMounted(async () => {
               </button>
               <span v-if="voiceStatus" class="text-xs text-parchment/60 break-all">{{ voiceStatus }}</span>
             </div>
+          </section>
+
+          <!-- 画像生成 / 挿絵 (spec 24) -->
+          <section v-else-if="tab === 'image'" class="space-y-3">
+            <h3 class="text-parchment font-bold">{{ t("settings.image.heading") }}</h3>
+            <p class="text-parchment/60 text-sm">{{ t("settings.image.intro") }}</p>
+            <label class="flex items-center gap-2 text-sm text-parchment/70">
+              <input
+                type="checkbox"
+                class="accent-ember"
+                :checked="img.enabled"
+                @change="setImg({ enabled: ($event.target as HTMLInputElement).checked })"
+              />
+              {{ t("settings.image.enabled") }}
+            </label>
+            <label class="block text-sm text-parchment/70">
+              {{ t("settings.image.provider") }}
+              <select
+                :value="img.provider"
+                class="mt-1 block w-56 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
+                @change="onImageProviderChange(($event.target as HTMLSelectElement).value as ImageProvider)"
+              >
+                <option value="openai">{{ t("settings.image.providerOpenai") }}</option>
+                <option value="gemini">{{ t("settings.image.providerGemini") }}</option>
+                <option value="comfy">{{ t("settings.image.providerComfy") }}</option>
+              </select>
+            </label>
+            <label class="block text-sm text-parchment/70">
+              {{ t("settings.image.baseUrl") }}
+              <input
+                :value="img.baseUrl"
+                :placeholder="DEFAULT_BASE_URL[img.provider]"
+                class="mt-1 block w-full rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
+                @change="setImg({ baseUrl: ($event.target as HTMLInputElement).value })"
+              />
+            </label>
+            <label v-if="img.provider !== 'comfy'" class="block text-sm text-parchment/70">
+              {{ t("settings.image.model") }}
+              <input
+                :value="img.model"
+                :placeholder="DEFAULT_MODEL[img.provider]"
+                class="mt-1 block w-full rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
+                @change="setImg({ model: ($event.target as HTMLInputElement).value })"
+              />
+            </label>
+            <div v-if="img.provider !== 'comfy'" class="space-y-1">
+              <label class="block text-sm text-parchment/70">
+                {{ t("settings.image.apiKey") }}
+                <input
+                  v-model="imageKeys[img.provider]"
+                  type="password"
+                  :placeholder="t('settings.model.apiKeyPlaceholder')"
+                  class="mt-1 block w-full rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
+                  @change="saveImageKey"
+                />
+              </label>
+              <p class="text-parchment/40 text-xs">{{ imageKeyStatus || t("settings.image.keyNote") }}</p>
+            </div>
+            <div class="flex flex-wrap gap-3">
+              <label class="block text-sm text-parchment/70">
+                {{ t("settings.image.shape") }}
+                <select
+                  :value="img.shape"
+                  class="mt-1 block w-36 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
+                  @change="setImg({ shape: ($event.target as HTMLSelectElement).value as ImageGenSettings['shape'] })"
+                >
+                  <option value="square">{{ t("settings.image.shapeSquare") }}</option>
+                  <option value="landscape">{{ t("settings.image.shapeLandscape") }}</option>
+                  <option value="portrait">{{ t("settings.image.shapePortrait") }}</option>
+                </select>
+              </label>
+              <label class="block text-sm text-parchment/70">
+                {{ t("settings.image.detail") }}
+                <select
+                  :value="img.detail"
+                  class="mt-1 block w-44 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
+                  @change="setImg({ detail: ($event.target as HTMLSelectElement).value as ImageGenSettings['detail'] })"
+                >
+                  <option value="standard">{{ t("settings.image.detailStandard") }}</option>
+                  <option value="high">{{ t("settings.image.detailHigh") }}</option>
+                  <option v-if="img.provider === 'openai'" value="highest">{{ t("settings.image.detailHighest") }}</option>
+                </select>
+              </label>
+              <label class="block text-sm text-parchment/70">
+                {{ t("settings.image.style") }}
+                <select
+                  :value="img.style"
+                  class="mt-1 block w-44 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
+                  @change="setImg({ style: ($event.target as HTMLSelectElement).value as ImageGenSettings['style'] })"
+                >
+                  <option value="">{{ t("settings.image.styleAuto", { style: img.provider === 'comfy' ? t('settings.image.styleTags') : t('settings.image.styleProse') }) }}</option>
+                  <option value="prose">{{ t("settings.image.styleProse") }}</option>
+                  <option value="tags">{{ t("settings.image.styleTags") }}</option>
+                </select>
+              </label>
+            </div>
+            <label class="block text-sm text-parchment/70">
+              {{ t("settings.image.userPrefix") }}
+              <input
+                :value="img.userPrefix"
+                :placeholder="t('settings.image.userPrefixPlaceholder')"
+                class="mt-1 block w-full rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
+                @change="setImg({ userPrefix: ($event.target as HTMLInputElement).value })"
+              />
+            </label>
+            <label class="block text-sm text-parchment/70" :class="{ 'opacity-40': !supportsNegative(img.provider) }">
+              {{ t("settings.image.negative") }}
+              <input
+                :value="img.negative"
+                :disabled="!supportsNegative(img.provider)"
+                :placeholder="supportsNegative(img.provider) ? 'lowres, bad anatomy' : t('settings.image.negativeUnsupported')"
+                class="mt-1 block w-full rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none disabled:cursor-not-allowed"
+                @change="setImg({ negative: ($event.target as HTMLInputElement).value })"
+              />
+            </label>
+            <div v-if="img.provider === 'comfy'" class="space-y-1">
+              <label class="block text-sm text-parchment/70">
+                {{ t("settings.image.workflow") }}
+                <textarea
+                  :value="img.workflowJson"
+                  rows="6"
+                  spellcheck="false"
+                  :placeholder="t('settings.image.workflowPlaceholder')"
+                  class="mt-1 block w-full rounded bg-ash/40 px-2 py-1 text-parchment font-mono text-xs focus:outline-none"
+                  @change="setImg({ workflowJson: ($event.target as HTMLTextAreaElement).value })"
+                ></textarea>
+              </label>
+              <div class="flex items-center gap-2">
+                <button
+                  class="rounded bg-ash/40 hover:bg-ash/70 px-3 py-1 text-sm text-parchment/80"
+                  @click="insertGenericWorkflow"
+                >
+                  {{ t("settings.image.insertGeneric") }}
+                </button>
+                <span class="text-parchment/40 text-xs">{{ t("settings.image.workflowNote") }}</span>
+              </div>
+            </div>
+            <div class="flex flex-wrap gap-3 items-end">
+              <label class="block text-sm text-parchment/70">
+                {{ t("settings.image.timeout") }}
+                <input
+                  type="number"
+                  min="0"
+                  :value="img.timeoutSecs || ''"
+                  :placeholder="img.provider === 'comfy' ? '600' : img.provider === 'gemini' ? '90' : '120'"
+                  class="mt-1 block w-28 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
+                  @change="setImg({ timeoutSecs: Number(($event.target as HTMLInputElement).value) || 0 })"
+                />
+              </label>
+              <label class="block text-sm text-parchment/70 flex-1 min-w-[12rem]">
+                {{ t("settings.image.opacity", { value: Math.round(img.opacity * 100) }) }}
+                <input
+                  type="range"
+                  min="30"
+                  max="100"
+                  :value="Math.round(img.opacity * 100)"
+                  class="mt-1 block w-full accent-ember"
+                  @input="setImg({ opacity: Number(($event.target as HTMLInputElement).value) / 100 })"
+                />
+              </label>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                class="rounded bg-ember/80 hover:bg-ember px-3 py-1 text-sm text-ink font-bold disabled:opacity-50"
+                :disabled="imageProbing"
+                @click="probeImageGen"
+              >
+                {{ imageProbing ? t("settings.image.probing") : t("settings.image.probe") }}
+              </button>
+              <span class="text-parchment/60 text-xs">{{ imageProbeStatus }}</span>
+            </div>
+            <h4 class="text-parchment/80 font-bold text-sm pt-2">{{ t("settings.image.folderHeading") }}</h4>
+            <label class="block text-sm text-parchment/70">
+              {{ t("settings.image.folder") }}
+              <input
+                :value="img.folder"
+                :placeholder="defaultImageDir || t('settings.log.folderPlaceholder')"
+                class="mt-1 block w-full rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
+                @change="setImg({ folder: ($event.target as HTMLInputElement).value.trim() })"
+              />
+            </label>
+            <div class="flex items-center gap-2">
+              <button
+                class="rounded bg-ash/40 hover:bg-ash/70 px-3 py-1 text-sm text-parchment/80"
+                :disabled="!img.folder"
+                :class="{ 'opacity-40': !img.folder }"
+                @click="setImg({ folder: '' })"
+              >
+                {{ t("settings.log.resetDefault") }}
+              </button>
+              <button
+                class="ml-auto rounded bg-ash/40 hover:bg-ash/70 px-3 py-1 text-sm text-parchment/80"
+                @click="game.openImageFolder()"
+              >
+                {{ t("settings.log.openFolder") }}
+              </button>
+            </div>
+            <p class="text-parchment/40 text-xs">{{ t("settings.image.note") }}</p>
           </section>
 
           <!-- ログ (会話ログのテキスト保存) -->
