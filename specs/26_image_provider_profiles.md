@@ -1,6 +1,6 @@
 # spec 26: 画像生成設定のプロバイダ別プロファイル — 切替で前の設定を漏らさない
 
-**Status**: Draft rev2（2026-08-21 起草 → 同日ユーザー査読 3+3 点反映。実装待ち）
+**Status**: Draft rev3（2026-08-21 起草 → 同日ユーザー査読 rev2: 3+3 点 → rev3: 4 点反映。実装待ち）
 
 ## 動機（実測 2 件、2026-08-21）
 
@@ -48,11 +48,14 @@ spec 24/25 の画像生成設定は 1 枚のフラットな器（`localStorage["
    も含む）:
 
    ```
-   slot = perProvider[provider]
+   slot = perProvider[provider] ?? EMPTY_SLOT   // 部分欠損ガード (何を作るか 4 の欠損規則と対)
+   // EMPTY_SLOT = { baseUrl:"", model:"", style:"", negative:"", workflowJson:"", timeoutSecs:0 }
    effective = {
      provider,
      base_url:     slot.baseUrl.trim()  || DEFAULT_BASE_URL[provider],
-     model:        slot.model.trim()    || DEFAULT_MODEL[provider],   // comfy は "" のまま
+     model:        slot.model.trim()    || (provider == comfy ? "" : DEFAULT_MODEL[provider]),
+                                          // comfy はワークフロー側でモデルが決まるので空を許容
+                                          // (DEFAULT_MODEL.comfy = "" だが、写像として明示する)
      style:        slot.style           || null,                      // null = 自動 (プロバイダ既定)
      user_prefix:  userPrefix,                                        // 共有
      negative:     provider == comfy ? slot.negative : "",            // 他プロバイダへは送らない
@@ -63,15 +66,19 @@ spec 24/25 の画像生成設定は 1 枚のフラットな器（`localStorage["
 
    `timeout_secs: null` のフォールバックは **backend 既存の `ImageGenConfig::timeout()`**
    （openai 120 / gemini 90 / comfy 600、契約 `timeouts`）が受ける — frontend に既定表を
-   複製しない（二重定義の芽）。**他プロバイダのスロットは一切読まない**（provider の
-   スロット + 共有部だけが wire に乗る）。
+   複製しない（二重定義の芽）。**既定を frontend に持つか backend に倒すかの線引き**:
+   `base_url`/`model` の既定は設定 UI の placeholder が表示に使う（`DEFAULT_BASE_URL[provider]`
+   を現に参照している）ので frontend が持つ／`timeout` は表示に関与しないので backend 単一
+   定義に倒す。**他プロバイダのスロットは一切読まない**（provider のスロット + 共有部だけが
+   wire に乗る）。
 
 4. **旧形式の移行（一方向・初回ロード時）**: `perProvider` キーが無ければ旧フラット形と
    みなし、フラットの `baseUrl`/`model`/`style`/`negative`/`workflowJson`/`timeoutSecs` を
    **その時の `provider` のスロットのみに**写す。**他プロバイダのスロットは既定
    （baseUrl/model は `DEFAULT_*`、style は自動、他は空）で初期化し、旧 `style` が明示
-   `tags` であっても複製しない** — 移行直後の実効値が全プロバイダで従来と一致する
-   （挙動変化ゼロ）と同時に、明示 tags が他プロバイダへ漏れない（動機 2 の根治と同じ向き）。
+   `tags` であっても複製しない** — 移行直後、**現プロバイダの実効値は従来と一致**する。
+   **他プロバイダは既定に初期化されるため、フラット器由来の漏れ（動機 1/2）はこの時点で
+   解消される — これは意図的な挙動変化**（バグ修正そのもの）であって、無変化を装わない。
    `LocationItem`/`StatInit` の両受けと同じ「旧を黙って読める」路線（localStorage なので
    serde でなく JSON 手当て）。書き戻しは常に新形式。
    **部分欠損も同じ規則**: `perProvider` は在るが一部プロバイダのスロットが無い JSON
@@ -140,3 +147,12 @@ spec 24/25 の画像生成設定は 1 枚のフラットな器（`localStorage["
 | 補 1 | `enabled` 共有の制約が暗黙 | 何を作るか 1 に制約 note（プロバイダ別 ON/OFF は切替で表現）+ スコープ外に明記 |
 | 補 2 | 新プロバイダ追加時の部分欠損が未定義 | 何を作るか 4 に「欠けたスロットは既定で埋める」を追記 + PoC |
 | 補 3 | userPrefix のタグ語彙バイアスは言い換え後も残りうる | 決定 2 に「散文推奨」を追記し UI placeholder/ヘルプへ出す |
+
+### rev3（2026-08-21 ユーザー査読）
+
+| # | 指摘 | 反映 |
+|---|---|---|
+| 1 | `model` の `\|\|` は `""` を既定へ倒しコメント「comfy は "" のまま」と矛盾 | 写像を `provider == comfy ? "" : DEFAULT_MODEL[provider]` の三項へ（comfy はワークフロー側でモデルが決まるので空を許容） |
+| 2 | 「移行直後の実効値が全プロバイダで従来一致（挙動変化ゼロ）」は動機と矛盾 — 他プロバイダが既定に戻ることがバグ修正そのもの | 「現プロバイダのみ一致・他は既定に初期化＝漏れの解消（意図的な挙動変化）」へ訂正 |
+| 3 | 部分欠損時 `perProvider[provider]` が undefined で写像が落ちる | 写像冒頭に `?? EMPTY_SLOT` ガードを明文化（何を作るか 4 の欠損規則と対） |
+| 4 | 既定の置き場が baseUrl/model=frontend・timeout=backend で不統一に見える | 線引きの理由を明記: base_url/model の既定は UI placeholder が表示に使うので frontend、timeout は表示に関与しないので backend 単一定義 |
