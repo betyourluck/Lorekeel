@@ -1,6 +1,10 @@
 # spec 26: 画像生成設定のプロバイダ別プロファイル — 切替で前の設定を漏らさない
 
-**Status**: Draft rev3（2026-08-21 起草 → 同日ユーザー査読 rev2: 3+3 点 → rev3: 4 点反映。実装待ち）
+**Status**: Done（2026-08-21 起草 → 同日ユーザー査読 rev2: 3+3 点 → rev3: 4 点 → 同日実装。
+PoC: harness 1 本〔tags 年齢・体格 Red→Green・prose 不変〕+ frontend 使い捨て 13 assertion
+〔動機 1 の漏れを旧コードで Red 再現 → 新コードで Green・移行 roundtrip・明示 tags 非複製・
+部分欠損・写像凍結 = 逆向き漏れ/comfy model 空/timeout null〕。vue-tsc + build green、
+workspace 352 green・clippy clean。GUI 実機の切替往復は目視待ち）
 
 ## 動機（実測 2 件、2026-08-21）
 

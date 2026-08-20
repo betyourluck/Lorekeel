@@ -4,11 +4,13 @@ import { tableHooks, transport } from "../transport";
 import { t } from "../i18n";
 import * as tts from "../tts";
 import {
+  currentSlot,
   imageStamp,
   loadImageGenSettings,
   saveImageGenSettings,
   toBackendConfig,
   type ImageGenSettings,
+  type ProviderSlot,
 } from "../imageGen";
 import type {
   GameView,
@@ -744,9 +746,22 @@ export const useGameStore = defineStore("game", {
     },
 
     // --- 画像生成 / 挿絵 (spec 24) -------------------------------------------------------
-    // 設定を部分更新して永続化 (設定タブから)。
+    // 共有部を部分更新して永続化 (設定タブから)。プロバイダ切替もここ — スロットは触らない
+    // (spec 26: 切替は表示スロットの切替だけ、値は失われない)。
     setImageGen(patch: Partial<ImageGenSettings>): void {
       this.imageGen = { ...this.imageGen, ...patch };
+      saveImageGenSettings(this.imageGen);
+    },
+    // 現プロバイダのスロットを部分更新して永続化 (spec 26)。
+    setImageGenSlot(patch: Partial<ProviderSlot>): void {
+      const p = this.imageGen.provider;
+      this.imageGen = {
+        ...this.imageGen,
+        perProvider: {
+          ...this.imageGen.perProvider,
+          [p]: { ...currentSlot(this.imageGen), ...patch },
+        },
+      };
       saveImageGenSettings(this.imageGen);
     },
     // 挿絵を生成する。処理中は押せない (busy)・何度でも押せる (差し替え)。

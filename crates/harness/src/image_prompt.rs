@@ -148,7 +148,9 @@ impl ImagePromptRequest {
         let form = match self.style {
             ImagePromptStyle::Tags => {
                 "出力形式: danbooru 形式のタグ列。英語・カンマ区切り・50 語以内。\
-                 人物は容姿と服装、続けて構図・光・画風のタグ。"
+                 人物は容姿と服装、続けて構図・光・画風のタグ。\
+                 人物には年齢・体格のタグを必ず含める (adult man, mature male, 30 years old 等) — \
+                 danbooru 語彙は年齢を指定しないと若年に倒れる。"
             }
             ImagePromptStyle::Prose => {
                 "出力形式: 英語の自然文 1〜3 文。被写体 (人物の容姿と服装)・構図・光・画風を具体的に。"
@@ -286,6 +288,22 @@ allowed_flags: [done]
         assert!(!tags.user_prompt().contains("スタイル指定"), "空の接頭辞は節ごと省く");
         let msgs = image_prompt_messages(&req);
         assert_eq!(msgs.len(), 2);
+    }
+
+    /// 【tags の年齢・体格接地 (spec 26)】danbooru 語彙は年齢無指定だと若年に倒れる
+    /// (2026-08-21 実測: `1boy` が三十代の主人公を子供に変えた) → tags の形式指示は
+    /// 年齢・体格タグを必ず要求する。prose には足さない (byte 不変)。
+    #[test]
+    fn tags_form_demands_age_and_build_prose_unchanged() {
+        let sc = scenario();
+        let state = sc.initial_state(1);
+        let tags = build_image_prompt_request(&sc, &state, "x", "", ImagePromptStyle::Tags, 0);
+        let sys = tags.system_prompt();
+        assert!(sys.contains("年齢") && sys.contains("体格"), "tags は年齢・体格タグを要求する: {sys}");
+        assert!(sys.contains("adult man"), "具体例で接地する (弱モデル対応): {sys}");
+        let prose = build_image_prompt_request(&sc, &state, "x", "", ImagePromptStyle::Prose, 0);
+        let psys = prose.system_prompt();
+        assert!(!psys.contains("年齢") && !psys.contains("adult man"), "prose は不変: {psys}");
     }
 
     /// 【秘密は渡らない】hidden 属性 (正体: 人狼) も state_brief も本文に現れない。挿絵書きは GM ではない。

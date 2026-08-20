@@ -25,6 +25,7 @@ import {
 } from "../stores/game";
 import * as tts from "../tts";
 import {
+  currentSlot,
   DEFAULT_BASE_URL,
   DEFAULT_MODEL,
   genericComfyWorkflow,
@@ -32,6 +33,7 @@ import {
   toBackendConfig,
   type ImageGenSettings,
   type ImageProvider,
+  type ProviderSlot,
 } from "../imageGen";
 // 卓の音声 (mesh)。この file の `voice` は TTS 設定の ref なので別名で取る。
 import { listMicDevices, micDeviceId, voice as voiceMesh } from "../voice";
@@ -158,17 +160,16 @@ const img = computed(() => game.imageGen);
 function setImg(patch: Partial<ImageGenSettings>) {
   game.setImageGen(patch);
 }
-// プロバイダを替えたら URL/モデルをそのプロバイダの既定へ (空や他社の既定のままだと 404 の素)。
+// 現プロバイダのスロット (spec 26)。プロバイダ別欄 (URL/モデル/様式/ネガ/ワークフロー/タイムアウト)
+// はここへ読み書きする。
+const slot = computed(() => currentSlot(img.value));
+function setSlot(patch: Partial<ProviderSlot>) {
+  game.setImageGenSlot(patch);
+}
+// プロバイダ切替は表示スロットの切替だけ (spec 26) — 旧「既定値なら差し替え」ヒューリスティックは
+// 撤去 (カスタム URL の温存が A→B 切替で漏れを生んだ。各スロットが自分の値を持つので推測不要)。
 function onImageProviderChange(p: ImageProvider) {
-  const prev = img.value.provider;
-  const patch: Partial<ImageGenSettings> = { provider: p };
-  if (!img.value.baseUrl.trim() || img.value.baseUrl.trim() === DEFAULT_BASE_URL[prev]) {
-    patch.baseUrl = DEFAULT_BASE_URL[p];
-  }
-  if (!img.value.model.trim() || img.value.model.trim() === DEFAULT_MODEL[prev]) {
-    patch.model = DEFAULT_MODEL[p];
-  }
-  setImg(patch);
+  setImg({ provider: p });
 }
 const imageKeys = ref<{ openai: string; gemini: string }>({ openai: "", gemini: "" });
 const imageKeyStatus = ref("");
@@ -211,7 +212,7 @@ async function loadDefaultImageDir() {
   }
 }
 function insertGenericWorkflow() {
-  setImg({ workflowJson: genericComfyWorkflow() });
+  setSlot({ workflowJson: genericComfyWorkflow() });
 }
 // 設定画集 (spec 25): 今の盤面で見つかったもの。置いたのに効かないとき理由が見える。
 const sheets = ref<{ dir: string; picked: [string, number][]; skipped: [string, string][] } | null>(null);
@@ -858,19 +859,19 @@ onMounted(async () => {
             <label class="block text-sm text-parchment/70">
               {{ t("settings.image.baseUrl") }}
               <input
-                :value="img.baseUrl"
+                :value="slot.baseUrl"
                 :placeholder="DEFAULT_BASE_URL[img.provider]"
                 class="mt-1 block w-full rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
-                @change="setImg({ baseUrl: ($event.target as HTMLInputElement).value })"
+                @change="setSlot({ baseUrl: ($event.target as HTMLInputElement).value })"
               />
             </label>
             <label v-if="img.provider !== 'comfy'" class="block text-sm text-parchment/70">
               {{ t("settings.image.model") }}
               <input
-                :value="img.model"
+                :value="slot.model"
                 :placeholder="DEFAULT_MODEL[img.provider]"
                 class="mt-1 block w-full rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
-                @change="setImg({ model: ($event.target as HTMLInputElement).value })"
+                @change="setSlot({ model: ($event.target as HTMLInputElement).value })"
               />
             </label>
             <div v-if="img.provider !== 'comfy'" class="space-y-1">
@@ -914,9 +915,9 @@ onMounted(async () => {
               <label class="block text-sm text-parchment/70">
                 {{ t("settings.image.style") }}
                 <select
-                  :value="img.style"
+                  :value="slot.style"
                   class="mt-1 block w-44 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
-                  @change="setImg({ style: ($event.target as HTMLSelectElement).value as ImageGenSettings['style'] })"
+                  @change="setSlot({ style: ($event.target as HTMLSelectElement).value as ProviderSlot['style'] })"
                 >
                   <option value="">{{ t("settings.image.styleAuto", { style: img.provider === 'comfy' ? t('settings.image.styleTags') : t('settings.image.styleProse') }) }}</option>
                   <option value="prose">{{ t("settings.image.styleProse") }}</option>
@@ -936,23 +937,23 @@ onMounted(async () => {
             <label class="block text-sm text-parchment/70" :class="{ 'opacity-40': !supportsNegative(img.provider) }">
               {{ t("settings.image.negative") }}
               <input
-                :value="img.negative"
+                :value="slot.negative"
                 :disabled="!supportsNegative(img.provider)"
                 :placeholder="supportsNegative(img.provider) ? 'lowres, bad anatomy' : t('settings.image.negativeUnsupported')"
                 class="mt-1 block w-full rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none disabled:cursor-not-allowed"
-                @change="setImg({ negative: ($event.target as HTMLInputElement).value })"
+                @change="setSlot({ negative: ($event.target as HTMLInputElement).value })"
               />
             </label>
             <div v-if="img.provider === 'comfy'" class="space-y-1">
               <label class="block text-sm text-parchment/70">
                 {{ t("settings.image.workflow") }}
                 <textarea
-                  :value="img.workflowJson"
+                  :value="slot.workflowJson"
                   rows="6"
                   spellcheck="false"
                   :placeholder="t('settings.image.workflowPlaceholder')"
                   class="mt-1 block w-full rounded bg-ash/40 px-2 py-1 text-parchment font-mono text-xs focus:outline-none"
-                  @change="setImg({ workflowJson: ($event.target as HTMLTextAreaElement).value })"
+                  @change="setSlot({ workflowJson: ($event.target as HTMLTextAreaElement).value })"
                 ></textarea>
               </label>
               <div class="flex items-center gap-2">
@@ -971,10 +972,10 @@ onMounted(async () => {
                 <input
                   type="number"
                   min="0"
-                  :value="img.timeoutSecs || ''"
+                  :value="slot.timeoutSecs || ''"
                   :placeholder="img.provider === 'comfy' ? '600' : img.provider === 'gemini' ? '90' : '120'"
                   class="mt-1 block w-28 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
-                  @change="setImg({ timeoutSecs: Number(($event.target as HTMLInputElement).value) || 0 })"
+                  @change="setSlot({ timeoutSecs: Number(($event.target as HTMLInputElement).value) || 0 })"
                 />
               </label>
               <label class="block text-sm text-parchment/70 flex-1 min-w-[12rem]">
