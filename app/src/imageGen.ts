@@ -39,8 +39,8 @@ export const DEFAULT_BASE_URL: Record<ImageProvider, string> = {
 };
 
 export const DEFAULT_MODEL: Record<ImageProvider, string> = {
-  openai: "gpt-image-1",
-  gemini: "gemini-2.5-flash-image",
+  openai: "gpt-image-1-mini",
+  gemini: "gemini-3.1-flash-lite-image",
   comfy: "",
 };
 

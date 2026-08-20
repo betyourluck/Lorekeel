@@ -116,8 +116,10 @@ impl ImageGenConfig {
             return self.model.trim();
         }
         match self.provider {
-            Provider::Openai => "gpt-image-1",
-            Provider::Gemini => "gemini-2.5-flash-image",
+            // 既定は軽量モデル (2026-08-20 ユーザー決定): 挿絵は都度・手動なので安い側に倒す。
+            // 上位 (gpt-image-1 / gemini-3-pro-image-preview 等) は欄に書けば使える。
+            Provider::Openai => "gpt-image-1-mini",
+            Provider::Gemini => "gemini-3.1-flash-lite-image",
             Provider::Comfy => "",
         }
     }
@@ -958,7 +960,7 @@ mod tests {
         let body = encode_openai(&o, "a cat");
         assert_eq!(body["size"], "1536x1024");
         assert_eq!(body["quality"], "low");
-        assert_eq!(body["model"], "gpt-image-1");
+        assert_eq!(body["model"], "gpt-image-1-mini");
         assert_eq!(body["n"], 1);
         assert!(body.get("negative_prompt").is_none(), "OpenAI に欄は無い");
         assert_eq!(openai_endpoint(&o), "https://api.openai.com/v1/images/generations");
@@ -971,7 +973,7 @@ mod tests {
         assert_eq!(body["generationConfig"]["responseModalities"][0], "IMAGE");
         assert_eq!(
             gemini_endpoint(&g),
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent"
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-image:generateContent"
         );
         assert_eq!(g.style(), PromptStyle::Prose);
 
@@ -1120,7 +1122,7 @@ Please retry in 13s.","status":"RESOURCE_EXHAUSTED"}}"#;
             .collect();
         assert_eq!(keys, vec!["image[]", "image[]", "prompt", "model", "size", "quality", "n"]);
         assert!(!keys.contains(&"input_fidelity"), "v1 では送らない");
-        assert!(matches!(&parts[3], FormPart::Text { value, .. } if value == "gpt-image-1"));
+        assert!(matches!(&parts[3], FormPart::Text { value, .. } if value == "gpt-image-1-mini"));
         assert!(matches!(&parts[5], FormPart::Text { value, .. } if value == "low"));
         assert_eq!(openai_edits_endpoint(&o), "https://api.openai.com/v1/images/edits");
         assert_eq!(max_refs(Provider::Gemini), 3);
