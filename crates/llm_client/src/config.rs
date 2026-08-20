@@ -225,8 +225,9 @@ impl LlmConfig {
     /// (アプリ入口) の責務 — bin で `dotenvy::dotenv().ok()` を先に呼ぶ。
     ///
     /// 既定値:
-    /// - `LLM_BASE_URL` = `https://api.openai.com/v1`
-    /// - `LLM_MODEL`    = `gpt-4o-mini`
+    /// - `LLM_BASE_URL` / `LLM_MODEL` = **既定なし・未設定は Config エラー** (2026-08-20 ユーザーFB:
+    ///   旧既定 gpt-4o-mini が設定画面に出て「無料で使える」と誤解された。黙って特定モデルを
+    ///   選ぶ利益は無く、誤解と意図しない課金の芽だけがある)
     /// - `LLM_TEMPERATURE` = **未設定なら送らない** (provider 既定に委ねる)
     /// - `LLM_MAX_TOKENS` = `4096`
     /// - `LLM_REQUEST_TIMEOUT_SECS` = `120`, `LLM_MAX_RETRIES` = `3`
@@ -246,8 +247,11 @@ impl LlmConfig {
             })?),
         };
 
-        let base_url =
-            env_opt("LLM_BASE_URL").unwrap_or_else(|| "https://api.openai.com/v1".into());
+        let base_url = env_opt("LLM_BASE_URL").ok_or_else(|| {
+            LlmError::Config(
+                "LLM_BASE_URL が未設定です (設定 → AIモデル で接続先を選んでください)".into(),
+            )
+        })?;
         // 明示 (LLM_PROVIDER) > 自動判定 (base_url)。誤値は起動時に弾く (ネットワーク前)。
         let provider = match env_opt("LLM_PROVIDER") {
             None => Provider::detect(&base_url),
@@ -269,7 +273,11 @@ impl LlmConfig {
         let config = Self {
             base_url,
             api_key,
-            model: env_opt("LLM_MODEL").unwrap_or_else(|| "gpt-4o-mini".into()),
+            model: env_opt("LLM_MODEL").ok_or_else(|| {
+                LlmError::Config(
+                    "LLM_MODEL が未設定です (設定 → AIモデル でモデル名を入れてください)".into(),
+                )
+            })?,
             temperature,
             max_tokens: env_parse("LLM_MAX_TOKENS", 4096)?,
             request_timeout: Duration::from_secs(env_parse("LLM_REQUEST_TIMEOUT_SECS", 120)?),

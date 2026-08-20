@@ -1680,8 +1680,11 @@ fn parse_use_tools() -> bool {
 fn get_llm_config() -> LlmConfigView {
     let opt = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
     LlmConfigView {
-        base_url: opt("LLM_BASE_URL").unwrap_or_else(|| "https://api.openai.com/v1".into()),
-        model: opt("LLM_MODEL").unwrap_or_else(|| "gpt-4o-mini".into()),
+        // 既定を焼き込まない (2026-08-20 ユーザーFB): 旧既定 gpt-4o-mini が「これが使える」
+        // という誤解を生んだ (一般の受領者は AI を無料と思っていることが多い)。未設定は空欄 —
+        // 空のままゲームを始めれば from_env が「設定 → AIモデル で〜」と言う。
+        base_url: opt("LLM_BASE_URL").unwrap_or_default(),
+        model: opt("LLM_MODEL").unwrap_or_default(),
         api_key: std::env::var("LLM_API_KEY").unwrap_or_default(),
         use_tools: parse_use_tools(),
     }
