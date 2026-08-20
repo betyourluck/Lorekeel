@@ -376,8 +376,10 @@ pub enum FormPart {
 }
 
 /// 参照ありのときの `POST /v1/images/edits` 部品列 (spec 25 rev2 で凍結):
-/// `image[]` ×N, `prompt`, `model`, `size`, `quality`, `n`。**`input_fidelity` は v1 では送らない**
-/// (未決 1・実測後)。キー名は OpenAI 公式 curl の `-F "image[]=@..."` に合わせる。
+/// `image[]` ×N, `prompt`, `model`, `size`, `quality`, `n`。**`input_fidelity` は送らない**
+/// (2026-08-21 実測で決着: 既定モデル `gpt-image-1-mini` は `high` を 400 で拒む・`low` は無指定と
+/// usage 完全一致・`gpt-image-1` では画像入力トークンが 20.2× になる。specs/25「実測」節)。
+/// キー名は OpenAI 公式 curl の `-F "image[]=@..."` に合わせる。
 pub fn openai_edit_parts(cfg: &ImageGenConfig, prompt: &str, refs: &[RefImage]) -> Vec<FormPart> {
     let mut parts = Vec::new();
     for r in refs {
@@ -1121,7 +1123,7 @@ Please retry in 13s.","status":"RESOURCE_EXHAUSTED"}}"#;
             })
             .collect();
         assert_eq!(keys, vec!["image[]", "image[]", "prompt", "model", "size", "quality", "n"]);
-        assert!(!keys.contains(&"input_fidelity"), "v1 では送らない");
+        assert!(!keys.contains(&"input_fidelity"), "送らない (既定モデルが 400 で拒む・specs/25 実測)");
         assert!(matches!(&parts[3], FormPart::Text { value, .. } if value == "gpt-image-1-mini"));
         assert!(matches!(&parts[5], FormPart::Text { value, .. } if value == "low"));
         assert_eq!(openai_edits_endpoint(&o), "https://api.openai.com/v1/images/edits");

@@ -31,7 +31,8 @@ LoRA を持たせる方式だが ComfyUI 限定で敷居が高い。ここでは
    - **OpenAI**: 参照あり → `POST /v1/images/edits`（multipart）。部品列は
      **`image[]`（N 回）, `prompt`, `model`, `size`, `quality`, `n`**（キー名は OpenAI 公式 curl の
      `-F "image[]=@..."` に合わせる。400 が param 名を名指ししたら `image` へ落とす）。
-     `input_fidelity` は **v1 では送らない**（未決 2 → 実測後に `high` 既定を判断）。参照なし →
+     `input_fidelity` は **送らない**（2026-08-21 実測で決着 → 「実測」節。既定モデル
+     `gpt-image-1-mini` では `high` が 400）。参照なし →
      従来 `/images/generations` の JSON（spec 24 と byte 不変）。
    - **ComfyUI**: 各参照を `POST /upload/image`（multipart `image`、`overwrite=true`）→ 返る `name` を
      `%ref_1%`〜`%ref_3%` に置換。**未使用のプレースホルダは置換しない**（空文字で埋めると
@@ -50,6 +51,7 @@ LoRA を持たせる方式だが ComfyUI 限定で敷居が高い。ここでは
   上限が違いうる → `MAX_REFS` をプロバイダ別定数に。
 - **OpenAI（gpt-image-1）**: `/v1/images/edits` multipart。複数画像可（公式 curl は `image[]`）。
   公式ページは取得時 403 → **枚数・サイズ上限・`input_fidelity` の有無は実装時に確認**。
+  → 2026-08-21 に実測（「実測」節）: `input_fidelity` は**モデルによって存在しない**。
 - **ComfyUI**: `/upload/image` → `LoadImage.inputs.image`。IPAdapter / InstantID 等はユーザーのワークフロー。
 
 ## 決定事項（rev2）
@@ -75,7 +77,7 @@ LoRA を持たせる方式だが ComfyUI 限定で敷居が高い。ここでは
 
 - リサイズ・切り抜き（image crate を足さない）/ LoRA の自動適用 / UI からの登録（フォルダに置く
   運用で足りる）/ entity ごとの参照（設定画集が代替）/ ComfyUI の参照つき汎用ワークフロー同梱 /
-  `input_fidelity`（実測後）。
+  `input_fidelity`（2026-08-21 実測で「送らない」を恒久化。opt-in 化は別途）。
 
 ## PoC
 
@@ -89,10 +91,51 @@ LoRA を持たせる方式だが ComfyUI 限定で敷居が高い。ここでは
 
 ## 未決 → 決着（2026-08-20 ユーザー決定）
 
-1. OpenAI `input_fidelity: high` を既定にするか — **v1 は送らず、実測後に決める**（残る唯一の未決）。
+1. OpenAI `input_fidelity: high` を既定にするか — **しない**（2026-08-21 実測で決着 → 「実測」節）。
 2. **書庫の審査対象にする**（outcast 側）。ただし中身は問わない — `images/settings_sheets/` 配下は
    **webp のみ・1 枚 4MB 以下・3 枚まで** を受入検査に足す（配布サイズの作法 = WebP 推奨の延長）。
 3. **`package_spec.md` には書かない。**
+
+## 実測 — `input_fidelity`（2026-08-21、未決 1 の決着）
+
+参照 1 枚（実プレイ出力の 5 人ステージ絵 673KB jpg = 顔と衣装が 5 通り並ぶ「設定画集」相当）に
+同一プロンプト（「同じ 5 人が楽屋のソファに座る」）・同一 `size=1536x1024` で、`input_fidelity`
+だけを振った。
+
+| モデル | 指定 | HTTP | 画像入力 tok | 出力 tok | 所要 |
+|---|---|---|---|---|---|
+| `gpt-image-1-mini`（**Kataribe の既定**） | 無指定 | 200 | 1032 | 400 | 33.8s |
+| `gpt-image-1-mini` | `low` | 200 | **1032（無指定と完全一致）** | 400 | 13.7s |
+| `gpt-image-1-mini` | `high` | **400** | — | — | 0.6s |
+| `gpt-image-1` | 無指定 | 200 | 323 | 400 | 21.1s |
+| `gpt-image-1` | `high` | 200 | **6531（20.2×）** | 400 | 23.1s |
+| `gpt-image-1` `quality=medium` | 無指定 | 200 | 323 | 1568 | 28.9s |
+| `gpt-image-1` `quality=medium` | `high` | 200 | 6531 | 1568 | 34.3s |
+
+400 の本文は param を名指しする:
+`{"message":"input_fidelity 'high' is not supported for gpt-image-1-mini.","param":"input_fidelity","code":"invalid_input_fidelity_model"}`
+
+**決着: 既定にしない（送らない）。** 根拠 3 つ:
+
+1. **既定モデルで 400。** 2026-08-20 に既定を `gpt-image-1-mini` へ倒した以上、`high` を既定にすると
+   **箱から出してすぐ全滅**する。これは #76 / #77 と同じ「モデルによって欄の有無が違う」族で、
+   一律送出が成り立たない典型。
+2. **画像入力トークン 20.2×。** `quality=low` の 1 枚で $0.019 → $0.081（約 4.2×）、`medium` で
+   $0.066 → $0.128（約 1.9×）。挿絵は手動・都度なので破滅的ではないが、既定に据える額ではない
+   （$10/1M image input・$40/1M image output、2026-07 時点の公式）。
+3. **`quality=low` では逆効果だった。** low + `high` は衣装の細部（茶のブーツ・手袋・金の縁取り）を
+   残す代わりに**顔が崩れ砂目が出る**。`medium` で撮り直すと崩れは消え、`high` 側だけが参照の衣装
+   細部と髪色（ワインレッド）を保った ⇒ **粗さは fidelity でなく出力品質側の artifact**。
+   Kataribe の既定は `Detail::Standard = low` なので、既定の組み合わせでは害の方が出る。
+
+**効くのは「上位モデル + `medium` 以上 + キャラ一貫性が主目的」の三点が揃ったときだけ。**
+opt-in（設定の 1 チェック + 400 で自動降格して latch = `tool_mode_downgrade` と同型）にする道は
+残っているが、v1 は送らないまま据え置く。
+
+**接地の限界**: トークン数・400・`low` == 無指定 は wire の決定論的事実。**見た目の優劣は各アーム
+n=1 で判定者は Neo**（Images API に seed が無いので、2 枚の差にはサンプリングの運も混じる）。
+衣装細部の差は公式の説明する機序（`high` は入力の質感を richer に保つ・**複数枚では 1 枚目だけ**が
+その恩恵を受ける）と整合するが、対照実験としては弱い。opt-in を判断するならサンプルを増やす。
 
 ## rev2 査読の反映記録（2026-08-20）
 
