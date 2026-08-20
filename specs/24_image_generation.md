@@ -1,6 +1,6 @@
 # spec 24: 画像生成 — 物語に合わせた挿絵を、背景と文字の間に重ねる
 
-**Status**: Done（2026-08-20 起草 → 同日査読 rev2 → Phase 0〜D 同日実装。workspace 348 green / app 40 green・clippy clean・vue-tsc + vite build green。
+**Status**: Done — **v0.5.13 で配布済み (2026-08-20、テスト合格・サイトの exe / package_spec.md 差し替え済み)**（同日起草 → 同日査読 rev2 → Phase 0〜D 同日実装。workspace 348 green / app 40 green・clippy clean・vue-tsc + vite build green。
 Phase D: OpenAI / Gemini とも実ワイヤで 1 枚ずつ Green、プロンプト書き 3 通り良好 (`data_contract` `ImageGeneration.live_20260820`)。
 残なし (ComfyUI + GUI 通しは 2026-08-20 ユーザー実機で Green。Gemini は無料枠 429 のみ = 設計どおりの RateLimited) — commits 0ea2d89 (P0) / aedddc7 (A) / 64c2f2f (B) / backend・bb83ce5 (C) / 本コミット (D)）
 

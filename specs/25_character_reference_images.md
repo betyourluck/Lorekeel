@@ -1,9 +1,10 @@
 # spec 25: 設定画集 — 置いた絵の見た目で挿絵を描く
 
-**Status**: Done（2026-08-20 起草 → 同日ユーザー査読 4 点 + 細部 3 点を反映 rev2 → 未決 2/3 決着 → Phase 0〜C 同日実装。
-Phase C: Gemini / OpenAI edits とも参照 1 枚で見た目が引き継がれた (`data_contract` `settings_sheets` 末尾)。残 = outcast 側の書庫審査 (webp/4MB/3 枚) の実装のみ (ComfyUI + GUI は 2026-08-20 ユーザー実機で Green — 設定画集でキャラ 5 人の顔が一貫)。commits d26be5f (P0) / 6caa935 (A) / e9ede98 (B) / 本コミット (C)。rev1 の
-「entity ごとの参照ファイル + プレイヤー側フォルダ + 作者フィールド」は**撤回**し、「設定画集 3 枚まで」
-に単純化。Phase 0 着手前の確認待ち）
+**Status**: Done — **v0.5.13 で配布済み (2026-08-20)**（同日起草 → ユーザー査読 4 点 + 細部 3 点を反映 rev2 →
+未決 2/3 決着 → Phase 0〜C 同日実装。Phase C: Gemini / OpenAI edits とも参照 1 枚で見た目が引き継がれた
+(`data_contract` `settings_sheets` 末尾)。ComfyUI + GUI は同日ユーザー実機で Green — 設定画集でキャラ 5 人の顔が一貫。
+残 = outcast 側の書庫審査 (webp/4MB/3 枚) の実装のみ。commits d26be5f (P0) / 6caa935 (A) / e9ede98 (B) / 506e16d (C)。
+rev1 の「entity ごとの参照ファイル + プレイヤー側フォルダ + 作者フィールド」は**撤回**し「設定画集 3 枚まで」に単純化）
 
 ## 動機
 
