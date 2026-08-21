@@ -35,9 +35,13 @@ LoRA を持たせる方式だが ComfyUI 限定で敷居が高い。ここでは
      `gpt-image-1-mini` では `high` が 400）。参照なし →
      従来 `/images/generations` の JSON（spec 24 と byte 不変）。
    - **ComfyUI**: 各参照を `POST /upload/image`（multipart `image`、`overwrite=true`）→ 返る `name` を
-     `%ref_1%`〜`%ref_3%` に置換。**未使用のプレースホルダは置換しない**（空文字で埋めると
-     `LoadImage.inputs.image = ""` になり `File not found` で落ちる）。参照が足りない LoadImage ノードの
-     無効化は**ワークフロー側の責務**（同梱の汎用ワークフローは参照を持たないので `%ref_%` 自体が無い）。
+     `%ref_1%`〜`%ref_3%` に置換。**足りない分の `%ref_n%` を持つノードはノードごと外し、そこへ繋がる辺を
+     切る**（`comfy_prune_unfilled_refs`、**2026-08-22 改訂**。空文字で埋めると
+     `LoadImage.inputs.image = ""` になり `File not found` で落ちる。rev2 の「未使用は置換せず残す・無効化は
+     ワークフロー側の責務」は画集の枚数ごとにワークフローを貼り替える運用を要求しており、誰もしない＝実機で
+     参照が一度も効いていなかった真因 → 「実測 — ComfyUI」節）。これで**ワークフロー 1 本が画集 0〜3 枚を受ける**。
+     同梱テンプレート `comfy_krea2_ref.json`（Krea 2 Turbo + `TextEncodeQwenImageEditPlus`）を設定タブから
+     挿入でき、画集があるのにワークフローに `%ref_1%` が無いときは警告を出す。
 5. **設定タブの可視化**: 「今の盤面で見つかった設定画集」（ファイル名・サイズ・スキップ理由）を
    一覧で出す。置いたのに効かないとき「見つかっていない / 大きすぎる」が見える（黙って落ちる失敗を
    見せる。`present_at` の typo の反省と同じ）。
@@ -53,6 +57,7 @@ LoRA を持たせる方式だが ComfyUI 限定で敷居が高い。ここでは
   公式ページは取得時 403 → **枚数・サイズ上限・`input_fidelity` の有無は実装時に確認**。
   → 2026-08-21 に実測（「実測」節）: `input_fidelity` は**モデルによって存在しない**。
 - **ComfyUI**: `/upload/image` → `LoadImage.inputs.image`。IPAdapter / InstantID 等はユーザーのワークフロー。
+  → 2026-08-22 実測: Krea 2 は ComfyUI 本体がネイティブに参照を受ける（「実測 — ComfyUI」節）。
 
 ## 決定事項（rev2）
 
@@ -86,7 +91,8 @@ LoRA を持たせる方式だが ComfyUI 限定で敷居が高い。ここでは
 - Gemini encode: parts が `[inlineData, inlineData, text]` の順、0 枚なら spec 24 と byte 一致。
 - OpenAI: 参照ありで edits の multipart 部品列（`image[]` ×N・`prompt`・`model`・`size`・`quality`・`n`、
   `input_fidelity` は**無い**）、参照なしで generations の JSON（spec 24 と byte 一致）。
-- ComfyUI: `%ref_1%..3` の置換、**未使用は残る**（置換されない）、参照なしは spec 24 と同一出力。
+- ComfyUI: `%ref_1%..3` の置換、**足りない分は LoadImage ごと外し辺を切る**（0 枚なら LoadImage 全消し・
+  エンコーダは画像なしで残る）、`%ref_%` を持たないワークフローは byte 不変（`unfilled_ref_placeholders_are_pruned_with_their_edges`）。
 - プロンプト書き: 参照ありで規律が system に出る・0 枚で byte 一致。
 
 ## 未決 → 決着（2026-08-20 ユーザー決定）
@@ -142,9 +148,30 @@ n=1 で判定者は Neo**（Images API に seed が無いので、2 枚の差に
 | # | 指摘 | 反映 |
 |---|---|---|
 | 1 | entity ごとの参照ファイルは不要。設定画集 3 枚を `images/settings_sheets/` に | 何を作るか 1〜3・決定 1（rev1 の照合/優先順/作者フィールドを撤回 = engine 無改修） |
-| 2 | ComfyUI の未使用プレースホルダ空埋めは `File not found` を生む | 何を作るか 4: 未使用は置換しない・LoadImage の無効化はワークフロー側 |
+| 2 | ComfyUI の未使用プレースホルダ空埋めは `File not found` を生む | 何を作るか 4: 未使用は置換しない・LoadImage の無効化はワークフロー側 → **2026-08-22 に「ノードごと外し辺を切る」へ改訂**（「実測 — ComfyUI」節） |
 | 3 | OpenAI の部品列が 3 箇所でズレ・`input_fidelity` 不在 | 部品列を `image[]` ×N, prompt, model, size, quality, n に統一・`input_fidelity` は v1 不送出（未決 1 と紐付け） |
 | 4 | 4MB スキップの純関数とトーストの責務 | 決定 4: 純関数は `Skipped` を返すだけ・トーストは呼び出し側 |
 | 細 1 | 上限 3 のハードコード | 決定 2: `MAX_REFS` プロバイダ別定数 |
 | 細 2 | byte 不変の保証 | 決定 5: `refs: usize`、0 で byte 一致を PoC |
 | 細 3 | 大文字拡張子 | 何を作るか 2: 大文字小文字不問 |
+
+## 実測 — ComfyUI / Krea 2（2026-08-22、「参照がほとんど意味をなしていない」起点）
+
+- **真因は配線の不在**: ユーザーの実ワークフロー（`Krea2 Moody.json`）に `%ref_n%` が無く、Kataribe は画集を
+  `/upload/image` へ上げるだけで使われていなかった。加えて rev2 契約「未使用の `%ref_n%` は残す」は、画集 1 枚の
+  盤面と 3 枚の盤面でワークフローを貼り替える運用を要求しており、残った `%ref_2%` が LoadImage を
+  `File not found` で落とす。→ 上記の剪定へ改訂 + 設定タブ警告 + 同梱テンプレート。
+- **Krea 2 は ComfyUI 本体が参照をネイティブ実装**（`comfy/model_base.py::Krea2.extra_conds` が
+  `reference_latents` を受け、`ldm/krea2/model.py` が Kontext 同型で参照トークンをシーケンス連結）。
+  IPAdapter / CLIPVision / 専用カスタムノードは不要。参照を作るのは core の
+  `TextEncodeQwenImageEditPlus`（`clip` + `vae` + `image1..3`、Qwen3-VL が 384² で絵を見る + VAE が 1024² の
+  参照 latent を conditioning に付ける）。`%ref_1..3%` ＝ `image1..3` と 1:1。
+- **LoRA 無しの turbo で識別性が保たれる**（LAN 実機 192.168.0.3 / RTX 2080 SUPER / `krea2_turbo_fp8_scaled`、
+  同 seed 47・同プロンプト）: 参照あり＝銀髪ショート・緑目・赤マフラー・紺×金の鎧・白スカートを保持／
+  参照なし＝金髪ロング・青目・銀の鎧に化けた。公式 Style Reference LoRA / community Identity Edit LoRA
+  は無くても効く（**n=1・目視判定**。第三者サイトの「効く」を自分の GPU で確認した形）。
+- **副作用 = 参照の無地背景が構図に漏れる**: 参照の灰色背景がシーンに染み、灰色の枠つきビネットになった。
+  プロンプトで「背景を全面に・枠なし」と言うと大きく減るが完全には消えない → プロンプト書きの規律
+  （`refs_rule`）に「参照の無地背景・余白・枠・文字は構図に持ち込まず、場面の背景を画面いっぱいに」を追加。
+  設定画集を作るときは無地の単色背景を避けるのが作法。
+- 配線の読める形: ComfyUI の一覧に `Krea2 Moody ref.json`（UI 形式、image2/3 はバイパス）を保存済み。

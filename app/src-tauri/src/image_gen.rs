@@ -525,8 +525,9 @@ pub struct ComfyVars<'a> {
     pub seed: u64,
     pub width: u32,
     pub height: u32,
-    /// `/upload/image` で上げた参照の返名 (spec 25)。`%ref_1%`.. を**ある分だけ**置換し、
-    /// 足りない分のプレースホルダは**残す** (空文字で埋めると LoadImage の File not found)。
+    /// `/upload/image` で上げた参照の返名 (spec 25)。`%ref_1%`.. を**ある分だけ**置換する。
+    /// 足りない分は空文字で埋めない (LoadImage の File not found) — 置換後に
+    /// [`comfy_prune_unfilled_refs`] が**ノードごと外す** (2026-08-22 改訂)。
     pub refs: &'a [String],
 }
 
@@ -576,6 +577,67 @@ pub fn comfy_substitute(workflow: &Value, vars: &ComfyVars<'_>) -> Value {
         ),
         other => other.clone(),
     }
+}
+
+/// 未置換の `%ref_n%` を持つノードを**ノードごと外し**、そこへ繋がる辺 (`[id, slot]`) を他ノードの
+/// `inputs` から切る (純粋、spec 25 改訂 2026-08-22)。置換で埋まらなかった LoadImage を残すと
+/// ComfyUI が File not found で落ちるので、**1 本のワークフローで画集 0〜3 枚を受ける**ための剪定。
+/// 辺を切った先の入力は optional であること (`TextEncodeQwenImageEditPlus.image1..3` のように) —
+/// required なら ComfyUI が `node_errors` で名指しし `ComfyNodeError` として surface する。
+/// `%ref_%` を持たないワークフローは byte 不変。
+pub fn comfy_prune_unfilled_refs(workflow: &Value) -> Value {
+    fn has_unfilled_ref(v: &Value) -> bool {
+        match v {
+            Value::String(s) => {
+                let mut rest = s.as_str();
+                while let Some(i) = rest.find("%ref_") {
+                    let tail = &rest[i + 5..];
+                    let digits: usize = tail.bytes().take_while(u8::is_ascii_digit).count();
+                    if digits > 0 && tail[digits..].starts_with('%') {
+                        return true;
+                    }
+                    rest = &rest[i + 5..];
+                }
+                false
+            }
+            Value::Array(a) => a.iter().any(has_unfilled_ref),
+            Value::Object(m) => m.values().any(has_unfilled_ref),
+            _ => false,
+        }
+    }
+    let Some(nodes) = workflow.as_object() else {
+        return workflow.clone();
+    };
+    let dead: std::collections::BTreeSet<&str> = nodes
+        .iter()
+        .filter(|(_, n)| n.get("inputs").is_some_and(has_unfilled_ref))
+        .map(|(id, _)| id.as_str())
+        .collect();
+    if dead.is_empty() {
+        return workflow.clone();
+    }
+    let is_edge_to_dead = |v: &Value| -> bool {
+        v.as_array()
+            .and_then(|a| a.first())
+            .and_then(|id| match id {
+                Value::String(s) => Some(s.clone()),
+                Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            })
+            .is_some_and(|id| dead.contains(id.as_str()))
+    };
+    let mut out = serde_json::Map::new();
+    for (id, node) in nodes {
+        if dead.contains(id.as_str()) {
+            continue;
+        }
+        let mut node = node.clone();
+        if let Some(inputs) = node.get_mut("inputs").and_then(Value::as_object_mut) {
+            inputs.retain(|_, v| !is_edge_to_dead(v));
+        }
+        out.insert(id.clone(), node);
+    }
+    Value::Object(out)
 }
 
 /// ワークフロー JSON の形を検査する (純粋)。**UI 形式** (`nodes`/`links` 配列 = ComfyUI の通常保存)
@@ -833,7 +895,7 @@ pub async fn generate(
                 ref_names.push(name);
             }
             let vars = ComfyVars { prompt, negative: &cfg.negative, seed, width: w, height: h, refs: &ref_names };
-            let substituted = comfy_substitute(&wf, &vars);
+            let substituted = comfy_prune_unfilled_refs(&comfy_substitute(&wf, &vars));
             let client_id = format!("kataribe-{}", seed);
             let resp = http
                 .post(format!("{base}/prompt"))
@@ -1098,7 +1160,7 @@ Please retry in 13s.","status":"RESOURCE_EXHAUSTED"}}"#;
 
     /// 【設定画集 (spec 25)】Gemini は inlineData をテキストの前に並べ 0 枚なら spec 24 と同じ形 /
     /// OpenAI は参照ありで edits の部品列 (image[] ×N, prompt, model, size, quality, n、input_fidelity 無し)
-    /// で 0 枚なら従来 JSON / ComfyUI は %ref_n% をある分だけ差し、足りない分は**残す**。
+    /// で 0 枚なら従来 JSON / ComfyUI は %ref_n% をある分だけ差す (足りない分の剪定は次のテスト)。
     #[test]
     fn reference_sheets_are_carried_per_provider_and_absent_means_byte_identical() {
         let r = |n: &str| RefImage { name: n.into(), mime: "image/png".into(), bytes: vec![1, 2, 3] };
@@ -1139,9 +1201,49 @@ Please retry in 13s.","status":"RESOURCE_EXHAUSTED"}}"#;
         let vars = ComfyVars { prompt: "p", negative: "", seed: 1, width: 1024, height: 1024, refs: &names };
         let out = comfy_substitute(&wf, &vars);
         assert_eq!(out["10"]["inputs"]["image"], "sheet_a.png");
-        assert_eq!(out["11"]["inputs"]["image"], "%ref_2%", "足りない分は残す (空埋めしない)");
+        assert_eq!(out["11"]["inputs"]["image"], "%ref_2%", "置換だけでは足りない分は残る (外すのは prune の仕事)");
         assert_eq!(comfy_uploaded_name(r#"{"name":"x.png","subfolder":"","type":"input"}"#).as_deref(), Some("x.png"));
         assert_eq!(comfy_uploaded_name(r#"{"name":"x.png","subfolder":"refs","type":"input"}"#).as_deref(), Some("refs/x.png"));
+    }
+
+    /// 【未置換 %ref_n% の剪定 (spec 25 改訂 2026-08-22)】画集が足りない分の LoadImage は**ノードごと外し**、
+    /// そこへ繋がる辺 (`[id, slot]`) を他ノードの inputs から切る — 残すと LoadImage が File not found で落ちる
+    /// (旧契約「残す」はワークフロー側で枚数を揃えろという意味だったが、画集 1 枚の盤面と 3 枚の盤面で
+    /// ワークフローを貼り替えるのは誰もしない = 実機で参照が死んでいた真因)。1 本のワークフローで 0〜3 枚を受ける。
+    #[test]
+    fn unfilled_ref_placeholders_are_pruned_with_their_edges() {
+        let wf: Value = serde_json::from_str(
+            r#"{"10":{"class_type":"LoadImage","inputs":{"image":"%ref_1%"}},
+                "11":{"class_type":"LoadImage","inputs":{"image":"%ref_2%"}},
+                "12":{"class_type":"LoadImage","inputs":{"image":"%ref_3%"}},
+                "80":{"class_type":"TextEncodeQwenImageEditPlus","inputs":{"clip":["62",0],"vae":["63",0],"prompt":"%prompt%","image1":["10",0],"image2":["11",0],"image3":["12",0]}},
+                "62":{"class_type":"CLIPLoader","inputs":{"clip_name":"x","type":"krea2"}},
+                "63":{"class_type":"VAELoader","inputs":{"vae_name":"v"}}}"#,
+        )
+        .unwrap();
+        let one = vec!["sheet_a.png".to_string()];
+        let vars = ComfyVars { prompt: "p", negative: "", seed: 1, width: 1024, height: 1024, refs: &one };
+        let out = comfy_prune_unfilled_refs(&comfy_substitute(&wf, &vars));
+        assert_eq!(out["10"]["inputs"]["image"], "sheet_a.png");
+        assert!(out.get("11").is_none() && out.get("12").is_none(), "足りない分はノードごと外す");
+        let enc = out["80"]["inputs"].as_object().unwrap();
+        assert_eq!(enc["image1"], json!(["10", 0]));
+        assert!(!enc.contains_key("image2") && !enc.contains_key("image3"), "外したノードへの辺も切る");
+        assert_eq!(enc["clip"], json!(["62", 0]), "無関係の辺は触らない");
+        assert_eq!(enc["prompt"], "p");
+        assert!(out.get("62").is_some() && out.get("63").is_some());
+
+        // 0 枚: LoadImage は全部消え、エンコーダは画像なしのテキスト符号化として残る。
+        let none: Vec<String> = vec![];
+        let vars0 = ComfyVars { prompt: "p", negative: "", seed: 1, width: 1024, height: 1024, refs: &none };
+        let out0 = comfy_prune_unfilled_refs(&comfy_substitute(&wf, &vars0));
+        assert!(out0.get("10").is_none() && out0.get("11").is_none() && out0.get("12").is_none());
+        let enc0 = out0["80"]["inputs"].as_object().unwrap();
+        assert!(!enc0.keys().any(|k| k.starts_with("image")));
+
+        // %ref_% を持たないワークフローは byte 不変 (spec 24 の経路に影響しない)。
+        let plain: Value = serde_json::from_str(r#"{"6":{"class_type":"CLIPTextEncode","inputs":{"text":"p","clip":["4",1]}}}"#).unwrap();
+        assert_eq!(comfy_prune_unfilled_refs(&plain), plain);
     }
 
     /// 【ComfyUI ワークフローの形】UI 形式 (nodes/links) は API 形式で書き出せと名指し / ノードの無い
@@ -1276,6 +1378,49 @@ mod live {
     async fn gemini_with_reference_sheet() {
         let Some(k) = key(&["IMAGE_API_KEY_GEMINI", "GEMINI_API_KEY"]) else { return };
         run_with_sheet(Provider::Gemini, &k).await;
+    }
+
+    /// ComfyUI 参照 live (spec 25 改訂 2026-08-22)。同梱テンプレート `comfy_krea2_ref.json` (%ref_1..3%) を
+    /// **Kataribe の実経路** (upload → 置換 → 剪定 → /prompt → ポーリング → /view) で通す。
+    /// 1 枚 (LoadImage 2 つを剪定) と 0 枚 (3 つ全部剪定・エンコーダは画像なし) の両方が PNG を返すこと。
+    /// `COMFY_BASE_URL` (例 http://192.168.0.3:8188) と `KATARIBE_SHEET` が要る。
+    #[tokio::test]
+    #[ignore = "実機 ComfyUI が要る live テスト"]
+    async fn comfy_with_reference_sheet_prunes_unfilled_slots() {
+        let Some(base) = key(&["COMFY_BASE_URL"]) else { return };
+        let Ok(sheet) = std::env::var("KATARIBE_SHEET") else {
+            eprintln!("skip: KATARIBE_SHEET 未設定");
+            return;
+        };
+        let bytes = std::fs::read(&sheet).expect("参照画像が読める");
+        let cfg = ImageGenConfig {
+            provider: Provider::Comfy,
+            base_url: base,
+            model: String::new(),
+            shape: Shape::Square,
+            detail: Detail::Standard,
+            style: None,
+            user_prefix: String::new(),
+            negative: "low quality, bad anatomy".into(),
+            workflow_json: Some(include_str!("../../src/assets/comfy_krea2_ref.json").to_string()),
+            timeout_secs: None,
+        };
+        let prompt = "anime RPG game style, the same woman knight as in the reference sheet (see reference),                       standing on a castle rampart at dawn, wind in her hair, looking at the horizon.                       The background fills the entire frame, no plain backdrop or border.";
+        for (label, refs) in [
+            ("one_sheet", vec![RefImage { name: "01_cast.png".into(), mime: "image/png".into(), bytes: bytes.clone() }]),
+            ("no_sheet", vec![]),
+        ] {
+            let t0 = std::time::Instant::now();
+            match generate(&cfg, "", prompt, 47, &refs).await {
+                Ok(g) => {
+                    let path = out_dir().join(format!("kataribe_live_comfy_{label}.png"));
+                    std::fs::write(&path, &g.bytes).unwrap();
+                    eprintln!("Comfy {label} OK: bytes={} elapsed={:.1}s -> {}", g.bytes.len(), t0.elapsed().as_secs_f32(), path.display());
+                    assert!(g.bytes.len() > 1000);
+                }
+                Err(e) => panic!("Comfy {label} failed: {e}"),
+            }
+        }
     }
 
     #[tokio::test]

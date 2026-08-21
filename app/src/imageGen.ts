@@ -6,6 +6,7 @@
 // プロバイダ切替は表示スロットの切替だけで、値は一切失われない (旧ヒューリスティック
 // 「既定値なら差し替え」は撤去 — A 用のカスタム URL が B へ漏れる事故の根治)。
 import comfyGeneric from "./assets/comfy_generic.json";
+import comfyKrea2Ref from "./assets/comfy_krea2_ref.json";
 
 export type ImageProvider = "openai" | "gemini" | "comfy";
 export type ImageShape = "square" | "landscape" | "portrait";
@@ -175,6 +176,20 @@ export function supportsNegative(p: ImageProvider): boolean {
 /** 同梱の汎用 ComfyUI ワークフロー (API 形式、プレースホルダ入り)。 */
 export function genericComfyWorkflow(): string {
   return JSON.stringify(comfyGeneric, null, 2);
+}
+
+/**
+ * 同梱の参照画像つきワークフロー (Krea 2 Turbo、API 形式)。設定画集を `%ref_1%`〜`%ref_3%` =
+ * `TextEncodeQwenImageEditPlus.image1..3` へ差す。足りない分の LoadImage は backend が外すので
+ * 画集 0〜3 枚をこの 1 本で受ける (spec 25 改訂 2026-08-22)。
+ */
+export function krea2RefComfyWorkflow(): string {
+  return JSON.stringify(comfyKrea2Ref, null, 2);
+}
+
+/** ワークフロー JSON が参照画像の差し込み先 `%ref_1%` を持つか (設定タブの警告用、純関数)。 */
+export function workflowAcceptsRefs(workflowJson: string): boolean {
+  return /%ref_1%/.test(workflowJson);
 }
 
 /** backend `image_gen::ImageGenConfig` の形 (snake_case)。 */

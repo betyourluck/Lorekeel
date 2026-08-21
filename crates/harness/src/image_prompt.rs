@@ -179,7 +179,9 @@ impl ImagePromptRequest {
         format!(
             "\n- 参照画像 {n} 枚は設定画集です (人物の立ち絵に名前が書かれ、背景がまとめられている)。\
              登場人物と場所の見た目はそれに従い、プロンプト内で (as in the reference sheets) と指して\
-             ください。参照に無い人物は profile の範囲で描きます。",
+             ください。参照に無い人物は profile の範囲で描きます。参照の無地背景・余白・枠・文字は\
+             構図に持ち込まず、場面の背景を画面いっぱいに描くよう明記してください\
+             (例: the scene background fills the entire frame, no plain backdrop or border)。",
             n = self.refs
         )
     }
@@ -360,6 +362,10 @@ allowed_flags: [done]
         let sys2 = two.system_prompt();
         assert!(sys2.starts_with(&zero.system_prompt()), "既存文言はそのまま・末尾に足すだけ");
         assert!(sys2.contains("参照画像 2 枚は設定画集") && sys2.contains("(as in the reference sheets)"));
+        assert!(
+            sys2.contains("構図に持ち込まず") && sys2.contains("fills the entire frame"),
+            "参照の無地背景が構図に漏れる (2026-08-22 Krea 2 実測) を抑える文言"
+        );
         assert_eq!(sys2.matches("
 - ").count(), zero.system_prompt().matches("
 - ").count() + 1, "箇条は 1 つだけ増える");

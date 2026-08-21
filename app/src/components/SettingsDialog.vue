@@ -29,6 +29,8 @@ import {
   DEFAULT_BASE_URL,
   DEFAULT_MODEL,
   genericComfyWorkflow,
+  krea2RefComfyWorkflow,
+  workflowAcceptsRefs,
   supportsNegative,
   toBackendConfig,
   type ImageGenSettings,
@@ -214,6 +216,17 @@ async function loadDefaultImageDir() {
 function insertGenericWorkflow() {
   setSlot({ workflowJson: genericComfyWorkflow() });
 }
+function insertKrea2RefWorkflow() {
+  setSlot({ workflowJson: krea2RefComfyWorkflow() });
+}
+// 画集が見つかっているのにワークフローに差し込み先が無い = 送られても使われない沈黙の失敗を見せる。
+const workflowIgnoresSheets = computed(
+  () =>
+    img.value.provider === "comfy" &&
+    (sheets.value?.picked.length ?? 0) > 0 &&
+    slot.value.workflowJson.trim() !== "" &&
+    !workflowAcceptsRefs(slot.value.workflowJson),
+);
 // 設定画集 (spec 25): 今の盤面で見つかったもの。置いたのに効かないとき理由が見える。
 const sheets = ref<{ dir: string; picked: [string, number][]; skipped: [string, string][] } | null>(null);
 const sheetsError = ref("");
@@ -963,8 +976,15 @@ onMounted(async () => {
                 >
                   {{ t("settings.image.insertGeneric") }}
                 </button>
+                <button
+                  class="rounded bg-ash/40 hover:bg-ash/70 px-3 py-1 text-sm text-parchment/80"
+                  @click="insertKrea2RefWorkflow"
+                >
+                  {{ t("settings.image.insertKrea2Ref") }}
+                </button>
                 <span class="text-parchment/40 text-xs">{{ t("settings.image.workflowNote") }}</span>
               </div>
+              <p v-if="workflowIgnoresSheets" class="text-xs text-ember">{{ t("settings.image.workflowNoRefs") }}</p>
             </div>
             <div class="flex flex-wrap gap-3 items-end">
               <label class="block text-sm text-parchment/70">
