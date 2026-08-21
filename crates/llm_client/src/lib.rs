@@ -1849,6 +1849,22 @@ mod tests {
         s.record(8200, 9000); // ヒットでリセット (床に関係なく)
         assert_eq!(s.consecutive_misses, 0);
         // 既定 floor=0 は従来挙動 (全 miss を数える) — 既存テストが保証。
+        // floor=MAX = キャッシュ不安定プロバイダ (Meta): miss を一切数えない。
+        let mut m = CacheStat { floor: u64::MAX, ..CacheStat::default() };
+        m.record(0, 100_000);
+        assert_eq!(m.consecutive_misses, 0, "不安定プロバイダは警告の対象外");
+        m.record(500, 1000);
+        assert_eq!(m.last_cache_read, 500, "ヒットは正直に載る");
+    }
+
+    /// 【cache_floor の表】実測/公式で確定した床だけを持つ (盛ると真の miss を隠す)。
+    #[test]
+    fn cache_floor_table_matches_measured_providers() {
+        let f = |url: &str| client::cache_floor(&LlmConfig::new(url, "k", "m"));
+        assert_eq!(f("https://api.perplexity.ai/v1"), 8192, "#80 ブロック床");
+        assert_eq!(f("https://api.meta.ai/v1/"), u64::MAX, "不安定 — miss を数えない");
+        assert_eq!(f("https://api.anthropic.com"), 4096, "#44 公式最小");
+        assert_eq!(f("https://api.x.ai/v1"), 0, "未確定は従来どおり全 miss を数える");
     }
 
     /// 【encode】canonical → Responses wire。probe で確定した形 (2026-08-20 実測):

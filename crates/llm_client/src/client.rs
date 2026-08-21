@@ -88,9 +88,14 @@ impl CacheStat {
 /// 真の miss (設定ミス) まで隠す。
 /// - Perplexity: 8192 トークンブロック単位でしか cached が返らない (failures #80 実測)
 /// - Anthropic: 最小キャッシュ 4096 tokens (opus 系公式 #44。小パッケージの偽警告の既知留意も解消)
-fn cache_floor(config: &LlmConfig) -> u64 {
+pub(crate) fn cache_floor(config: &LlmConfig) -> u64 {
     match config.provider {
         Provider::Responses if config.base_url.contains("api.perplexity.ai") => 8192,
+        // Meta はキャッシュが**口を問わず不安定** (2026-08-21 実測 15 リクエスト: 実プレイ形
+        // 〔固定プレフィックス+可変 user〕は 0/9、完全同一の再送ですら 2/4。互換口の
+        // 「たまに効く」〔2026-08-09〕と同じ側)。受領者が設定で直せる故障ではないので
+        // miss を一切数えない = 警告の対象外 (ヒットすれば計測には正直に載る)。
+        Provider::Responses if config.base_url.contains("api.meta.ai") => u64::MAX,
         Provider::Anthropic => 4096,
         _ => 0,
     }
