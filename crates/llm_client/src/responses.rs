@@ -143,9 +143,33 @@ pub(crate) struct InputTokensDetails {
 
 // --- 変換 ---------------------------------------------------------------------
 
+/// Responses 口の方言 (2026-08-21)。同じ Responses 形でもホストで受理集合が割れる —
+/// #78 の「互換はメッセージの形しか保証しない」の Responses 版。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Flavor {
+    /// Perplexity 等 (従来)。`tool_choice: "required"` が効く。
+    OpenAi,
+    /// Meta (`api.meta.ai`)。probe 実測 (2026-08-21): `tool_choice` は auto のみ
+    /// (`required` は 400 で名指し拒否) → 欄ごと送らない / `reasoning.effort` の受理語彙に
+    /// `max` が無い (Fuseforks spec 37: none/minimal/low/medium/high/xhigh) → xhigh へ丸める /
+    /// `store: false` は受理される (200 実測) ので共通で送る。tools は auto でも自発的に
+    /// function_call を出す (probe 3/3 相当) が、保険として schema を prompt 末尾に載せる
+    /// (互換経路の ToolMode::Auto と同じ処方 — 400 の次は抽出で詰まる #78 一般化 2)。
+    Meta,
+}
+
+/// base_url から方言を決める (純粋)。判定はホスト — モデル名では判定しない (#78)。
+pub(crate) fn flavor_for(base_url: &str) -> Flavor {
+    if base_url.contains("api.meta.ai") {
+        Flavor::Meta
+    } else {
+        Flavor::OpenAi
+    }
+}
+
 /// canonical → Responses wire (純粋)。
-pub(crate) fn encode(req: &ChatRequest) -> ResponsesRequest {
-    let input = req
+pub(crate) fn encode(req: &ChatRequest, flavor: Flavor) -> ResponsesRequest {
+    let mut input: Vec<InputItem> = req
         .messages
         .iter()
         .map(|m| InputItem {
@@ -173,7 +197,9 @@ pub(crate) fn encode(req: &ChatRequest) -> ResponsesRequest {
         .collect();
     // 名指し (`Specific`) は黙殺されるので `required` へ畳む — 提示ツールが 1 本なら等価。
     // Auto/None は送らない (= サーバ既定)。tools が無ければ tool_choice も無し。
-    let tool_choice = if tools.is_empty() {
+    // Meta は auto しか受けない (400 名指し) ので欄ごと送らず、代わりに schema を
+    // prompt 末尾へ (互換経路 ToolMode::Auto の処方の Responses 版)。
+    let tool_choice = if tools.is_empty() || flavor == Flavor::Meta {
         None
     } else {
         match &req.tool_choice {
@@ -181,6 +207,15 @@ pub(crate) fn encode(req: &ChatRequest) -> ResponsesRequest {
             ToolChoice::Auto | ToolChoice::None => None,
         }
     };
+    if flavor == Flavor::Meta {
+        if let Some(t) = req.tools.first() {
+            input.push(InputItem {
+                kind: "message",
+                role: "system",
+                content: crate::openai_compat::tool_or_json_instruction(&t.parameters),
+            });
+        }
+    }
     ResponsesRequest {
         model: req.model.clone(),
         input,
@@ -194,6 +229,8 @@ pub(crate) fn encode(req: &ChatRequest) -> ResponsesRequest {
                 Effort::Medium => "medium",
                 Effort::High => "high",
                 Effort::XHigh => "xhigh",
+                // Meta の受理語彙に max が無い (Fuseforks spec 37 実測の enum) → 最上位へ丸める。
+                Effort::Max if flavor == Flavor::Meta => "xhigh",
                 Effort::Max => "max",
             },
         }),

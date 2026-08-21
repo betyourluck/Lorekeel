@@ -51,6 +51,12 @@ impl Provider {
             Provider::Gemini
         } else if base_url.contains("api.perplexity.ai") && !base_url.contains("/router/") {
             Provider::Responses
+        } else if base_url.contains("api.meta.ai") {
+            // Meta も Responses 口へ (2026-08-21 probe)。互換口はキャッシュ計測が不安定
+            // (2026-08-09 実測「たまに効く」) だが、`/v1/responses` は cached_tokens を確実に
+            // 返す (input 1107 中 cached 1073・Fuseforks spec 37 と同一実測)。tool_choice の
+            // 400→Auto 降格ダンス (セッション毎 2 往復) も口ごと消える。api.llama.com は未測ゆえ従来。
+            Provider::Responses
         } else {
             Provider::OpenAiCompat
         }

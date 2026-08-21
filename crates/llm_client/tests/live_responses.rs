@@ -74,3 +74,60 @@ async fn perplexity_responses_round_trip() {
     eprintln!("cache_stat: requests={} last_cache_read={}", stat.total_requests, stat.last_cache_read);
     assert_eq!(stat.total_requests, 2, "成功 1 回 = 記録 1 回");
 }
+
+#[tokio::test]
+#[ignore = "実キー (META_API_KEY / LLM_API_KEY) が要る live テスト"]
+async fn meta_responses_round_trip_with_cache() {
+    let Some(key) = std::env::var("META_API_KEY")
+        .or_else(|_| std::env::var("LLM_API_KEY"))
+        .ok()
+        .filter(|k| !k.trim().is_empty())
+    else {
+        eprintln!("skip: META_API_KEY / LLM_API_KEY が無い");
+        return;
+    };
+    let cfg = LlmConfig::new("https://api.meta.ai/v1", key, "muse-spark-1.2-contributor");
+    assert_eq!(cfg.provider, Provider::Responses, "api.meta.ai はホストから Responses 自動判定");
+    let client = LlmClient::new(cfg).unwrap();
+
+    // ① 構造化出力 — Meta 方言 (tool_choice 無し = auto + schema を prompt 末尾へ)。
+    // auto なのでモデルがツールを使わない可能性があるが、その場合も fence JSON フォールバック
+    // → StateDelta 解決までが Kataribe の実経路 (通ればどちらでも Green)。
+    let messages = vec![
+        ChatMessage::system(
+            "あなたは TRPG の GM です。語り (narration) と状態変更 (ops) を emit_delta で提出してください。             現在地: cell。出口: cell -> corridor (door_open フラグが必要)。所持品: 鍵。",
+        ),
+        ChatMessage::user("プレイヤー: 鍵で扉を開けて廊下へ出る"),
+    ];
+    let delta: StateDelta = client
+        .generate_structured(
+            messages.clone(),
+            EMIT_DELTA_TOOL,
+            "ターンの語りと状態変更を提出する",
+            llm_client::state_delta_schema(),
+        )
+        .await
+        .expect("generate_structured が通る");
+    eprintln!("structured#1: narration_chars={} ops={}", delta.narration.chars().count(), delta.ops.len());
+    assert!(!delta.narration.trim().is_empty());
+
+    // ② 同一プレフィックスでもう 1 回 — cached_tokens が返るか (ウォームアップで 0 のことも
+    // あるので assert はしない。計測値の目視が目的)。
+    let delta2: StateDelta = client
+        .generate_structured(
+            messages,
+            EMIT_DELTA_TOOL,
+            "ターンの語りと状態変更を提出する",
+            llm_client::state_delta_schema(),
+        )
+        .await
+        .expect("2 回目も通る");
+    eprintln!("structured#2: narration_chars={}", delta2.narration.chars().count());
+
+    let stat = client.cache_stat();
+    eprintln!(
+        "cache_stat: requests={} last_cache_read={} misses={}",
+        stat.total_requests, stat.last_cache_read, stat.consecutive_misses
+    );
+    assert!(stat.total_requests >= 2);
+}

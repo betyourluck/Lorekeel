@@ -1815,6 +1815,42 @@ mod tests {
         );
     }
 
+    /// 【Provider 自動判定 / Meta】`api.meta.ai` は互換口も持つが、**キャッシュ計測は
+    /// Responses 口 (`/v1/responses`) でだけ確実に返る** (2026-08-21 probe: 互換経路は
+    /// cached 不安定 (2026-08-09 実測)・Responses は input 1107 中 cached 1073。Fuseforks
+    /// spec 37 と同一の実測)。muse-spark 系は TRPG 勢の主力プロバイダで、キャッシュ警告の
+    /// 誤発火は受領者の不安に直結する → 口ごと Responses へ。api.llama.com は未測ゆえ従来。
+    #[test]
+    fn provider_detects_meta_as_responses() {
+        assert_eq!(Provider::detect("https://api.meta.ai/v1/"), Provider::Responses);
+        assert_eq!(Provider::detect("https://api.meta.ai"), Provider::Responses);
+        assert_eq!(
+            Provider::detect("https://api.llama.com/compat/v1"),
+            Provider::OpenAiCompat,
+            "llama.com の Responses 口は未測 — 互換のまま"
+        );
+    }
+
+    /// 【CacheStat の床】キャッシュ最小プレフィックス未満のリクエストは**構造的にヒット
+    /// 不可能** (Perplexity 8192 ブロック床 #80 / Anthropic 最小 4096) なので、miss として
+    /// 数えない — 数えると GUI 警告が「壊れてもいないのに」鳴る (実害: TRPG 主力の安価
+    /// プロバイダでユーザーが不安になる)。ヒット時のリセット・累積・リングは従来どおり。
+    #[test]
+    fn cache_stat_floor_gates_miss_counting() {
+        let mut s = CacheStat { floor: 8192, ..CacheStat::default() };
+        s.record(0, 7000); // 床未満 — キャッシュ対象外のサイズ
+        s.record(0, 7100);
+        s.record(0, 7200);
+        assert_eq!(s.consecutive_misses, 0, "床未満の miss は数えない (警告が鳴らない)");
+        assert_eq!(s.total_requests, 3, "リクエスト数と累積は正直に積む");
+        assert_eq!(s.total_tokens, 7000 + 7100 + 7200);
+        s.record(0, 9000); // 床以上の miss は真の miss
+        assert_eq!(s.consecutive_misses, 1);
+        s.record(8200, 9000); // ヒットでリセット (床に関係なく)
+        assert_eq!(s.consecutive_misses, 0);
+        // 既定 floor=0 は従来挙動 (全 miss を数える) — 既存テストが保証。
+    }
+
     /// 【encode】canonical → Responses wire。probe で確定した形 (2026-08-20 実測):
     /// `input` は `{type:"message", role, content}` の列 (system ロール可) / 関数ツールは
     /// **flat** (`{type:"function", name, description, parameters}`、互換層の `function` 入れ子
@@ -1825,7 +1861,7 @@ mod tests {
     #[test]
     fn responses_encode_flat_tools_required_and_store_false() {
         let req = compat_req("perplexity/deepseek-v4-flash-0731");
-        let wire_req = responses::encode(&req);
+        let wire_req = responses::encode(&req, responses::Flavor::OpenAi);
         let body = serde_json::to_value(&wire_req).unwrap();
         assert_eq!(body["model"], "perplexity/deepseek-v4-flash-0731");
         assert_eq!(body["store"], false, "接続先に会話を保持させない");
@@ -1851,9 +1887,41 @@ mod tests {
             tool_choice: canonical::ToolChoice::None,
             ..req
         };
-        let body = serde_json::to_value(responses::encode(&plain)).unwrap();
+        let body = serde_json::to_value(responses::encode(&plain, responses::Flavor::OpenAi)).unwrap();
         assert!(body.get("tools").is_none());
         assert!(body.get("tool_choice").is_none());
+    }
+
+    /// 【encode / Meta 方言】同じ Responses 形でもホストで受理集合が割れる (#78 の Responses 版。
+    /// 2026-08-21 probe): `tool_choice: required` は 400 名指し拒否 → **欄ごと送らない** /
+    /// 代わりに schema を prompt 末尾へ (互換経路 ToolMode::Auto の処方) / effort の受理語彙に
+    /// `max` が無い → xhigh へ丸める / `store: false` は 200 受理 = 共通で送る。
+    /// Perplexity (OpenAi flavor) は従来と不変。
+    #[test]
+    fn responses_encode_meta_flavor_omits_tool_choice_and_grounds_schema() {
+        let mut req = compat_req("muse-spark-1.2-contributor");
+        req.effort = Some(crate::config::Effort::Max);
+        let body = serde_json::to_value(responses::encode(&req, responses::Flavor::Meta)).unwrap();
+        assert!(body.get("tool_choice").is_none(), "Meta は auto のみ — 欄ごと送らない");
+        assert_eq!(body["reasoning"]["effort"], "xhigh", "max は受理語彙に無い → 丸める");
+        assert_eq!(body["store"], false, "store は probe で受理 = 共通");
+        let input = body["input"].as_array().unwrap();
+        let last = input.last().unwrap();
+        assert_eq!(last["role"], "system", "schema の保険は末尾 system");
+        let content = last["content"].as_str().unwrap();
+        assert!(content.contains("emit_delta") && content.contains("JSON Schema"), "{content}");
+        assert!(content.contains("`ops` は必ず配列"), "実機の崩れどころを名指し (#78)");
+        // OpenAi flavor は不変: required が出て schema 注記は無い。
+        let mut plain = compat_req("perplexity/deepseek-v4-flash-0731");
+        plain.effort = Some(crate::config::Effort::Max);
+        let body = serde_json::to_value(responses::encode(&plain, responses::Flavor::OpenAi)).unwrap();
+        assert_eq!(body["tool_choice"], "required");
+        assert_eq!(body["reasoning"]["effort"], "max", "Perplexity 側の語彙は触らない");
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.last().unwrap()["role"], "user", "注記なし = 従来と同形");
+        // flavor 判定はホスト。
+        assert_eq!(responses::flavor_for("https://api.meta.ai/v1/"), responses::Flavor::Meta);
+        assert_eq!(responses::flavor_for("https://api.perplexity.ai/v1"), responses::Flavor::OpenAi);
     }
 
     /// 【decode】Responses wire → canonical。`output` は種別の混在列: `function_call` の

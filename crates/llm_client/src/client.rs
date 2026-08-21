@@ -43,6 +43,12 @@ pub struct CacheStat {
     pub total_tokens: u64,
     /// 直近 [`Self::RECENT_CAP`] 件の per-request 記録 (spec 14)。hit rate 曲線の可視化用。
     pub recent: Vec<CachePoint>,
+    /// キャッシュ最小プレフィックス (トークン)。**これ未満の prompt は構造的にヒット不可能**
+    /// なので miss として数えない (Perplexity 8192 ブロック床 #80 / Anthropic 最小 4096 #44。
+    /// 0 = 床なし = 全 miss を数える従来挙動)。値は [`LlmClient::new`] が provider から決める。
+    /// DTO には出さない (警告条件は consecutive_misses のままで frontend 無改修)。
+    #[serde(skip)]
+    pub floor: u64,
 }
 
 /// 1 リクエスト分のキャッシュ計測点 (spec 14)。`cached / prompt` = そのリクエストの hit rate。
@@ -64,15 +70,29 @@ impl CacheStat {
         self.last_cache_read = cache_read;
         if cache_read > 0 {
             self.consecutive_misses = 0;
-        } else {
+        } else if prompt >= self.floor {
             self.consecutive_misses = self.consecutive_misses.saturating_add(1);
         }
+        // 床未満の miss は数えない — キャッシュ対象外のサイズで鳴る警告は誤報 (累積とリングは正直に積む)。
         self.hit_tokens = self.hit_tokens.saturating_add(cache_read);
         self.total_tokens = self.total_tokens.saturating_add(prompt);
         self.recent.push(CachePoint { cached: cache_read, prompt });
         if self.recent.len() > Self::RECENT_CAP {
             self.recent.remove(0);
         }
+    }
+}
+
+/// provider ごとのキャッシュ最小プレフィックス (トークン)。**実測/公式で確定した床だけ**を持ち、
+/// 未測は 0 (= 従来どおり全 miss を数える)。表を広げるのは観測が出てから — 床を盛りすぎると
+/// 真の miss (設定ミス) まで隠す。
+/// - Perplexity: 8192 トークンブロック単位でしか cached が返らない (failures #80 実測)
+/// - Anthropic: 最小キャッシュ 4096 tokens (opus 系公式 #44。小パッケージの偽警告の既知留意も解消)
+fn cache_floor(config: &LlmConfig) -> u64 {
+    match config.provider {
+        Provider::Responses if config.base_url.contains("api.perplexity.ai") => 8192,
+        Provider::Anthropic => 4096,
+        _ => 0,
     }
 }
 
@@ -113,11 +133,12 @@ impl LlmClient {
             .timeout(config.request_timeout)
             .build()?;
         let config_tool_mode = config.tool_mode;
+        let floor = cache_floor(&config);
         Ok(Self {
             http,
             config,
             conv_id: new_conv_id(),
-            cache_stat: Mutex::new(CacheStat::default()),
+            cache_stat: Mutex::new(CacheStat { floor, ..CacheStat::default() }),
             call_seq: std::sync::atomic::AtomicU64::new(0),
             gemini_cache: Mutex::new(None),
             tool_mode: Mutex::new(config_tool_mode),
@@ -260,7 +281,8 @@ impl LlmClient {
             // 常に tool-use (`required` が効く)。ToolMode の降格は持たない — tool_choice で
             // 400 を返す口ではなく (名指しは黙殺)、Off へ落ちる道が無い。
             Provider::Responses => {
-                let wire_req = responses::encode(&req);
+                let flavor = responses::flavor_for(&self.config.base_url);
+                let wire_req = responses::encode(&req, flavor);
                 self.responses_with_retry(&wire_req, req.max_tokens).await?
             }
         };
