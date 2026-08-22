@@ -10,6 +10,7 @@
 //! - `play_turn(action)`: session を lock し run_turn → 発火 recall を pending_lore に持ち越し → view を返す
 
 mod image_gen;
+mod ref_stock;
 mod relay;
 mod site;
 mod update;
@@ -1075,19 +1076,30 @@ struct GeneratedImageView {
 /// 世代不一致 (生成中に新規/ロード/遷移) は破棄して Err (トーストに理由)。
 #[tauri::command]
 async fn generate_image(
+    app: tauri::AppHandle,
     config: image_gen::ImageGenConfig,
     session: tauri::State<'_, SharedSession>,
 ) -> Result<GeneratedImageView, String> {
-    // ① 素材を写す (設定画集 spec 25 もここで読む — パッケージのフォルダは session が知る)。
+    // ① 素材を写す (参照ストック spec 27 もここで読む — パッケージのフォルダは session が知る)。
     let (messages, llm_config, seq, refs) = {
         let guard = session.lock().await;
         let sess = guard
             .as_ref()
             .ok_or("ゲームが開始されていません (先に new_game を呼んでください)")?;
-        let (sheets, _skipped) =
-            harness::load_settings_sheets(&sess.package_root, image_gen::max_refs(config.provider));
+        let max = image_gen::max_refs(config.provider);
+        // **package の settings_sheets は種**。効くのはセッションフォルダの現物だけ (spec 27)。
+        let dir = session_refs_dir(&app, sess, max)?;
+        let (sheets, _skipped) = ref_stock::load_refs(&dir, max);
+        // 送信合計の上限 — Gemini の inline は base64 で 4/3 に膨らむので、超過は後ろから落とす。
+        let sizes: Vec<(String, u64)> =
+            sheets.iter().map(|s| (s.name.clone(), s.bytes.len() as u64)).collect();
+        let (keep, dropped) = ref_stock::trim_to_total(&sizes, ref_stock::SEND_TOTAL_MAX_BYTES);
+        if !dropped.is_empty() {
+            eprintln!("[image] 参照の合計が上限を超えたので落としました: {dropped:?}");
+        }
         let refs: Vec<image_gen::RefImage> = sheets
             .into_iter()
+            .take(keep)
             .map(|s| image_gen::RefImage { name: s.name, mime: s.mime.to_string(), bytes: s.bytes })
             .collect();
         let style = match config.style() {
@@ -1135,41 +1147,119 @@ async fn generate_image(
     Ok(GeneratedImageView { data_url, prompt, mime: generated.mime })
 }
 
-/// 設定タブの「今の盤面で見つかった設定画集」(spec 25)。置いたのに効かないとき理由が見える。
+/// セッションの参照フォルダを返す (無ければ**初回だけ**パッケージの種を写す、spec 27 決定 3)。
+/// 写し取りは「フォルダが存在しないとき」だけで、ファイル数は見ない (全削除で空になっても
+/// 初期化済み) — 判定材料をフォルダの存在ひとつに寄せ、マーカーという第二の真実源を作らない。
+fn session_refs_dir(
+    app: &tauri::AppHandle,
+    sess: &GameSession,
+    max: usize,
+) -> Result<PathBuf, String> {
+    let dir = refs_dir(app, &sess.package_root).ok_or("app_data_dir を解決できない")?;
+    ref_stock::ensure_seeded(&dir, &sess.package_root, max)
+        .map_err(|e| format!("参照画像の写し取りに失敗: {e}"))?;
+    Ok(dir)
+}
+
+/// 設定タブ / 入れ替えダイアログが見る**実効値** (spec 27 A-7)。package の種でなく
+/// セッションフォルダの現物を返す — ここが実際に送られる列でないと、置いたのに効かない
+/// ときの理由が見えなくなる。出所 (同梱由来/プレイヤー) は持たない (決定 11)。
 #[derive(Serialize)]
 struct SettingsSheetsView {
-    /// `images/settings_sheets/` の絶対パス (フォルダを開くボタン用)。
+    /// セッションフォルダの絶対パス (フォルダを開くボタン用)。
     dir: String,
-    /// 送る順 (名前, bytes)。
+    /// 送る順 (名前, bytes)。前詰め不変条件により ref1..k の順 = ワイヤの `%ref_1%..` と一致。
     picked: Vec<(String, u64)>,
     /// スキップ (名前, 理由 oversize|unsupported|over_limit)。
     skipped: Vec<(String, String)>,
+    /// このプロバイダの枠数 (`MAX_REFS`)。UI はこれだけ枠を並べる。
+    max: usize,
 }
 
 #[tauri::command]
 async fn list_settings_sheets(
+    app: tauri::AppHandle,
     provider: image_gen::Provider,
     session: tauri::State<'_, SharedSession>,
 ) -> Result<SettingsSheetsView, String> {
     let guard = session.lock().await;
     let sess = guard.as_ref().ok_or("ゲームが開始されていません")?;
-    let dir = sess.package_root.join("images").join(harness::SETTINGS_SHEETS_DIR);
-    let (sheets, skipped) = harness::load_settings_sheets(&sess.package_root, image_gen::max_refs(provider));
-    Ok(SettingsSheetsView {
+    let max = image_gen::max_refs(provider);
+    let dir = session_refs_dir(&app, sess, max)?;
+    Ok(sheets_view(&dir, max))
+}
+
+/// セッションフォルダの現物 → view (3 つの変更コマンドも同じ形を返す = 1 往復で UI が更新される)。
+fn sheets_view(dir: &Path, max: usize) -> SettingsSheetsView {
+    let (sheets, skipped) = ref_stock::load_refs(dir, max);
+    SettingsSheetsView {
+        max,
         dir: dir.to_string_lossy().into_owned(),
         picked: sheets.into_iter().map(|s| (s.name, s.bytes.len() as u64)).collect(),
         skipped: skipped
             .into_iter()
-            .map(|k| {
-                let reason = match k.reason {
-                    harness::SkipReason::Oversize => "oversize",
-                    harness::SkipReason::Unsupported => "unsupported",
-                    harness::SkipReason::OverLimit => "over_limit",
+            .map(|(name, reason)| {
+                let reason = match reason {
+                    ref_stock::RefSkip::Oversize => "oversize",
+                    ref_stock::RefSkip::OverLimit => "over_limit",
+                    ref_stock::RefSkip::Unrecognized => "unrecognized",
                 };
-                (k.name, reason.to_string())
+                (name, reason.to_string())
             })
             .collect(),
-    })
+    }
+}
+
+/// 直近の挿絵を参照の枠へ入れる (spec 27 A-4「入れ替え」)。**原本 bytes は backend が持ったまま**
+/// で、frontend は画像を持ち回らない (IPC に bytes を流さない)。8MB 超は弾く (決定 8)。
+#[tauri::command]
+async fn set_reference_slot(
+    app: tauri::AppHandle,
+    provider: image_gen::Provider,
+    slot: usize,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<SettingsSheetsView, String> {
+    let guard = session.lock().await;
+    let sess = guard.as_ref().ok_or("ゲームが開始されていません")?;
+    let (mime, bytes) = sess.last_image.as_ref().ok_or("参照に入れる挿絵がありません")?;
+    let max = image_gen::max_refs(provider);
+    let dir = session_refs_dir(&app, sess, max)?;
+    ref_stock::put_slot(&dir, slot, mime, bytes, max)?;
+    Ok(sheets_view(&dir, max))
+}
+
+/// 参照の枠を消して後続を前へ詰める (spec 27 A-4「削除」/ 前詰め不変条件)。0 枚まで消せる
+/// = 参照なし生成に戻る (spec 25 の byte 一致経路がそのまま受ける)。
+#[tauri::command]
+async fn delete_reference_slot(
+    app: tauri::AppHandle,
+    provider: image_gen::Provider,
+    slot: usize,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<SettingsSheetsView, String> {
+    let guard = session.lock().await;
+    let sess = guard.as_ref().ok_or("ゲームが開始されていません")?;
+    let max = image_gen::max_refs(provider);
+    let dir = session_refs_dir(&app, sess, max)?;
+    ref_stock::delete_slot(&dir, slot)?;
+    Ok(sheets_view(&dir, max))
+}
+
+/// 同梱の参照画像を入れ直す (spec 27 A-4)。**写し取りの初回限定を破る唯一の経路**で、
+/// 現物を捨ててパッケージの種で置き換える。削除の不可逆性はこのボタンが解消する。
+#[tauri::command]
+async fn reseed_reference_stock(
+    app: tauri::AppHandle,
+    provider: image_gen::Provider,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<SettingsSheetsView, String> {
+    let guard = session.lock().await;
+    let sess = guard.as_ref().ok_or("ゲームが開始されていません")?;
+    let max = image_gen::max_refs(provider);
+    let dir = refs_dir(&app, &sess.package_root).ok_or("app_data_dir を解決できない")?;
+    ref_stock::seed_from_package(&dir, &sess.package_root, max)
+        .map_err(|e| format!("入れ直しに失敗しました: {e}"))?;
+    Ok(sheets_view(&dir, max))
 }
 
 /// 直近の挿絵を設定フォルダへ保存する (契約 storage)。返り値は書いた絶対パス。
@@ -1310,6 +1400,18 @@ fn save_file_name(stem: &str, slot: Option<u8>) -> String {
 /// 配布 zip を差し替えてもセーブが消えない (パッケージフォルダを汚さない)。
 fn saves_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
     app.path().app_data_dir().ok().map(|d| d.join("saves"))
+}
+
+/// 参照ストックの置き場 (spec 27): `app_data_dir/refs/<パッケージパスの FNV>`。
+/// FNV は `package_save_stem` と**同じ関数**で求める (入力はパッケージパスのみ・スロット番号は
+/// `save_file_name` が別途付与する) = 粒度は**パッケージ単位**。プレイスルー単位にすると
+/// ロードのたびに育てた参照が巻き戻る (決定 2)。
+fn refs_root(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("refs"))
+}
+
+fn refs_dir(app: &tauri::AppHandle, pkg_dir: &Path) -> Option<PathBuf> {
+    Some(refs_root(app)?.join(package_save_stem(pkg_dir)))
 }
 
 /// パッケージ別オートセーブのパス (spec 07 Phase C): `saves/<パスのFNVハッシュ>.yaml`。
@@ -2434,6 +2536,11 @@ fn open_package(
     app.asset_protocol_scope()
         .allow_directory(&pkg_dir, true)
         .map_err(|e| format!("アセット scope の許可に失敗: {e}"))?;
+    // 参照ストック (spec 27) も同じ経路で描く — data URL を IPC に流さないため。
+    if let Some(root) = refs_root(app) {
+        let _ = std::fs::create_dir_all(&root);
+        let _ = app.asset_protocol_scope().allow_directory(&root, true);
+    }
 
     // entry が campaign.yaml なら開始 (または指定) モジュールを、単発なら entry シナリオを読む。
     // どちらも package の player/globals/world を注入する (campaign は各モジュールへ継承)。
@@ -4191,6 +4298,9 @@ pub fn run() {
             generate_image,
             save_generated_image,
             list_settings_sheets,
+            set_reference_slot,
+            delete_reference_slot,
+            reseed_reference_stock,
             open_package_folder,
             pick_package_folder,
             delete_autosave,

@@ -228,7 +228,14 @@ const workflowIgnoresSheets = computed(
     !workflowAcceptsRefs(slot.value.workflowJson),
 );
 // 設定画集 (spec 25): 今の盤面で見つかったもの。置いたのに効かないとき理由が見える。
-const sheets = ref<{ dir: string; picked: [string, number][]; skipped: [string, string][] } | null>(null);
+// spec 27: dir は**セッションフォルダ** (package の settings_sheets は種として写し取り済み)。
+// max はプロバイダ別の枠数 (Phase D の入れ替えダイアログが使う)。
+const sheets = ref<{
+  dir: string;
+  picked: [string, number][];
+  skipped: [string, string][];
+  max: number;
+} | null>(null);
 const sheetsError = ref("");
 async function refreshSheets() {
   sheetsError.value = "";
@@ -245,7 +252,7 @@ async function refreshSheets() {
 }
 function sheetSkipLabel(reason: string): string {
   if (reason === "oversize") return t("settings.image.sheetsOversize");
-  if (reason === "unsupported") return t("settings.image.sheetsUnsupported");
+  if (reason === "unrecognized") return t("settings.image.sheetsUnrecognized");
   return t("settings.image.sheetsOverLimit");
 }
 async function openSheetsFolder() {
