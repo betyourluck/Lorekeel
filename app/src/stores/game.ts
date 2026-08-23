@@ -560,6 +560,8 @@ interface GameState {
    * 変更のたびに繰り上げ、サムネイルの URL に付けて割る。
    */
   refStockRev: number;
+  /** ローカルファイルの変換・送信中 (spec 27 追補)。 */
+  refStockBusy: boolean;
   // 生成中 (ボタン無効 + スピナー)。
   imageBusy: boolean;
   // 生成要求の世代 (古い完了を無視する frontend 側の二層目。backend は scene_seq で守る)。
@@ -655,6 +657,7 @@ export const useGameStore = defineStore("game", {
       imageDirection: "",
       refStock: null,
       refStockRev: 0,
+      refStockBusy: false,
       imageBusy: false,
       imageRequestId: 0,
       showGeneratedImage: true,
@@ -856,6 +859,27 @@ export const useGameStore = defineStore("game", {
     },
     async deleteRefSlot(slot: number): Promise<void> {
       await this.refStockCommand("delete_reference_slot", { slot });
+    },
+    /**
+     * ローカルの画像を枠へ (spec 27 追補、2026-08-24)。WebView で WebP へ変換・縮小してから
+     * **raw body** で送る (JSON の number[] は 8MB で数千万要素)。枠番号とプロバイダはヘッダ。
+     * 変換は Chromium のネイティブ WebP エンコーダ = Rust 側に image crate も libwebp も足さない。
+     */
+    async putRefFile(slot: number, file: File): Promise<void> {
+      if (this.refStockBusy) return;
+      this.refStockBusy = true;
+      try {
+        const { fileToWebp } = await import("../imageConvert");
+        const bytes = await fileToWebp(file);
+        this.refStock = await invoke("put_reference_bytes", bytes, {
+          headers: { "x-slot": String(slot), "x-provider": this.imageGen.provider },
+        });
+        this.refStockRev++;
+      } catch (e) {
+        this.logToast = t("refStock.fileFailed", { error: String(e) });
+      } finally {
+        this.refStockBusy = false;
+      }
     },
     async reseedRefStock(): Promise<void> {
       await this.refStockCommand("reseed_reference_stock", {});

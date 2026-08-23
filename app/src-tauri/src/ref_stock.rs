@@ -36,6 +36,21 @@ pub fn ext_for_mime(mime: &str) -> Option<&'static str> {
     }
 }
 
+/// 先頭バイトから mime を読む (純関数)。**frontend の申告を信じない** — ローカルファイルの取り込み
+/// (spec 27 追補) は WebView が WebP へ変換してから送る建前だが、変換が失敗して元の bytes が
+/// そのまま来ても、ここで実体に合った拡張子が付く (拡張子と中身のずれは後で全経路を騙す)。
+pub fn sniff_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else if bytes.starts_with(b"\xc2\x89PNG\x0d\x0d\x0a\x1a\x0d\x0a") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else {
+        None
+    }
+}
+
 /// `ref{n}.{ext}` の n (1 始まり)。参照ファイルでなければ None (純関数)。
 /// 拡張子が対応外のものは**参照として数えない** — 数えると前詰めの穴になる。
 pub fn ref_index(name: &str) -> Option<usize> {
@@ -278,6 +293,17 @@ mod tests {
         assert!(!is_front_packed(&s(&["ref1.png", "ref3.png"])), "中抜けは違反");
         assert!(!is_front_packed(&s(&["ref1.png", "ref1.webp"])), "同じ枠の二重は違反");
         assert!(!is_front_packed(&s(&["ref1.png", "notes.txt"])), "参照以外の同居は違反");
+    }
+
+    /// 【mime 嗅ぎ分け】先頭バイトで判定し、申告を信じない。対応外は None。
+    #[test]
+    fn sniff_mime_reads_magic_bytes() {
+        assert_eq!(sniff_mime(b"RIFF\x10\x00\x00\x00WEBPVP8 "), Some("image/webp"));
+        assert_eq!(sniff_mime(b"\xc2\x89PNG\x0d\x0d\x0a\x1a\x0d\x0a...."), Some("image/png"));
+        assert_eq!(sniff_mime(&[0xFF, 0xD8, 0xFF, 0xE0, 0x00]), Some("image/jpeg"));
+        assert_eq!(sniff_mime(b"GIF89a"), None, "gif は参照にしない (sheet_mime と同じ閉集合)");
+        assert_eq!(sniff_mime(b"RIFF\x10\x00\x00\x00WAVE"), None, "RIFF でも WEBP でなければ弾く");
+        assert_eq!(sniff_mime(b""), None);
     }
 
     /// 【合計上限】後ろ (ref3 → ref2) から落とし、落とした名前を返す。

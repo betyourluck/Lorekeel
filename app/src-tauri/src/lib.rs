@@ -1252,6 +1252,34 @@ async fn set_reference_slot(
     Ok(sheets_view(&dir, max))
 }
 
+/// ローカルファイルを参照の枠へ入れる (spec 27 追補、2026-08-24)。**bytes は raw body** で受ける
+/// (JSON の number[] は 8MB で数千万要素になる)。WebView が WebP へ変換・縮小してから送る建前
+/// だが、mime は**先頭バイトで嗅ぎ分けて**申告を信じない。枠番号とプロバイダはヘッダ。
+#[tauri::command]
+async fn put_reference_bytes(
+    app: tauri::AppHandle,
+    request: tauri::ipc::Request<'_>,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<SettingsSheetsView, String> {
+    let header = |name: &str| -> Option<String> {
+        request.headers().get(name).and_then(|v| v.to_str().ok()).map(|s| s.to_string())
+    };
+    let slot: usize = header("x-slot").and_then(|s| s.parse().ok()).ok_or("枠番号がありません")?;
+    let provider: image_gen::Provider = header("x-provider")
+        .and_then(|p| serde_json::from_value(serde_json::Value::String(p)).ok())
+        .ok_or("プロバイダが不明です")?;
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("画像の本体がありません".into());
+    };
+    let mime = ref_stock::sniff_mime(bytes).ok_or("参照にできない形式です (png/jpg/webp のみ)")?;
+    let guard = session.lock().await;
+    let sess = guard.as_ref().ok_or("ゲームが開始されていません")?;
+    let max = image_gen::max_refs(provider);
+    let dir = session_refs_dir(&app, sess, max)?;
+    ref_stock::put_slot(&dir, slot, mime, bytes, max)?;
+    Ok(sheets_view(&dir, max))
+}
+
 /// 参照の枠を消して後続を前へ詰める (spec 27 A-4「削除」/ 前詰め不変条件)。0 枚まで消せる
 /// = 参照なし生成に戻る (spec 25 の byte 一致経路がそのまま受ける)。
 #[tauri::command]
@@ -4323,6 +4351,7 @@ pub fn run() {
             save_generated_image,
             list_settings_sheets,
             set_reference_slot,
+            put_reference_bytes,
             delete_reference_slot,
             reseed_reference_stock,
             open_package_folder,
