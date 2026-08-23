@@ -6,7 +6,9 @@
  * **枠番号 = ファイル名番号 = ワイヤ番号** が backend の前詰め不変条件で保証されているので、
  * ここは番号の対応を気にせず現物を並べるだけでよい。
  *
- * サムネイルは `asset://` (`convertFileSrc`) — data URL を IPC に流さない。
+ * サムネイルは `asset://` (`convertFileSrc`) — data URL を IPC に流さない。ただし**前詰めで
+ * ファイル名が固定のまま中身が入れ替わる**ので、URL には版 (`?v=`) を付けてキャッシュを割る
+ * (failures #86)。
  */
 import { computed, onMounted } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -29,7 +31,12 @@ const slots = computed(() => {
       slot: i + 1,
       name: entry?.[0] ?? null,
       size: entry?.[1] ?? 0,
-      url: entry && stock ? convertFileSrc(`${stock.dir}/${entry[0]}`) : null,
+      // **`?v=` でキャッシュを割る** (failures #86): 前詰めなのでファイル名は固定のまま中身が
+      // 入れ替わる。URL が同じだと WebView は前の絵を出し続け、「消したのは 1 番なのに 3 番が
+      // 消えた」ように見える (engine は正しく、画面が古いだけ)。
+      url: entry && stock
+        ? `${convertFileSrc(`${stock.dir}/${entry[0]}`)}?v=${game.refStockRev}`
+        : null,
     };
   });
 });

@@ -553,6 +553,13 @@ interface GameState {
   imageDirection: string;
   /** 参照ストックの現物 (spec 27 A-7)。ダイアログを開いたときに読む。 */
   refStock: { dir: string; picked: [string, number][]; skipped: [string, string][]; max: number } | null;
+  /**
+   * 参照ストックの版 (failures #86)。**ファイル名は前詰めで固定なのに中身は入れ替わる**ので、
+   * `asset://` の URL だけではキャッシュが割れず、削除しても古い絵が出たままになる
+   * (実測: ref1 を消すと B が ref1 へ詰まるのに画面は A のまま = 末尾が消えたように見える)。
+   * 変更のたびに繰り上げ、サムネイルの URL に付けて割る。
+   */
+  refStockRev: number;
   // 生成中 (ボタン無効 + スピナー)。
   imageBusy: boolean;
   // 生成要求の世代 (古い完了を無視する frontend 側の二層目。backend は scene_seq で守る)。
@@ -647,6 +654,7 @@ export const useGameStore = defineStore("game", {
       // 様式指定は設定のスタイル欄が受ける (消し忘れた一言が以後の全生成に効き続けるのを防ぐ)。
       imageDirection: "",
       refStock: null,
+      refStockRev: 0,
       imageBusy: false,
       imageRequestId: 0,
       showGeneratedImage: true,
@@ -837,6 +845,7 @@ export const useGameStore = defineStore("game", {
       }
       try {
         this.refStock = await invoke("list_settings_sheets", { provider: this.imageGen.provider });
+        this.refStockRev++;
       } catch (e) {
         this.refStock = null;
         this.logToast = String(e);
@@ -854,6 +863,7 @@ export const useGameStore = defineStore("game", {
     async refStockCommand(cmd: string, args: Record<string, unknown>): Promise<void> {
       try {
         this.refStock = await invoke(cmd, { provider: this.imageGen.provider, ...args });
+        this.refStockRev++; // 名前が同じまま中身が変わる (前詰め) ので URL を割る
       } catch (e) {
         this.logToast = String(e);
       }

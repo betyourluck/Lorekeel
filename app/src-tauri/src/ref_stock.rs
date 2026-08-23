@@ -354,6 +354,19 @@ mod tests {
         delete_slot(&dir, 1).unwrap();
         assert_eq!(names(&dir), vec!["ref1.webp"]);
         assert!(delete_slot(&dir, 2).is_err(), "空の枠は消せない");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // **拡張子が全部同じとき** (生成画像は png なので実運用はこちら): ファイル名が動かず
+        // **中身だけが入れ替わる**。上の分岐は拡張子が違ってファイル名も変わる楽な側だった —
+        // 実運用の側を固定していなかったのが failures #86 (画面が古いまま) を見落とした一因。
+        std::fs::create_dir_all(&dir).unwrap();
+        for (n, b) in [("ref1.png", &b"A"[..]), ("ref2.png", b"B"), ("ref3.png", b"C")] {
+            std::fs::write(dir.join(n), b).unwrap();
+        }
+        delete_slot(&dir, 1).unwrap();
+        assert_eq!(names(&dir), vec!["ref1.png", "ref2.png"], "名前は動かない");
+        assert_eq!(std::fs::read(dir.join("ref1.png")).unwrap(), b"B", "消えるのは A (先頭)");
+        assert_eq!(std::fs::read(dir.join("ref2.png")).unwrap(), b"C", "C は残って前へ詰まる");
         let _ = std::fs::remove_dir_all(dir);
     }
 
