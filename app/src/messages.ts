@@ -379,6 +379,8 @@ export const messages = {
       delete: "消す",
       reseed: "同梱の参照画像を入れ直す",
       reseedHint: "パッケージの画像で置き換えます。自分で入れた絵は失われます。",
+      reseedConfirm:
+        "参照画像をすべてパッケージ同梱のものに戻します。あなたが入れた絵は失われます（元に戻せません）。よろしいですか？",
       skip: {
         oversize: "大きすぎます（8MB 以下）",
         over_limit: "枠の外です",
@@ -1036,6 +1038,8 @@ export const messages = {
       delete: "Remove",
       reseed: "Restore the package's images",
       reseedHint: "Replaces these with the package's own. Images you added are lost.",
+      reseedConfirm:
+        "Restore all reference images to the ones shipped with the package? Images you added will be lost (cannot be undone).",
       skip: {
         oversize: "Too large (8MB max)",
         over_limit: "Outside the slots",

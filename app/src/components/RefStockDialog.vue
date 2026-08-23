@@ -61,6 +61,16 @@ function onPicked(e: Event) {
   input.value = ""; // 同じファイルをもう一度選べるように
   if (file) game.putRefFile(targetSlot.value, file);
 }
+/**
+ * 「入れ直す」は自分で入れた絵を**全部**パッケージの種で置き換える不可逆操作なのに、隣が
+ * よく押す操作 (削除・取り込み) — 誤爆すると育てた参照が黙って消えるので確認を挟む
+ * (シードリセットと同じ判断: 不可逆で、押した瞬間に画面上の異変が小さい操作には確認)。
+ */
+async function onReseed() {
+  if (await game.askConfirm(t("refStock.reseedConfirm"), t("refStock.reseed"))) {
+    game.reseedRefStock();
+  }
+}
 function onDrop(slot: number, e: DragEvent) {
   dragOver.value = null;
   const file = e.dataTransfer?.files?.[0];
@@ -163,7 +173,7 @@ function onDrop(slot: number, e: DragEvent) {
     <div class="mt-4 flex items-center gap-3 border-t border-parchment/10 pt-3">
       <button
         class="rounded-full px-3 py-1 text-[11px] text-parchment/60 ring-1 ring-parchment/15 hover:text-parchment hover:ring-parchment/40 transition-colors"
-        @click="game.reseedRefStock()"
+        @click="onReseed()"
       >
         {{ t("refStock.reseed") }}
       </button>
