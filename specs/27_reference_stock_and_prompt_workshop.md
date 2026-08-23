@@ -1,6 +1,6 @@
 # spec 27: 参照ストックとプロンプト工房 — 挿絵の入力をプレイヤーの手に渡す
 
-**Status**: rev2 / **Phase A〜D landed = v1 Done**（2026-08-23 起草 → 同日査読 11 点 → rev2 →
+**Status**: **Done**（Phase A〜D + 追補 2 件、目視 Green 2026-08-24）（2026-08-23 起草 → 同日査読 11 点 → rev2 →
 未決 3 点をユーザー決定 → A（参照ストック）B（プロンプト工房）C（`CodeEditor.vue`）D（ダイアログ 2 枚）
 を同日実装。PoC: app 6 本 + harness 2 本。workspace 358 green・app backend 49 green（ignored 7）・
 clippy clean・vue-tsc + vite build green。**残 = GUI 実機の目視**（枠の入れ替え/削除/入れ直し・
@@ -295,5 +295,8 @@ harness 側の一般化（`load_sheets_from` / `pick_sheets`）は**この判断
 閉じるのは ✕ と Esc だけ（場面のクリックは奪わない）。参照の枠は**机に置いた写真**（わずかな傾き・
 hover で正す・操作は hover で浮き出る = 常設すると写真でなく業務の表になる）。
 
-**接地の限界**: 見た目の評価はユーザーの目視待ち。`?v=` が asset protocol を素通りするか（#86）も
-同時に確認される。
+**✅目視 Green（2026-08-24 ユーザー実測）**: 見た目 OK・サムネイル表示 OK（= `?v=` は asset
+protocol を素通り、#86 の未確認が解消）・圧縮実測 **1.3MB → 36KB**。追補 FB「入れ直すに警告」→
+`askConfirm`（不可逆で押した瞬間の異変が小さい操作には確認 = シードリセットと同じ線。削除は
+1 枚ずつ・即座に見えるので付けない）。**spec 27 は追補込みで Done。残る未実測 = seed 固定での
+参照 A/B のみ**（機構は入った・比較プレイは未）。
