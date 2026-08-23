@@ -813,6 +813,20 @@ export const useGameStore = defineStore("game", {
     toggleText(): void {
       this.showText = !this.showText;
     },
+    /**
+     * 挿絵まわりの**揮発物**を一括で捨てる (spec 24 の挿絵 + spec 27 の「この一枚への指示」)。
+     *
+     * **一箇所に寄せてあるのが要点。** 捨てる契機は「新規/再開/ロード」と「章の遷移」の 2 つ
+     * あり、以前は同じ列挙が両方に手書きで生えていた — その状態で spec 27 が揮発物を 1 つ
+     * 増やしたとき、**両方とも書き忘れて指示が新しいゲームへ持ち越された** (ユーザー報告)。
+     * 撤去だけでなく**追加でも「同じ規律が 2 箇所にある」形は落ちる**ので、列挙を 1 本にした。
+     */
+    dropVolatileImage(): void {
+      this.generatedImage = null;
+      this.imageDirection = "";
+      this.imageRequestId++; // 進行中の生成の結果を捨てる (古い完了は reqId で無視される)
+    },
+
     // --- 参照ストック (spec 27 A) -------------------------------------------------------
     // 4 つとも backend が更新後の一覧を返すので、frontend は state を組み立てない
     // (画面と送信内容の唯一の真実源はセッションフォルダの現物)。
@@ -1414,10 +1428,10 @@ export const useGameStore = defineStore("game", {
       this.pendingSe = [];
       this.pendingVisual = null;
       this.pendingSpeech = null;
-      // spec 24: 挿絵は盤面の揮発物 — 新規/再開/ロードで必ず捨てる (backend も世代を進める)。
-      this.generatedImage = null;
-      this.imageRequestId++;
+      // spec 24/27: 挿絵まわりの揮発物を捨てる (backend も世代を進める)。
+      this.dropVolatileImage();
       this.imageBusy = false;
+      this.refStock = null; // 参照ストックはパッケージ別 — 開いたときに読み直す。
       // 決断待ち (B)・対決 (C) はセーブを跨いで生きる — 再開時に復元する (新規は null)。
       this.decision = view.decision ?? null;
       this.deciding = false;
@@ -1879,9 +1893,8 @@ export const useGameStore = defineStore("game", {
               });
               // 遷移先モジュールの開幕描写。
               pushLog({ kind: "opening", text: turn.transition.description });
-              // spec 24: 挿絵は章を跨がない (backend も scene_seq を進めて原本を捨てる)。
-              this.generatedImage = null;
-              this.imageRequestId++;
+              // spec 24/27: 挿絵は章を跨がない (backend も scene_seq を進めて原本を捨てる)。
+              this.dropVolatileImage();
             } else {
               // 単発シナリオ/キャンペーン終端 = クリア。
               const label = goalLabel
