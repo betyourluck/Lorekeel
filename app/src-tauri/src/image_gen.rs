@@ -1367,7 +1367,9 @@ mod live {
             lock_seed: false,
             seed: 0,
         };
-        let prompt = "The same man as in the reference sheets (same face, beard, green coat and brown boots)                       now sits at the dusty grand piano in the same hall, one hand on the keys, looking over                       his shoulder toward the viewer. Watercolor illustration, muted colors.";
+        // **参照そのものを指す語は書かない** (failures #85: 画像モデルが被写体の指示と読み、
+        // 資料集のような分割画像を作る)。見た目は具体語で書き、1 場面であることを明示する。
+        let prompt = "A man with a short dark beard, a green coat and brown boots sits at the                       dusty grand piano in a dim hall, one hand on the keys, looking over his                       shoulder toward the viewer. A single continuous scene, one frame, no panels                       or split screen. Watercolor illustration, muted colors.";
         let t0 = std::time::Instant::now();
         match generate(&cfg, key, prompt, 43, &refs).await {
             Ok(g) => {

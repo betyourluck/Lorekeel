@@ -189,11 +189,16 @@ impl ImagePromptRequest {
             return String::new();
         }
         format!(
-            "\n- 参照画像 {n} 枚は設定画集です (人物の立ち絵に名前が書かれ、背景がまとめられている)。\
-             登場人物と場所の見た目はそれに従い、プロンプト内で (as in the reference sheets) と指して\
-             ください。参照に無い人物は profile の範囲で描きます。参照の無地背景・余白・枠・文字は\
-             構図に持ち込まず、場面の背景を画面いっぱいに描くよう明記してください\
-             (例: the scene background fills the entire frame, no plain backdrop or border)。",
+            "\n- 参照画像 {n} 枚が添付されます (人物の立ち絵や背景をまとめた資料)。**画像モデルは\
+             それを直接見る**ので、見た目に合わせて髪色・髪型・目の色・服装を**具体的な語で**書いて\
+             ください。ただし『参照画像』『設定画集』『資料』『reference sheet』のような\
+             **参照そのものを指す語をプロンプトに書いてはいけません** — 画像モデルはそれを被写体の\
+             指示と読み、資料集のような分割画像を作ります。参照に無い人物は profile の範囲で描きます。\n\
+             - 描くのは**ひとつながりの 1 場面**です。分割・コマ割り・複数カット・並置・帯・枠線を\
+             作らないよう明記してください (例: a single continuous scene, one frame, no panels or split \
+             screen)。参照の無地背景・余白・枠・文字も構図に持ち込まず、場面の背景を画面いっぱいに\
+             描くよう明記してください (例: the scene background fills the entire frame, no plain \
+             backdrop or border)。",
             n = self.refs
         )
     }
@@ -443,14 +448,26 @@ allowed_flags: [done]
         assert_eq!(zero.user_prompt(), two.user_prompt(), "user 側は枚数で変わらない");
         let sys2 = two.system_prompt();
         assert!(sys2.starts_with(&zero.system_prompt()), "既存文言はそのまま・末尾に足すだけ");
-        assert!(sys2.contains("参照画像 2 枚は設定画集") && sys2.contains("(as in the reference sheets)"));
+        assert!(sys2.contains("参照画像 2 枚が添付されます"));
+        // **参照そのものを指す語を書かせない** (failures #85): 「(as in the reference sheets)」を
+        // 書けと指示していた頃、画像モデルがそれを被写体の指示と読み**資料集のような分割画像**を
+        // 作った。規律は「参照の見た目に合わせて具体語で書け」+「参照を指す語は書くな」の対。
+        assert!(!sys2.contains("as in the reference sheets"), "参照を指す語を書かせない: {sys2}");
+        assert!(sys2.contains("参照そのものを指す語をプロンプトに書いてはいけません"));
+        assert!(sys2.contains("ひとつながりの 1 場面") && sys2.contains("no panels or split"));
         assert!(
             sys2.contains("構図に持ち込まず") && sys2.contains("fills the entire frame"),
             "参照の無地背景が構図に漏れる (2026-08-22 Krea 2 実測) を抑える文言"
         );
-        assert_eq!(sys2.matches("
-- ").count(), zero.system_prompt().matches("
-- ").count() + 1, "箇条は 1 つだけ増える");
+        // 箇条は 2 つ増える (参照の指し方 / ひとつながりの 1 場面)。どちらも**参照があるときだけ**
+        // 必要な規律で、0 枚では 1 文字も足さない (byte 一致は上の assert が固定)。
+        assert_eq!(
+            sys2.matches("
+- ").count(),
+            zero.system_prompt().matches("
+- ").count() + 2,
+            "箇条は 2 つ増える"
+        );
     }
 
     /// 【image_style の注入と lint】package.yaml の image_style が scenario へ注入され、
