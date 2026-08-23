@@ -7,9 +7,13 @@
  * - AIモデル: .env の LLM 設定 (base_url/model/api_key) を編集 → backend が env 即時反映 + .env 永続化
  * - ヘルプ: 操作の手引き
  */
-import { computed, ref, onMounted } from "vue";
+import { computed, defineAsyncComponent, ref, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import Icon from "./Icon.vue";
+
+// CodeMirror は重い (+400KB raw)。**値の import は動的だけ**にして、設定を開かない
+// セッションでは一切ロードしない (TTS の `@aituber-onair/voice` と同じ規律)。
+const CodeEditor = defineAsyncComponent(() => import("./CodeEditor.vue"));
 import { t, setLocale, locale, type Locale } from "../i18n";
 import {
   DEFAULT_MSG_COLOR,
@@ -992,17 +996,19 @@ onMounted(async () => {
               />
             </label>
             <div v-if="img.provider === 'comfy'" class="space-y-1">
-              <label class="block text-sm text-parchment/70">
+              <div class="block text-sm text-parchment/70">
                 {{ t("settings.image.workflow") }}
-                <textarea
-                  :value="slot.workflowJson"
-                  rows="6"
-                  spellcheck="false"
+                <!-- spec 27 Phase C: 数百行の JSON を貼る欄なので、行番号・検索・構文エラーの
+                     lint が効く CodeMirror にする (%ref_1% を目で探す欄でもある)。 -->
+                <CodeEditor
+                  class="mt-1"
+                  language="json"
+                  height="14rem"
+                  :model-value="slot.workflowJson"
                   :placeholder="t('settings.image.workflowPlaceholder')"
-                  class="mt-1 block w-full rounded bg-ash/40 px-2 py-1 text-parchment font-mono text-xs focus:outline-none"
-                  @change="setSlot({ workflowJson: ($event.target as HTMLTextAreaElement).value })"
-                ></textarea>
-              </label>
+                  @update:model-value="setSlot({ workflowJson: $event })"
+                />
+              </div>
               <div class="flex items-center gap-2">
                 <button
                   class="rounded bg-ash/40 hover:bg-ash/70 px-3 py-1 text-sm text-parchment/80"

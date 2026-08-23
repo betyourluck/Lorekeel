@@ -5,12 +5,20 @@
 // 表示条件は親 (App.vue): 設定「画像生成」で有効にした人にだけ出る (作者ゲートは作らない —
 // 挿絵は語りに触れないプレイヤー側の鑑賞物で、押すのもプレイヤー)。
 // 読み上げ操作と同居するときは左へ寄せる (両方 absolute right なので重なる)。
-import { computed } from "vue";
+import { computed, defineAsyncComponent, ref } from "vue";
 import { useGameStore } from "../stores/game";
 import { t } from "../i18n";
 import Icon from "./Icon.vue";
 
+// spec 27 Phase D: 参照ストックとプロンプト工房は**別々のダイアログ**にする (決定 13) —
+// プロンプトは文字が主・参照は絵が主で、1 枚に混ぜると縦が伸びて会話ペインを覆う。
+// どちらも開いたときだけ読む (プロンプト側は CodeMirror を抱えるので特に)。
+const RefStockDialog = defineAsyncComponent(() => import("./RefStockDialog.vue"));
+const PromptDialog = defineAsyncComponent(() => import("./PromptDialog.vue"));
+
 const game = useGameStore();
+const showRefStock = ref(false);
+const showPrompt = ref(false);
 
 const genLabel = computed(() => (game.imageBusy ? t("image.generating") : t("image.generate")));
 const imageToggleLabel = computed(() =>
@@ -38,6 +46,30 @@ const textToggleLabel = computed(() => (game.showText ? t("image.hideText") : t(
     >
       <Icon v-if="game.imageBusy" name="spinner" :size="15" class="animate-spin" />
       <Icon v-else name="image" :size="15" />
+    </button>
+    <!-- 参照ストック (spec 27)。画像が無くても開ける (削除・入れ直しはいつでも要る)。 -->
+    <button
+      type="button"
+      class="p-1.5 rounded-full text-glow/60 hover:text-ember hover:bg-glow/10 transition-colors
+             disabled:opacity-50"
+      :disabled="!game.started"
+      :title="t('refStock.heading')"
+      :aria-label="t('refStock.heading')"
+      @click="showRefStock = true"
+    >
+      <Icon name="folder" :size="15" />
+    </button>
+    <!-- プロンプト工房 (spec 27)。 -->
+    <button
+      type="button"
+      class="p-1.5 rounded-full text-glow/60 hover:text-ember hover:bg-glow/10 transition-colors
+             disabled:opacity-50"
+      :disabled="!game.started"
+      :title="t('promptWorkshop.heading')"
+      :aria-label="t('promptWorkshop.heading')"
+      @click="showPrompt = true"
+    >
+      <Icon name="pencil" :size="15" />
     </button>
     <!-- 保存。画像が在るときだけ出る。 -->
     <button
@@ -74,4 +106,6 @@ const textToggleLabel = computed(() => (game.showText ? t("image.hideText") : t(
       <Icon name="text" :size="15" />
     </button>
   </div>
+  <RefStockDialog v-if="showRefStock" @close="showRefStock = false" />
+  <PromptDialog v-if="showPrompt" @close="showPrompt = false" />
 </template>

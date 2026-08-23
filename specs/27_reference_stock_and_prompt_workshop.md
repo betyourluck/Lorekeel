@@ -1,10 +1,10 @@
 # spec 27: 参照ストックとプロンプト工房 — 挿絵の入力をプレイヤーの手に渡す
 
-**Status**: rev2 / **Phase A+B landed**（2026-08-23 起草 → 同日査読 11 点 → rev2 → 未決 3 点をユーザー
-決定 → Phase A（参照ストック）+ B（プロンプト工房）実装。PoC: app 6 本 + harness 2 本〔合成の
-override/空/区切り重複・direction の節と予算・スタイル素材節の役割と 300 字カット〕。
-workspace 358 green・app backend 49 green（ignored 7）・clippy clean・vite build green。
-残 Phase: C（`CodeEditor.vue`）/ D（ダイアログ 2 枚）
+**Status**: rev2 / **Phase A〜D landed = v1 Done**（2026-08-23 起草 → 同日査読 11 点 → rev2 →
+未決 3 点をユーザー決定 → A（参照ストック）B（プロンプト工房）C（`CodeEditor.vue`）D（ダイアログ 2 枚）
+を同日実装。PoC: app 6 本 + harness 2 本。workspace 358 green・app backend 49 green（ignored 7）・
+clippy clean・vue-tsc + vite build green。**残 = GUI 実機の目視**（枠の入れ替え/削除/入れ直し・
+手書き生成・seed 固定の A/B・CodeMirror の配色とテーマ追従））
 
 ## 動機
 
@@ -251,3 +251,19 @@ harness 側の一般化（`load_sheets_from` / `pick_sheets`）は**この判断
   トレードオフが本人に返る。
 - **`lock_seed` は comfy 以外へ送らない。** UI の無効表示だけだと、設定を触った後にプロバイダを
   変えた人の値が wire に残る。spec 26 で `negative` / `workflowJson` に入れた写像規則と同型。
+
+
+## Phase C+D の実装メモ（2026-08-23）
+
+- **CodeMirror は動的 import だけにした。** 素朴に静的 import すると main bundle が 326KB →
+  733KB（gz 105→238KB）になり、**設定を一度も開かないセッションでも起動時に解析される**。
+  TTS の `@aituber-onair/voice` で同じ判断をした前例があるので、そこに揃えた（結果: main は
+  333KB、`CodeEditor` は 406KB の別 chunk で必要時のみ）。
+- **ワークフロー JSON 欄を先に CodeEditor へ移した。** 数百行を貼る欄で、構文エラーが黙って
+  通り、`%ref_1%` を目で探す欄でもある — `lang-json` + `lint` が効く唯一の場所という当初の
+  読みどおりだった。プロンプト欄は `language: "text"`（行番号も lint も付けない。文法の無い
+  文章に赤線を引くのは誤警告にしかならない）。
+- **枠の UI は「末尾の空きだけ押せる」**。前詰め不変条件は backend が保証するが、UI が中抜けの
+  空き枠に入れられると `put_slot` の丸めに頼ることになる。押せる場所を絞れば丸めは保険で済む。
+- **参照ストックのダイアログは画像が無くても開ける。** 削除と入れ直しは挿絵の有無と無関係に
+  要る操作で、「まず 1 枚生成しないと参照を消せない」は倒錯している。

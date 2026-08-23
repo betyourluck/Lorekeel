@@ -363,6 +363,37 @@ export const messages = {
       disable: "読み上げOFF",
       skip: "読み上げをスキップ",
     },
+    refStock: {
+      heading: "参照画像",
+      intro:
+        "生成のたびに添付される参照画像です。番号の順に %ref_1% から送られ、空きがあれば前へ詰まります。パッケージ同梱の画像は最初に遊んだときここへ写し取られ、以後はここの現物だけが使われます。",
+      empty: "（空）",
+      put: "この絵を入れる",
+      replace: "この絵に差し替える",
+      needImage: "先に挿絵を生成してください",
+      delete: "消す",
+      reseed: "同梱の参照画像を入れ直す",
+      reseedHint: "パッケージの画像で置き換えます。自分で入れた絵は失われます。",
+      skip: {
+        oversize: "大きすぎます（8MB 以下）",
+        over_limit: "枠の外です",
+        unrecognized: "参照として扱われません（この画面の枠から入れてください）",
+      },
+    },
+    promptWorkshop: {
+      heading: "プロンプト",
+      final: "画像に送るプロンプト",
+      finalHint:
+        "スタイル指定（設定）と、AI が書いた場面の描写を繋いだものです。ここを直して「そのまま生成」を押すと、書いた文字列がそのまま送られます（AI は通しません）。",
+      finalPlaceholder: "まだ生成していません。「書き直させる」を押すと AI が場面から書きます。",
+      edited: "編集済み",
+      direction: "この一枚への指示",
+      directionHint:
+        "AI が場面を書くときに反映されます。新しいゲームや読み込みで消えます（ずっと効かせたい画風は設定のスタイル指定へ）。",
+      directionPlaceholder: "例: 引きの構図で。二人が向かい合うように。",
+      rewrite: "AI に書き直させる",
+      sendVerbatim: "この文字列でそのまま生成",
+    },
     image: {
       generate: "この場面の挿絵を生成",
       generating: "生成中…",
@@ -983,6 +1014,37 @@ export const messages = {
       enable: "Voice ON",
       disable: "Voice OFF",
       skip: "Skip voice",
+    },
+    refStock: {
+      heading: "Reference images",
+      intro:
+        "Attached to every generation. Sent in slot order starting at %ref_1%; gaps close up. Images shipped with the package are copied here the first time you play it, and from then on only what is here is used.",
+      empty: "(empty)",
+      put: "Put this image here",
+      replace: "Replace with this image",
+      needImage: "Generate an illustration first",
+      delete: "Remove",
+      reseed: "Restore the package's images",
+      reseedHint: "Replaces these with the package's own. Images you added are lost.",
+      skip: {
+        oversize: "Too large (8MB max)",
+        over_limit: "Outside the slots",
+        unrecognized: "Not used as a reference (add it through a slot here)",
+      },
+    },
+    promptWorkshop: {
+      heading: "Prompt",
+      final: "Prompt sent to the image model",
+      finalHint:
+        "Your style setting joined with the scene the AI wrote. Edit it and press the second button to send exactly this text (the AI is not involved).",
+      finalPlaceholder: "Nothing generated yet. Let the AI write one from the scene.",
+      edited: "edited",
+      direction: "Note for this one image",
+      directionHint:
+        "Taken into account when the AI writes the scene. Cleared on a new game or load (for a look that should always apply, use the style setting).",
+      directionPlaceholder: "e.g. A wide shot. The two of them facing each other.",
+      rewrite: "Let the AI rewrite",
+      sendVerbatim: "Generate as written",
     },
     image: {
       generate: "Illustrate this scene",

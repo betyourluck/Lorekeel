@@ -551,6 +551,8 @@ interface GameState {
   // 直近に生成した挿絵 (表示用 data URL + 書かれたプロンプト)。null = 無し。
   generatedImage: { dataUrl: string; prompt: string } | null;
   imageDirection: string;
+  /** 参照ストックの現物 (spec 27 A-7)。ダイアログを開いたときに読む。 */
+  refStock: { dir: string; picked: [string, number][]; skipped: [string, string][]; max: number } | null;
   // 生成中 (ボタン無効 + スピナー)。
   imageBusy: boolean;
   // 生成要求の世代 (古い完了を無視する frontend 側の二層目。backend は scene_seq で守る)。
@@ -644,6 +646,7 @@ export const useGameStore = defineStore("game", {
       // この一枚への追加指示 (spec 27 B-2)。**揮発** — localStorage に入れない。恒久にしたい
       // 様式指定は設定のスタイル欄が受ける (消し忘れた一言が以後の全生成に効き続けるのを防ぐ)。
       imageDirection: "",
+      refStock: null,
       imageBusy: false,
       imageRequestId: 0,
       showGeneratedImage: true,
@@ -810,6 +813,38 @@ export const useGameStore = defineStore("game", {
     toggleText(): void {
       this.showText = !this.showText;
     },
+    // --- 参照ストック (spec 27 A) -------------------------------------------------------
+    // 4 つとも backend が更新後の一覧を返すので、frontend は state を組み立てない
+    // (画面と送信内容の唯一の真実源はセッションフォルダの現物)。
+    async loadRefStock(): Promise<void> {
+      if (!this.started) {
+        this.refStock = null;
+        return;
+      }
+      try {
+        this.refStock = await invoke("list_settings_sheets", { provider: this.imageGen.provider });
+      } catch (e) {
+        this.refStock = null;
+        this.logToast = String(e);
+      }
+    },
+    async putRefSlot(slot: number): Promise<void> {
+      await this.refStockCommand("set_reference_slot", { slot });
+    },
+    async deleteRefSlot(slot: number): Promise<void> {
+      await this.refStockCommand("delete_reference_slot", { slot });
+    },
+    async reseedRefStock(): Promise<void> {
+      await this.refStockCommand("reseed_reference_stock", {});
+    },
+    async refStockCommand(cmd: string, args: Record<string, unknown>): Promise<void> {
+      try {
+        this.refStock = await invoke(cmd, { provider: this.imageGen.provider, ...args });
+      } catch (e) {
+        this.logToast = String(e);
+      }
+    },
+
     async openImageFolder(): Promise<void> {
       try {
         await invoke("open_image_folder", { folder: this.imageGen.folder });
