@@ -232,6 +232,10 @@ export const messages = {
         opacity: "挿絵の不透明度: {value}%",
         probe: "接続テスト",
         probing: "確認中…",
+        lockSeed: "シードを固定する",
+        seed: "シード値",
+        lockSeedHint:
+          "参照画像やプロンプトを差し替えて見比べるときに使います。固定しないと毎回サンプリングの運が混じるので、変えた分の効果が読めません（シードを持つのは ComfyUI だけです）。",
         sheetsHeading: "設定画集（参照画像）",
         sheetsIntro:
           "生成の参照として添付する画像です。パッケージの images/settings_sheets/ に置かれたものは、そのパッケージで最初に遊ぶときにセッションへ写し取られ、以後はここに出ている現物だけが使われます（写し取り後はパッケージ側を見ません）。1 枚に複数人の立ち絵と名前、背景をまとめた「設定資料集」の形で作ると、挿絵の見た目がそれに寄ります。",
@@ -848,6 +852,10 @@ export const messages = {
         opacity: "Illustration opacity: {value}%",
         probe: "Test connection",
         probing: "Checking…",
+        lockSeed: "Lock the seed",
+        seed: "Seed",
+        lockSeedHint:
+          "Use this when comparing reference images or prompts. Without it every run rolls a different sample, so you cannot tell what your change did (only ComfyUI has a seed).",
         sheetsHeading: "Reference sheets",
         sheetsIntro:
           "Images attached as references when generating. Whatever the package ships in images/settings_sheets/ is copied into the session the first time you play it; from then on only what is listed here is used (the package folder is no longer read). Make them like a character sheet — several characters with their names written, backgrounds collected — and illustrations will follow their look.",

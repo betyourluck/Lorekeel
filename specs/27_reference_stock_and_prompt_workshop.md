@@ -1,10 +1,10 @@
 # spec 27: 参照ストックとプロンプト工房 — 挿絵の入力をプレイヤーの手に渡す
 
-**Status**: rev2 / **Phase A landed**（2026-08-23 起草 → 同日査読 11 点 → rev2 → 未決 3 点をユーザー
-決定 → Phase A 実装。PoC: app 6 本〔純関数 2＝`ref_index`/前詰め検査・合計上限／IO 4＝写し取りの
-初回限定と入れ直し・削除の詰め直し・入れ替えの置換と丸めと上限・送る列の index 昇順と省略理由〕。
-app backend 49 green（ignored 7）・workspace 356 green・clippy clean・vite build green。
-残 Phase: B（プロンプト合成 + `direction` + seed 固定）/ C（`CodeEditor.vue`）/ D（ダイアログ））
+**Status**: rev2 / **Phase A+B landed**（2026-08-23 起草 → 同日査読 11 点 → rev2 → 未決 3 点をユーザー
+決定 → Phase A（参照ストック）+ B（プロンプト工房）実装。PoC: app 6 本 + harness 2 本〔合成の
+override/空/区切り重複・direction の節と予算・スタイル素材節の役割と 300 字カット〕。
+workspace 358 green・app backend 49 green（ignored 7）・clippy clean・vite build green。
+残 Phase: C（`CodeEditor.vue`）/ D（ダイアログ 2 枚）
 
 ## 動機
 
@@ -88,7 +88,9 @@ spec 24/25 で挿絵は動くようになり、2026-08-22 の LAN 実機で**参
 3. **最終プロンプトを見せ、手で直せる**。ダイアログ上段に**合成後の最終プロンプト**を出し、
    編集して「この文字列でそのまま生成」を押すと `prompt_override` として **verbatim で送る**
    （スタイルの再前置きもしない＝**見えているものが送られるもの**）。
-4. **seed 固定トグル**（決定 7）。固定時は保存された seed を使う。
+4. **seed 固定トグル**（決定 7）。固定時は保存された seed を使う。**置き場は設定タブ**
+   （ダイアログでなく設定＝永続する値なので。`toBackendConfig` は comfy 以外へ `lock_seed` を
+   送らない＝spec 26 の「他プロバイダへ漏らさない」写像規則と同じ形）。
 5. **合成は純関数**:
 
    ```
@@ -236,3 +238,16 @@ A-3 を当初案（harness の読み取りをディレクトリ引数へ一般�
 harness 側の一般化（`load_sheets_from` / `pick_sheets`）は**この判断で不要になったので差し戻した**
 （使われない汎用関数を残さない）。種の読み取りは `load_settings_sheets` のまま = **配布作法 4MB は
 種にだけ掛かる**という決定 8 の線引きが、コードの形としてもそのまま残った。
+
+
+## Phase B の実装メモ（2026-08-23）
+
+- **手書き（`prompt_override`）ならプロンプト書きを呼ばない。** 手書きが最終形なので LLM を
+  通す意味が無く、通せば待ち時間と課金だけ増える。`compose_image_prompt` は override を
+  受けたら他を混ぜずに返すので、この分岐は backend の 1 段の `if` に収まった。
+- **スタイルの二重化を「予算に算入したまま切る」で解いた。** 前置きされる側は全文・素材節は
+  300 字。査読は「予算から除外」を提案したが、除外すると入力が無制限に伸びる（予算の目的は
+  入力の有界性）。切って算入すれば、長いスタイルを書いた人はその分だけ語りの枠が減る＝
+  トレードオフが本人に返る。
+- **`lock_seed` は comfy 以外へ送らない。** UI の無効表示だけだと、設定を触った後にプロバイダを
+  変えた人の値が wire に残る。spec 26 で `negative` / `workflowJson` に入れた写像規則と同型。

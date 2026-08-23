@@ -1063,7 +1063,8 @@ async fn image_gen_probe(config: image_gen::ImageGenConfig) -> Result<String, St
 struct GeneratedImageView {
     /// 表示用 data URL (img-src data: は開いている)。
     data_url: String,
-    /// プロンプト書きが出した画像プロンプト (UI で見せる・再生成の参考)。
+    /// **最終送信文字列** (spec 27 B-5)。手書きならそれ自身、そうでなければ
+    /// 「スタイル原文 + プロンプト書きの出力」の合成結果 — UI が「送られた文」を示す。
     prompt: String,
     mime: String,
 }
@@ -1078,6 +1079,11 @@ struct GeneratedImageView {
 async fn generate_image(
     app: tauri::AppHandle,
     config: image_gen::ImageGenConfig,
+    // direction = この一枚への追加指示 (spec 27 B-2、揮発。プロンプト書きへ渡す)。
+    // prompt_override = 手書きの最終プロンプト (B-3)。**非空ならプロンプト書きを呼ばず
+    // verbatim で送る** — ダイアログに見えているものがそのまま送られる。
+    direction: Option<String>,
+    prompt_override: Option<String>,
     session: tauri::State<'_, SharedSession>,
 ) -> Result<GeneratedImageView, String> {
     // ① 素材を写す (参照ストック spec 27 もここで読む — パッケージのフォルダは session が知る)。
@@ -1111,28 +1117,46 @@ async fn generate_image(
             &sess.state,
             &sess.last_narration,
             &config.user_prefix,
+            direction.as_deref().unwrap_or_default(),
             style,
             refs.len(),
         );
         (harness::image_prompt_messages(&req), sess.client.config().clone(), sess.scene_seq, refs)
     };
-    // プロンプト書き (GM と同じ設定の別 client。会話 id は別だがツール無しの単発なので無関係)。
-    let writer = LlmClient::new(llm_config).map_err(|e| e.to_string())?;
-    let prompt = tokio::time::timeout(std::time::Duration::from_secs(60), writer.generate(messages))
-        .await
-        .map_err(|_| "プロンプト書きがタイムアウトしました (60 秒)".to_string())?
-        .map_err(|e| format!("プロンプト書きに失敗: {e}"))?;
-    let prompt = llm_client::strip_reasoning_blocks(&prompt).trim().trim_matches('"').to_string();
-    if prompt.is_empty() {
-        return Err("プロンプト書きが空の応答を返しました".into());
-    }
+    // 手書き (prompt_override) があるならプロンプト書きは**呼ばない** — 手書きが最終形なので、
+    // LLM を通す意味が無いうえ、待ち時間と課金だけ増える (spec 27 B-3)。
+    let override_text = prompt_override.unwrap_or_default();
+    let prompt = if override_text.trim().is_empty() {
+        let writer = LlmClient::new(llm_config).map_err(|e| e.to_string())?;
+        let scene =
+            tokio::time::timeout(std::time::Duration::from_secs(60), writer.generate(messages))
+                .await
+                .map_err(|_| "プロンプト書きがタイムアウトしました (60 秒)".to_string())?
+                .map_err(|e| format!("プロンプト書きに失敗: {e}"))?;
+        let scene = llm_client::strip_reasoning_blocks(&scene).trim().trim_matches('"').to_string();
+        if scene.trim().is_empty() {
+            return Err("プロンプト書きが空の応答を返しました".into());
+        }
+        // **スタイルは LLM を通さず原文のまま前置きする** (通すと言い換えられ、タグ列の原文が
+        // 保たれない = spec 27 の動機 2)。
+        harness::compose_image_prompt(&config.user_prefix, &scene, "")
+    } else {
+        harness::compose_image_prompt("", "", &override_text)
+    };
     // 画像 HTTP (ロック無し)。
     let key = image_api_key(config.provider);
-    let seed = u64::from(std::process::id()) ^ (seq.wrapping_mul(0x9E37_79B9_7F4A_7C15))
-        ^ (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0));
+    // seed 固定 (spec 27 B-4): 参照やプロンプトを差し替えて比べるには、サンプリングの運を
+    // 止めないと差が読めない。固定しないときは従来どおり毎回引き直す。
+    let seed = if config.lock_seed {
+        config.seed
+    } else {
+        u64::from(std::process::id())
+            ^ (seq.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+            ^ (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0))
+    };
     let generated = image_gen::generate(&config, &key, &prompt, seed, &refs)
         .await
         .map_err(|e| e.to_string())?;

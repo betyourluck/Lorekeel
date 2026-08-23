@@ -29,6 +29,12 @@ const PROFILE_BUDGET: usize = 400;
 const PROFILE_SHORT_BUDGET: usize = 120;
 const PROFILE_FULL_COUNT: usize = 3;
 const LOCATION_BUDGET: usize = 400;
+/// この一枚への追加指示 (spec 27 B-2)。
+const DIRECTION_BUDGET: usize = 300;
+/// **素材節に載せるスタイルの予算** (spec 27 B-1)。スタイルは最終プロンプトへ原文のまま
+/// 前置きされるので、LLM に要るのは「矛盾しないための要旨」だけ。**切っても算入は続ける** —
+/// 除外すると長いスタイル文字列で入力が無制限に伸び、予算の目的 (入力の有界性) が壊れる。
+const STYLE_MATERIAL_BUDGET: usize = 300;
 const TOTAL_BUDGET: usize = 2000;
 
 /// 組み上がったリクエスト (純粋データ)。`messages()` で ChatMessage 列にする。
@@ -45,8 +51,11 @@ pub struct ImagePromptRequest {
     pub world: String,
     /// 作者の画風指針 (`Scenario.image_style`、上限で切る)。
     pub author_style: String,
-    /// ユーザーのスタイル接頭辞 (設定)。
+    /// ユーザーのスタイル接頭辞 (設定)。**最終プロンプトへ前置きされる文字列の要旨**で、
+    /// ここに載るのは [`STYLE_MATERIAL_BUDGET`] まで (前置きされる側は全文)。
     pub user_prefix: String,
+    /// この一枚への追加指示 (spec 27 B-2、揮発)。場面依存の意図は語りと合成が要るので LLM へ渡す。
+    pub direction: String,
     /// 添付する設定画集の枚数 (spec 25)。0 なら文言は spec 24 と byte 一致 (規律を一切足さない)。
     pub refs: usize,
 }
@@ -67,6 +76,7 @@ pub fn build_image_prompt_request(
     state: &GameState,
     last_narration: &str,
     user_prefix: &str,
+    direction: &str,
     style: ImagePromptStyle,
     refs: usize,
 ) -> ImagePromptRequest {
@@ -117,7 +127,8 @@ pub fn build_image_prompt_request(
         present,
         world: take_chars(&scenario.world, WORLD_BUDGET),
         author_style: take_chars(&scenario.image_style, IMAGE_STYLE_MAX_CHARS),
-        user_prefix: user_prefix.trim().to_string(),
+        user_prefix: take_chars(user_prefix, STYLE_MATERIAL_BUDGET),
+        direction: take_chars(direction, DIRECTION_BUDGET),
         refs,
     };
     // 合計予算: 溢れたら語り → world の順で削る (人物と場所は被写体なので最後まで残す)。
@@ -128,6 +139,7 @@ pub fn build_image_prompt_request(
             + r.world.chars().count()
             + r.author_style.chars().count()
             + r.user_prefix.chars().count()
+            + r.direction.chars().count()
     };
     if total(&req) > TOTAL_BUDGET {
         let over = total(&req) - TOTAL_BUDGET;
@@ -190,7 +202,17 @@ impl ImagePromptRequest {
     pub fn user_prompt(&self) -> String {
         let mut s = String::new();
         if !self.user_prefix.is_empty() {
-            s.push_str(&format!("# スタイル指定 (プレイヤーから。必ず反映)\n{}\n\n", self.user_prefix));
+            // spec 27 B-1: スタイルは**最終プロンプトの先頭へ原文のまま前置きされる**。ここに
+            // 載せるのは矛盾を避けるためで、書き写させるためではない (見せないと「水彩」の横で
+            // photorealistic と書き、1 本のプロンプトが自己矛盾する)。
+            s.push_str(&format!(
+                "# スタイル指定 (プレイヤーから。**この文字列は最終プロンプトの先頭に原文のまま\
+                 前置きされる**ので、重複して書かず、これと矛盾する画風語も書かないこと)\n{}\n\n",
+                self.user_prefix
+            ));
+        }
+        if !self.direction.is_empty() {
+            s.push_str(&format!("# この一枚への指示 (プレイヤーから。必ず反映)\n{}\n\n", self.direction));
         }
         if !self.author_style.is_empty() {
             s.push_str(&format!("# 画風 (作者から)\n{}\n\n", self.author_style));
@@ -215,6 +237,28 @@ impl ImagePromptRequest {
         }
         s.push_str("以上から、画像プロンプトを 1 つだけ出力してください。");
         s
+    }
+}
+
+/// 最終プロンプトの合成 (spec 27 B-5、純関数)。
+///
+/// - `override_text` が非空なら**それだけ**を返す (手書きが最終形。スタイルを再び前置きしない
+///   = ダイアログに見えているものがそのまま送られる)。
+/// - そうでなければ `style` (ユーザーの様式指定・**原文のまま**) と `scene` (プロンプト書きの出力) を
+///   区切って連結する。**スタイルが LLM を通らない**のがこの関数の存在理由 — 通すと言い換えられ、
+///   タグ列を渡したときに原文が保たれない。
+pub fn compose_image_prompt(style: &str, scene: &str, override_text: &str) -> String {
+    let ov = override_text.trim();
+    if !ov.is_empty() {
+        return ov.to_string();
+    }
+    // 末尾の区切り記号は落としてから繋ぐ (`watercolor,` + `, ` で `,,` を作らない)。
+    let style = style.trim().trim_end_matches([',', '、', '。']).trim();
+    let scene = scene.trim();
+    match (style.is_empty(), scene.is_empty()) {
+        (true, _) => scene.to_string(),
+        (false, true) => style.to_string(),
+        (false, false) => format!("{style}, {scene}"),
     }
 }
 
@@ -267,6 +311,7 @@ allowed_flags: [done]
             &state,
             "メイドが紅茶を運んできた。執事は黙って窓を見ている。",
             "anime style",
+            "",
             ImagePromptStyle::Prose,
             0,
         );
@@ -285,7 +330,7 @@ allowed_flags: [done]
         assert!(text.contains("anime style"));
         assert!(text.contains("紅茶を運んできた"));
         assert!(req.system_prompt().contains("自然文"), "様式 prose の形式指示");
-        let tags = build_image_prompt_request(&sc, &state, "x", "", ImagePromptStyle::Tags, 0);
+        let tags = build_image_prompt_request(&sc, &state, "x", "", "", ImagePromptStyle::Tags, 0);
         assert!(tags.system_prompt().contains("danbooru"));
         assert!(!tags.user_prompt().contains("スタイル指定"), "空の接頭辞は節ごと省く");
         let msgs = image_prompt_messages(&req);
@@ -299,11 +344,11 @@ allowed_flags: [done]
     fn tags_form_demands_age_and_build_prose_unchanged() {
         let sc = scenario();
         let state = sc.initial_state(1);
-        let tags = build_image_prompt_request(&sc, &state, "x", "", ImagePromptStyle::Tags, 0);
+        let tags = build_image_prompt_request(&sc, &state, "x", "", "", ImagePromptStyle::Tags, 0);
         let sys = tags.system_prompt();
         assert!(sys.contains("年齢") && sys.contains("体格"), "tags は年齢・体格タグを要求する: {sys}");
         assert!(sys.contains("adult man"), "具体例で接地する (弱モデル対応): {sys}");
-        let prose = build_image_prompt_request(&sc, &state, "x", "", ImagePromptStyle::Prose, 0);
+        let prose = build_image_prompt_request(&sc, &state, "x", "", "", ImagePromptStyle::Prose, 0);
         let psys = prose.system_prompt();
         assert!(!psys.contains("年齢") && !psys.contains("adult man"), "prose は不変: {psys}");
     }
@@ -313,7 +358,7 @@ allowed_flags: [done]
     fn request_never_carries_secrets() {
         let sc = scenario();
         let state = sc.initial_state(1);
-        let req = build_image_prompt_request(&sc, &state, "静かな夜。", "", ImagePromptStyle::Prose, 0);
+        let req = build_image_prompt_request(&sc, &state, "静かな夜。", "", "", ImagePromptStyle::Prose, 0);
         let all = format!("{}\n{}", req.system_prompt(), req.user_prompt());
         assert!(!all.contains("人狼"), "hidden 属性の値が本文に出ない: {all}");
         assert!(!all.contains("正体"), "hidden 属性のキーも出ない");
@@ -332,7 +377,7 @@ allowed_flags: [done]
         }
         let state = sc.initial_state(1);
         let long = "う".repeat(3000);
-        let req = build_image_prompt_request(&sc, &state, &long, "", ImagePromptStyle::Tags, 0);
+        let req = build_image_prompt_request(&sc, &state, &long, "", "", ImagePromptStyle::Tags, 0);
         assert!(req.author_style.chars().count() <= IMAGE_STYLE_MAX_CHARS + 1);
         assert!(req.narration.chars().count() <= NARRATION_BUDGET + 1);
         let total = req.narration.chars().count()
@@ -345,8 +390,45 @@ allowed_flags: [done]
         assert!(req.present[1].chars().count() <= PROFILE_BUDGET + 10, "上位は 400 字枠");
         assert!(req.present[4].chars().count() <= PROFILE_SHORT_BUDGET + 10, "以降は 120 字枠: {}", req.present[4].chars().count());
         // 語りが空なら「現在地の情景を描く」へ倒す。
-        let empty = build_image_prompt_request(&sc, &state, "", "", ImagePromptStyle::Tags, 0);
+        let empty = build_image_prompt_request(&sc, &state, "", "", "", ImagePromptStyle::Tags, 0);
         assert!(empty.user_prompt().contains("まだ語りが無い"));
+    }
+
+    /// 【合成 (spec 27 B-5)】override は verbatim (スタイルを前置きしない = 見えているものが送られる)。
+    /// 片方が空なら区切り文字が混入しない。末尾の区切り記号は重ねない。
+    #[test]
+    fn compose_puts_style_verbatim_in_front_unless_overridden() {
+        assert_eq!(compose_image_prompt("watercolor", "a cat on a chair", ""), "watercolor, a cat on a chair");
+        assert_eq!(compose_image_prompt("", "a cat", ""), "a cat", "スタイル空なら場面だけ");
+        assert_eq!(compose_image_prompt("watercolor", "", ""), "watercolor", "場面空ならスタイルだけ");
+        assert_eq!(compose_image_prompt("", "", ""), "");
+        assert_eq!(compose_image_prompt("masterpiece,", "1girl", ""), "masterpiece, 1girl", "`,,` を作らない");
+        // override は手書きが最終形 — スタイルも場面も混ぜない。
+        assert_eq!(compose_image_prompt("watercolor", "a cat", "  my own prompt  "), "my own prompt");
+        assert_eq!(compose_image_prompt("watercolor", "a cat", "   "), "watercolor, a cat", "空白だけは override でない");
+    }
+
+    /// 【この一枚への指示 (spec 27 B-2)】direction が user 節に出る・空なら節ごと出ない・
+    /// **スタイル節は「前置きされるので重複させるな」の役割になる**・素材節の style は 300 字で切れる
+    /// (前置きされる側は全文なので、切るのは LLM に見せる要旨だけ)。
+    #[test]
+    fn direction_and_style_material_roles() {
+        let sc = scenario();
+        let state = sc.initial_state(1);
+        let none = build_image_prompt_request(&sc, &state, "夜。", "水彩", "", ImagePromptStyle::Prose, 0);
+        assert!(!none.user_prompt().contains("この一枚への指示"), "空なら節ごと出ない");
+        let with = build_image_prompt_request(&sc, &state, "夜。", "水彩", "引きの構図で", ImagePromptStyle::Prose, 0);
+        let u = with.user_prompt();
+        assert!(u.contains("# この一枚への指示") && u.contains("引きの構図で"), "{u}");
+        assert!(u.contains("原文のまま") && u.contains("矛盾する画風語も書かない"), "スタイル節の役割: {u}");
+        // 素材節の style は 300 字で切る (前置きされる全文とは別)。
+        let long_style = "あ".repeat(500);
+        let cut = build_image_prompt_request(&sc, &state, "夜。", &long_style, "", ImagePromptStyle::Prose, 0);
+        assert!(cut.user_prefix.chars().count() <= STYLE_MATERIAL_BUDGET + 1, "{}", cut.user_prefix.chars().count());
+        // direction も予算内 (**算入は続く** = 入力の有界性)。
+        let long_dir = "い".repeat(500);
+        let d = build_image_prompt_request(&sc, &state, "夜。", "", &long_dir, ImagePromptStyle::Prose, 0);
+        assert!(d.direction.chars().count() <= DIRECTION_BUDGET + 1);
     }
 
     /// 【設定画集の規律 (spec 25)】refs=0 なら system/user とも従来文言と byte 一致 (規律を一切足さない)。
@@ -355,8 +437,8 @@ allowed_flags: [done]
     fn reference_sheets_rule_is_appended_only_when_present() {
         let sc = scenario();
         let state = sc.initial_state(1);
-        let zero = build_image_prompt_request(&sc, &state, "静かな夜。", "anime", ImagePromptStyle::Prose, 0);
-        let two = build_image_prompt_request(&sc, &state, "静かな夜。", "anime", ImagePromptStyle::Prose, 2);
+        let zero = build_image_prompt_request(&sc, &state, "静かな夜。", "anime", "", ImagePromptStyle::Prose, 0);
+        let two = build_image_prompt_request(&sc, &state, "静かな夜。", "anime", "", ImagePromptStyle::Prose, 2);
         assert!(!zero.system_prompt().contains("設定画集") && !zero.system_prompt().contains("reference sheets"));
         assert_eq!(zero.user_prompt(), two.user_prompt(), "user 側は枚数で変わらない");
         let sys2 = two.system_prompt();

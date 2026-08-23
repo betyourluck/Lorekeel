@@ -550,6 +550,7 @@ interface GameState {
   imageGen: ImageGenSettings;
   // 直近に生成した挿絵 (表示用 data URL + 書かれたプロンプト)。null = 無し。
   generatedImage: { dataUrl: string; prompt: string } | null;
+  imageDirection: string;
   // 生成中 (ボタン無効 + スピナー)。
   imageBusy: boolean;
   // 生成要求の世代 (古い完了を無視する frontend 側の二層目。backend は scene_seq で守る)。
@@ -640,6 +641,9 @@ export const useGameStore = defineStore("game", {
       ttsEnabled: tts.loadEnabled(),
       imageGen: loadImageGenSettings(),
       generatedImage: null,
+      // この一枚への追加指示 (spec 27 B-2)。**揮発** — localStorage に入れない。恒久にしたい
+      // 様式指定は設定のスタイル欄が受ける (消し忘れた一言が以後の全生成に効き続けるのを防ぐ)。
+      imageDirection: "",
       imageBusy: false,
       imageRequestId: 0,
       showGeneratedImage: true,
@@ -766,13 +770,17 @@ export const useGameStore = defineStore("game", {
     },
     // 挿絵を生成する。処理中は押せない (busy)・何度でも押せる (差し替え)。
     // HTTP は backend (キーは WebView に無い・CSP 対象外)。古い完了は requestId で無視。
-    async generateImage(): Promise<void> {
+    // promptOverride を渡すと backend はプロンプト書きを呼ばず、その文字列を verbatim で送る
+    // (spec 27 B-3)。**1 回きり**なので store には残さない。
+    async generateImage(promptOverride?: string): Promise<void> {
       if (!this.started || this.imageBusy) return;
       const reqId = ++this.imageRequestId;
       this.imageBusy = true;
       try {
         const view = await invoke<{ data_url: string; prompt: string; mime: string }>("generate_image", {
           config: toBackendConfig(this.imageGen),
+          direction: this.imageDirection.trim() || null,
+          promptOverride: promptOverride?.trim() || null,
         });
         if (reqId !== this.imageRequestId) return; // 場面が変わった (新規/ロード/遷移)
         this.generatedImage = { dataUrl: view.data_url, prompt: view.prompt };

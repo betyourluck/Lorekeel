@@ -32,7 +32,10 @@ pub use campaign::{
 };
 pub use inspect::{inspect, inspect_package, inspect_scenario_file, InspectReport};
 pub use inspect_msg::scenario_lint_messages;
-pub use image_prompt::{build_image_prompt_request, image_prompt_messages, ImagePromptRequest, ImagePromptStyle};
+pub use image_prompt::{
+    build_image_prompt_request, compose_image_prompt, image_prompt_messages, ImagePromptRequest,
+    ImagePromptStyle,
+};
 pub use settings_sheets::{
     load_settings_sheets, pick_settings_sheets, sheet_mime, PickedSheets, SheetImage, SkipReason,
     SkippedSheet, SETTINGS_SHEETS_DIR, SHEET_MAX_BYTES,

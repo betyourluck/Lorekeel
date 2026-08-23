@@ -38,6 +38,13 @@ export interface ImageGenSettings {
   opacity: number;
   /** 保存フォルダ ("" = 既定 app_data/images)。 */
   folder: string;
+  /**
+   * seed 固定 (spec 27 B-4)。**seed を持つのは ComfyUI だけ**なので UI は comfy のときだけ
+   * 有効にする (押せるのに効かない状態を作らない)。固定しないと参照やプロンプトの A/B に
+   * サンプリングの運が混じる。
+   */
+  lockSeed: boolean;
+  seed: number;
   perProvider: Record<ImageProvider, ProviderSlot>;
 }
 
@@ -78,6 +85,8 @@ export function defaultImageGenSettings(): ImageGenSettings {
     userPrefix: "",
     opacity: 0.85,
     folder: "",
+    lockSeed: false,
+    seed: 12345,
     perProvider: {
       openai: defaultSlot("openai"),
       gemini: defaultSlot("gemini"),
@@ -126,6 +135,10 @@ export function migrateImageGenSettings(raw: unknown): ImageGenSettings {
   if (typeof r.userPrefix === "string") out.userPrefix = r.userPrefix;
   out.opacity = Math.min(1, Math.max(0.3, Number(r.opacity) || 0.85));
   if (typeof r.folder === "string") out.folder = r.folder;
+  if (typeof r.lockSeed === "boolean") out.lockSeed = r.lockSeed;
+  if (typeof r.seed === "number" && Number.isFinite(r.seed) && r.seed >= 0) {
+    out.seed = Math.floor(r.seed);
+  }
 
   if (r.perProvider && typeof r.perProvider === "object") {
     const pp = r.perProvider as Record<string, unknown>;
@@ -204,6 +217,8 @@ export interface BackendImageGenConfig {
   negative: string;
   workflow_json: string | null;
   timeout_secs: number | null;
+  lock_seed: boolean;
+  seed: number;
 }
 
 /**
@@ -227,6 +242,9 @@ export function toBackendConfig(s: ImageGenSettings): BackendImageGenConfig {
     negative: s.provider === "comfy" ? slot.negative : "",
     workflow_json: s.provider === "comfy" && slot.workflowJson.trim() ? slot.workflowJson : null,
     timeout_secs: slot.timeoutSecs > 0 ? Math.floor(slot.timeoutSecs) : null,
+    // seed を持つのは comfy だけ — 他プロバイダへは固定を送らない (逆向き漏れの封鎖と同じ規則)。
+    lock_seed: s.provider === "comfy" && s.lockSeed,
+    seed: Math.max(0, Math.floor(s.seed) || 0),
   };
 }
 

@@ -945,6 +945,33 @@ onMounted(async () => {
                 </select>
               </label>
             </div>
+            <!-- seed 固定 (spec 27 B-4): 参照やプロンプトを差し替えて比べるための道具。
+                 seed を持つのは ComfyUI だけなので、他プロバイダでは無効表示にする
+                 (押せるのに効かない状態を作らない = ネガティブ欄と同じ流儀)。 -->
+            <div class="flex items-end gap-3" :class="{ 'opacity-40': img.provider !== 'comfy' }">
+              <label class="flex items-center gap-2 text-sm text-parchment/70">
+                <input
+                  type="checkbox"
+                  :checked="img.lockSeed"
+                  :disabled="img.provider !== 'comfy'"
+                  class="accent-ember"
+                  @change="setImg({ lockSeed: ($event.target as HTMLInputElement).checked })"
+                />
+                {{ t("settings.image.lockSeed") }}
+              </label>
+              <label class="text-sm text-parchment/70">
+                {{ t("settings.image.seed") }}
+                <input
+                  type="number"
+                  min="0"
+                  :value="img.seed"
+                  :disabled="img.provider !== 'comfy' || !img.lockSeed"
+                  class="mt-1 block w-40 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none disabled:opacity-50"
+                  @change="setImg({ seed: Math.max(0, Math.floor(Number(($event.target as HTMLInputElement).value) || 0)) })"
+                />
+              </label>
+            </div>
+            <p class="text-xs text-parchment/40 -mt-1">{{ t("settings.image.lockSeedHint") }}</p>
             <label class="block text-sm text-parchment/70">
               {{ t("settings.image.userPrefix") }}
               <input

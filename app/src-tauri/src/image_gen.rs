@@ -89,6 +89,13 @@ pub struct ImageGenConfig {
     /// タイムアウト秒の上書き (None ならプロバイダ別既定)。
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+    /// seed 固定 (spec 27 B-4)。**seed を持つのは ComfyUI だけ**なので他プロバイダでは効かない
+    /// (UI 側で無効表示)。固定しないと参照やプロンプトの A/B にサンプリングの運が混じり、
+    /// 「変わった気がする」しか返らない。
+    #[serde(default)]
+    pub lock_seed: bool,
+    #[serde(default)]
+    pub seed: u64,
 }
 
 impl ImageGenConfig {
@@ -1013,6 +1020,8 @@ mod tests {
             negative: "lowres".into(),
             workflow_json: None,
             timeout_secs: None,
+            lock_seed: false,
+            seed: 0,
         }
     }
 
@@ -1307,6 +1316,8 @@ mod live {
             negative: String::new(),
             workflow_json: None,
             timeout_secs: None,
+            lock_seed: false,
+            seed: 0,
         };
         let probe = probe(&cfg, key).await;
         eprintln!("{provider:?} probe: {:?}", probe.as_ref().map_err(|e| e.to_string()));
@@ -1353,6 +1364,8 @@ mod live {
             negative: String::new(),
             workflow_json: None,
             timeout_secs: None,
+            lock_seed: false,
+            seed: 0,
         };
         let prompt = "The same man as in the reference sheets (same face, beard, green coat and brown boots)                       now sits at the dusty grand piano in the same hall, one hand on the keys, looking over                       his shoulder toward the viewer. Watercolor illustration, muted colors.";
         let t0 = std::time::Instant::now();
@@ -1404,6 +1417,8 @@ mod live {
             negative: "low quality, bad anatomy".into(),
             workflow_json: Some(include_str!("../../src/assets/comfy_krea2_ref.json").to_string()),
             timeout_secs: None,
+            lock_seed: false,
+            seed: 0,
         };
         let prompt = "anime RPG game style, the same woman knight as in the reference sheet (see reference),                       standing on a castle rampart at dawn, wind in her hair, looking at the horizon.                       The background fills the entire frame, no plain backdrop or border.";
         for (label, refs) in [
