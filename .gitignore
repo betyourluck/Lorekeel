@@ -18,3 +18,4 @@ agent-key.txt
 .DS_Store
 Thumbs.db
 /blackboard
+/briefs/*
