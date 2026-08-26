@@ -167,7 +167,14 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "Kataribe ${{ github.ref_name }}"
           releaseBody: "各 OS の installer を下の Assets からダウンロードしてください。"
-          releaseDraft: false
+          # **draft で作り、人が publish する。**
+          # このジョブは fail-fast: false の matrix で 3 OS が**独立に**ここを呼ぶので、
+          # false だと **1 OS 通っただけで Release が public になる**。macOS は署名と公証で
+          # 工程が長く、他の 2 OS が先に終わる — 揃う前に公開されると、未署名時代と同じ
+          # 構成のまま出たように見える。Fuseforks は同じ形で 2 回踏んで true にしている。
+          # **タグは push した時点で残る**ので、publish しないことは「その版が存在しなかった」
+          # を意味しない。
+          releaseDraft: true
           prerelease: false
 
       # 各 OS の installer/bundle を成果物としてアップロード。
