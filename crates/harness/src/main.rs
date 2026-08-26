@@ -141,7 +141,7 @@ async fn run_synopsis_job(
         Ok(text) => synopsis.complete(job, &text),
         Err(e) => {
             eprintln!("[警告] あらすじ要約に失敗 (プレイは続行し後で再試行): {e}");
-            synopsis.abandon(job);
+            synopsis.abandon(job, history);
         }
     }
 }

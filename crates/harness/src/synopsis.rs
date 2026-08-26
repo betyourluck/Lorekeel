@@ -10,7 +10,7 @@
 //! - **あふれ** ([`Synopsis::next_job`]): 未圧縮が [`SYNOPSIS_OVERFLOW_THRESHOLD`] を
 //!   超えたら直近 [`SYNOPSIS_KEEP_RECENT`] を温存して圧縮。失敗は skip して次ターン再計算。
 //! - **モジュール遷移** ([`Synopsis::on_transition`]): 章の自然な境界で未圧縮全量を圧縮。
-//!   失敗は `pending_transition` へ**範囲凍結**し同一範囲でリトライ (範囲を再計算すると
+//!   失敗は `pending` へ**範囲凍結**し同一範囲でリトライ (範囲を再計算すると
 //!   新章のターンが混入し「前章の要約に次章の内容」事故になるため、拡張禁止)。
 //!
 //! 要約は非検証の言語チャネル (#47 と同族のリスク) なので、入力を chronicle の
@@ -78,10 +78,18 @@ pub struct Synopsis {
     /// 確定した章列 (古い順・append-only)。
     #[serde(default)]
     pub entries: Vec<SynopsisEntry>,
-    /// 遷移契機の失敗を凍結したリトライ範囲。消化されるまで新しい圧縮は起こさない
+    /// 失敗を凍結したリトライ範囲 (契機を問わない)。消化されるまで新しい圧縮は起こさない
     /// (pending 優先消化 — あふれ契機が凍結範囲を再カバーする事故を構造で防ぐ)。
+    ///
+    /// **2026-08-26 に あふれ契機へも広げた**。旧実装はあふれの失敗を凍結せず「次の受理ターンで
+    /// 範囲を再計算」していたが、未圧縮は毎ターン 1 本増えるので**再計算のたびに範囲が 1 つ伸び、
+    /// 失敗するほど次の入力が重くなる**正のフィードバックだった (実プレイでタイムアウトが
+    /// 連鎖した真因の片割れ)。名前は wire 互換のため `pending_transition` を alias で受ける。
+    #[serde(default, alias = "pending_transition")]
+    pub pending: Option<SynopsisJob>,
+    /// `pending` を続けて失敗した回数。[`SYNOPSIS_MAX_RETRIES`] で機械 join へ落とす。
     #[serde(default)]
-    pub pending_transition: Option<SynopsisJob>,
+    pub pending_failures: u32,
 }
 
 impl Synopsis {
@@ -103,7 +111,7 @@ impl Synopsis {
     /// まであふれ判定はしない = 1 ターン 1 ジョブ・順序保証)。無ければあふれ判定:
     /// 未圧縮が閾値を超えていたら、直近 [`SYNOPSIS_KEEP_RECENT`] を温存した範囲を返す。
     pub fn next_job(&self, history: &[TurnLog]) -> Option<SynopsisJob> {
-        if let Some(pending) = &self.pending_transition {
+        if let Some(pending) = &self.pending {
             return Some(pending.clone());
         }
         let unc = self.uncompressed(history);
@@ -130,7 +138,7 @@ impl Synopsis {
     /// - それ以外は LLM 用ジョブを返す — 成功なら [`Self::complete`]、失敗なら
     ///   [`Self::abandon`] で凍結すること。
     pub fn on_transition(&mut self, history: &[TurnLog], module_title: &str) -> Option<SynopsisJob> {
-        if let Some(pending) = self.pending_transition.take() {
+        if let Some(pending) = self.pending.take() {
             let text = mechanical_join(&self.logs_in(history, &pending));
             self.push_entry(&pending, &text);
         }
@@ -154,18 +162,34 @@ impl Synopsis {
 
     /// 要約成功: segment を確定して追記する (400 字カット)。pending だったジョブなら解凍。
     pub fn complete(&mut self, job: &SynopsisJob, text: &str) {
-        if self.pending_transition.as_ref() == Some(job) {
-            self.pending_transition = None;
+        if self.pending.as_ref() == Some(job) {
+            self.pending = None;
+            self.pending_failures = 0;
         }
         self.push_entry(job, text);
     }
 
-    /// 要約失敗: 遷移契機なら**範囲を凍結**して同一リトライへ (拡張禁止)。
-    /// あふれ契機は何もしない (次の受理ターンで再計算 — 章を跨がないので安全)。
-    pub fn abandon(&mut self, job: &SynopsisJob) {
-        if job.trigger == SynopsisTrigger::Transition {
-            self.pending_transition = Some(job.clone());
+    /// 要約失敗: **範囲を凍結**して同一リトライへ (拡張禁止・契機を問わない)。
+    ///
+    /// [`SYNOPSIS_MAX_RETRIES`] 回続けて失敗した範囲は**機械 join で確定して先へ進む**
+    /// (`true` を返す)。あらすじの質は落ちるが、LLM を呼ばないので必ず成功する — 凍結だけだと
+    /// 恒久的な失敗条件 (規約ブロック・恒常タイムアウト) で永久に詰まり、その間ずっと毎ターン
+    /// 待たされる。**質の劣化より停止の回避を採る**。
+    pub fn abandon(&mut self, job: &SynopsisJob, history: &[TurnLog]) -> bool {
+        if self.pending.as_ref() == Some(job) {
+            self.pending_failures = self.pending_failures.saturating_add(1);
+        } else {
+            self.pending = Some(job.clone());
+            self.pending_failures = 1;
         }
+        if self.pending_failures >= SYNOPSIS_MAX_RETRIES {
+            let text = mechanical_join(&self.logs_in(history, job));
+            self.push_entry(job, &text);
+            self.pending = None;
+            self.pending_failures = 0;
+            return true;
+        }
+        false
     }
 
     /// ジョブの範囲 (inclusive) に入る chronicle エントリ。
@@ -247,8 +271,30 @@ pub trait Summarizer {
     async fn summarize(&self, request: &SynopsisRequest) -> Result<String, HarnessError>;
 }
 
-/// 要約 1 回のタイムアウト (秒)。同期実行 (受理ターン直後) がプレイを長く止めないための上限。
-pub const SYNOPSIS_TIMEOUT_SECS: u64 = 15;
+/// 要約 1 回のタイムアウト (秒) の**既定値**。上書きは `SUMMARY_LLM_TIMEOUT_SECS`。
+///
+/// **2026-08-26 に 15 → 60 へ**（実プレイで恒常的にタイムアウトした、ユーザー報告）。15 秒は
+/// 「同期実行 (受理ターン直後) がプレイを長く止めない」ための上限だったが、遅いモデルでは
+/// **毎ターン 15 秒払って必ず失敗する**という最悪の形になり、待ち時間の節約になっていなかった
+/// (一度 60 秒払って成功する方が安い)。60 秒は挿絵のプロンプト書きと同値。
+pub const SYNOPSIS_TIMEOUT_SECS: u64 = 60;
+
+/// 同一ジョブをこの回数続けて失敗したら、LLM を諦めて機械 join で確定する
+/// ([`Synopsis::abandon`])。**凍結と対で入れる** — 範囲を固定するだけだと、恒久的に失敗する
+/// 条件 (規約ブロック・遅すぎるモデル・恒常タイムアウト) で永久に詰まるため。
+pub const SYNOPSIS_MAX_RETRIES: u32 = 3;
+
+/// 実効タイムアウト (秒)。`SUMMARY_LLM_TIMEOUT_SECS` が読めれば優先、不正値・0 は既定へ。
+///
+/// env 直読みは `KATARIBE_LANG` / `LLM_DEBUG` と同じ流儀 (signature を汚さない)。app は
+/// `app_data/.env` を読み込んだ後なのでそのまま効く。
+pub fn synopsis_timeout_secs() -> u64 {
+    std::env::var("SUMMARY_LLM_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(SYNOPSIS_TIMEOUT_SECS)
+}
 
 /// リクエストを LLM messages に組む (純粋・テスト可)。tools/schema は使わない —
 /// プレーン生成なので no-tools サーバ (さくら/ローカル互換) でもそのまま動く。
@@ -269,12 +315,11 @@ pub fn summarize_messages(request: &SynopsisRequest) -> Vec<llm_client::ChatMess
 /// 文面 (接地規律) は [`SynopsisRequest`] 側にあり Phase A でテスト済み。
 impl Summarizer for llm_client::LlmClient {
     async fn summarize(&self, request: &SynopsisRequest) -> Result<String, HarnessError> {
+        let secs = synopsis_timeout_secs();
         let fut = self.generate(summarize_messages(request));
-        let text = tokio::time::timeout(std::time::Duration::from_secs(SYNOPSIS_TIMEOUT_SECS), fut)
+        let text = tokio::time::timeout(std::time::Duration::from_secs(secs), fut)
             .await
-            .map_err(|_| {
-                HarnessError::Summarize(format!("タイムアウト ({SYNOPSIS_TIMEOUT_SECS} 秒)"))
-            })?
+            .map_err(|_| HarnessError::Summarize(format!("タイムアウト ({secs} 秒)")))?
             .map_err(|e| HarnessError::Summarize(e.to_string()))?;
         let text = llm_client::strip_reasoning_blocks(&text).trim().to_string();
         if text.is_empty() {
@@ -417,8 +462,8 @@ mod tests {
         assert_eq!(job.trigger, SynopsisTrigger::Transition);
 
         // 要約失敗 → 凍結。
-        syn.abandon(&job);
-        assert!(syn.pending_transition.is_some(), "遷移失敗は pending へ凍結");
+        syn.abandon(&job, &history);
+        assert!(syn.pending.is_some(), "遷移失敗は pending へ凍結");
 
         // 新章のターンが進む (T9〜11)。
         history.extend((9..=11).map(|t| log(t, &format!("新章の出来事{t}"))));
@@ -427,7 +472,7 @@ mod tests {
 
         // リトライ成功 → 解凍・確定。以後のあふれ判定は凍結範囲の後ろから。
         syn.complete(&retry, "村の章のあらすじ。");
-        assert!(syn.pending_transition.is_none(), "成功で解凍");
+        assert!(syn.pending.is_none(), "成功で解凍");
         assert_eq!(syn.compressed_upto(), 8);
         assert!(syn.next_job(&history).is_none(), "未圧縮 3 ターンでは何も起きない");
     }
@@ -457,12 +502,89 @@ mod tests {
 
     /// 【二重 pending の遮断】凍結が残ったまま次の遷移が来たら、凍結分を機械 join で
     /// 強制消化してから新章のジョブを組む (pending スロットは常に高々 1)。
+    /// 【2026-08-26 実プレイ発見】**あふれ契機の失敗も範囲を凍結する**。
+    ///
+    /// Red (旧実装): あふれの失敗は `abandon` が何もせず「次の受理ターンで範囲を再計算」した。
+    /// 未圧縮は毎ターン 1 本増えるので `end` が 1 つずつ伸び、**失敗するほど次の入力が重くなる**
+    /// = タイムアウトの正のフィードバック。ユーザー実機で 4 ターン連続の失敗として観測された。
+    #[test]
+    fn overflow_failure_freezes_the_range_so_retries_do_not_grow() {
+        let mut syn = Synopsis::default();
+        let mut history = logs(21); // 閾値 20 を超えた
+        let job = syn.next_job(&history).expect("あふれで発火");
+        assert_eq!((job.start, job.end), (1, 11), "直近 10 を温存した範囲");
+
+        assert!(!syn.abandon(&job, &history), "1 回目の失敗はまだ機械 join へ落ちない");
+
+        // ターンが 5 つ進んでも、リトライは**同じ範囲**でなければならない。
+        history.extend((22..=26).map(|t| log(t, &format!("その後{t}"))));
+        let retry = syn.next_job(&history).expect("凍結ジョブをリトライ");
+        assert_eq!(
+            (retry.start, retry.end),
+            (job.start, job.end),
+            "凍結範囲は伸びない (旧実装はここで end が 16 まで伸びた)"
+        );
+        assert_eq!(retry.trigger, SynopsisTrigger::Overflow);
+
+        // 成功すれば解凍し、失敗回数も戻る。
+        syn.complete(&retry, "旅の前半。");
+        assert!(syn.pending.is_none());
+        assert_eq!(syn.pending_failures, 0);
+        assert_eq!(syn.compressed_upto(), 11);
+    }
+
+    /// 【2026-08-26】**K 回続けて失敗したら機械 join で先へ進む**（凍結と対の逃げ道）。
+    ///
+    /// 凍結だけ入れると、恒久的に失敗する条件 (規約ブロック・恒常タイムアウト) で永久に詰まり、
+    /// その間ずっと毎ターン待たされる。質の劣化より停止の回避を採る。
+    #[test]
+    fn repeated_failure_falls_back_to_mechanical_join_and_moves_on() {
+        let mut syn = Synopsis::default();
+        let history = logs(21);
+        let job = syn.next_job(&history).expect("あふれで発火");
+
+        for i in 1..SYNOPSIS_MAX_RETRIES {
+            let job = syn.next_job(&history).expect("凍結ジョブが返る");
+            assert!(!syn.abandon(&job, &history), "{i} 回目はまだ落ちない");
+            assert!(syn.entries.is_empty(), "まだ章は確定していない");
+        }
+        let last = syn.next_job(&history).expect("凍結ジョブが返る");
+        assert!(syn.abandon(&last, &history), "K 回目は機械 join へ落ちる");
+
+        assert_eq!(syn.entries.len(), 1, "章が確定して先へ進んだ");
+        assert_eq!(syn.entries[0].upto_turn, job.end);
+        assert!(!syn.entries[0].text.is_empty(), "機械 join は LLM 不要で必ず本文を作る");
+        assert!(syn.pending.is_none(), "詰まりが解けた");
+        assert_eq!(syn.pending_failures, 0);
+        // 同じ範囲を二度圧縮しない (append-only の境界が前へ進んでいる)。
+        assert!(syn.next_job(&history).is_none(), "未圧縮は温存幅まで減った");
+    }
+
+    /// 旧セーブ互換: フィールド名を `pending_transition` → `pending` に変えたので alias で読む。
+    #[test]
+    fn old_saves_with_pending_transition_still_load() {
+        let yaml = "entries:
+  - upto_turn: 5
+    title: 序章
+    text: 旅人が村に着いた。
+pending_transition:
+  start: 6
+  end: 7
+  title: 村の章
+  trigger: transition
+";
+        let syn: Synopsis = serde_yaml::from_str(yaml).expect("旧形式が読める");
+        let pending = syn.pending.expect("凍結範囲が失われていない");
+        assert_eq!((pending.start, pending.end), (6, 7));
+        assert_eq!(syn.pending_failures, 0, "無い欄は既定 0");
+    }
+
     #[test]
     fn second_transition_flushes_frozen_pending_mechanically() {
         let mut syn = Synopsis::default();
         let mut history = logs(5);
         let job = syn.on_transition(&history, "第一章").unwrap();
-        syn.abandon(&job); // 失敗のまま次の遷移へ
+        syn.abandon(&job, &history); // 失敗のまま次の遷移へ
 
         history.extend((6..=9).map(|t| log(t, &format!("出来事{t}"))));
         let job2 = syn.on_transition(&history, "第二章").expect("新章のジョブ");
@@ -470,7 +592,7 @@ mod tests {
         assert_eq!(syn.entries[0].upto_turn, 5);
         assert_eq!(syn.entries[0].title, "第一章");
         assert_eq!((job2.start, job2.end), (6, 9), "新章は凍結範囲の直後から");
-        assert!(syn.pending_transition.is_none());
+        assert!(syn.pending.is_none());
     }
 
     /// 【要約入力の接地 (#47 防衛)】リクエストは機械タグを行に併記し、system 指示に
@@ -560,3 +682,4 @@ mod tests {
         assert_eq!(syn.compressed_upto(), 10);
     }
 }
+

@@ -1002,12 +1002,13 @@ mod tests {
                     title: "序章".into(),
                     text: "旅人が村に着いた。".into(),
                 }],
-                pending_transition: Some(SynopsisJob {
+                pending: Some(SynopsisJob {
                     start: 6,
                     end: 7,
                     title: "村の章".into(),
                     trigger: SynopsisTrigger::Transition,
                 }),
+                pending_failures: 1,
             },
         };
         let path = std::env::temp_dir().join("kataribe_poc_session_save.yaml");
@@ -1054,7 +1055,7 @@ mod tests {
         val.as_mapping_mut().unwrap().remove("facts");
         let loaded: SessionSave = serde_yaml::from_value(val).expect("旧形式が読める");
         assert!(loaded.synopsis.entries.is_empty(), "あらすじは空で始まる");
-        assert!(loaded.synopsis.pending_transition.is_none());
+        assert!(loaded.synopsis.pending.is_none());
         assert!(loaded.facts.is_empty(), "既成事実は空で始まる (spec 20 旧セーブ互換)");
     }
 

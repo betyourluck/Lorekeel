@@ -68,7 +68,7 @@ pub struct SessionSave {
     /// 発火済み recall の持ち越し (fragment 丸ごと = memoria/ 欠損でもロード可能)。
     #[serde(default)]
     pub pending_lore: Vec<MemoryFragment>,
-    /// あらすじ (spec 10) — 圧縮済み章 + 遷移契機の凍結リトライ範囲 (pending_transition)。
+    /// あらすじ (spec 10) — 圧縮済み章 + 凍結リトライ範囲 (`pending`、旧 `pending_transition` も読む)。
     /// history と同一セーブで snapshot されるので resume では常に整合する。
     #[serde(default)]
     pub synopsis: Synopsis,

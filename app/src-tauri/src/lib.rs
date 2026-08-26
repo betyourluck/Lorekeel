@@ -3391,9 +3391,15 @@ async fn run_synopsis_job(app: &tauri::AppHandle, sess: &mut GameSession, job: &
     match result {
         Ok(text) => sess.synopsis.complete(job, &text),
         Err(e) => {
-            eprintln!("[警告] あらすじ要約に失敗 (プレイは続行し後で再試行): {e}");
-            let _ = app.emit("synopsis-failed", e.to_string());
-            sess.synopsis.abandon(job);
+            // K 回続けて失敗した範囲は機械 join で確定して先へ進む (詰まりの回避 > 質)。
+            let joined = sess.synopsis.abandon(job, &sess.history);
+            let msg = if joined {
+                format!("{e} — 同じ範囲で続けて失敗したので、機械的な要約で先へ進めました")
+            } else {
+                e.to_string()
+            };
+            eprintln!("[警告] あらすじ要約に失敗 (プレイは続行し後で再試行): {msg}");
+            let _ = app.emit("synopsis-failed", msg);
         }
     }
 }
