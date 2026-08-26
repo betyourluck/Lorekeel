@@ -289,8 +289,10 @@ export const messages = {
         useToolsNote:
           "基本は ON のままで大丈夫です。tool_choice の対応範囲はサーバごとに違いますが、接続先から自動判定し、拒否されたら自動で一段下げます（Meta のように「auto しか通らない」口も ON のまま動きます）。tools 自体を受け付けないサーバ（さくら AI Engine やローカル OpenAI 互換の一部）だけ OFF にしてください（プロンプトで JSON 出力を指示する経路に切替）。",
         save: "保存",
+        saveWithProfile: "保存 + 登録モデルを更新",
+        saveWithProfileTitle: "選択中の登録モデルの中身を、いまのフォーム値で書き換えます（表示名はそのまま）",
         saveNote:
-          ".env を書き換えます（プロセスへ即時反映＋ファイル永続化）。次の「新しいゲーム」から新モデルで接続します。",
+          ".env を書き換えます（プロセスへ即時反映＋ファイル永続化）。次の「新しいゲーム」から新モデルで接続します。右の「保存 + 登録モデルを更新」は、選択中の登録モデルの中身（モデル名・エンドポイント・API キー）も同じ値に書き換えます — キーを変えるのに一度消して作り直す必要はありません。",
         summaryHeading: "あらすじ要約用モデル",
         summarySameAsGm: "GM と同じ（既定）",
         summaryNote:
@@ -336,6 +338,8 @@ export const messages = {
         nameRequired: "表示名を入力してください",
         profileAdded: "「{name}」を登録しました（「保存」で .env に反映）",
         selectToDelete: "削除するモデルを選択してください",
+        selectToUpdate: "書き換える登録モデルを選択してください",
+        profileUpdated: "「{name}」を書き換えました（.env にも反映）",
         confirmDelete: "登録モデル「{name}」を削除しますか？",
         profileDeleted: "「{name}」を削除しました",
         summarySameAsGm: "GM と同じモデルで要約します",
@@ -951,8 +955,10 @@ export const messages = {
         useToolsNote:
           "Leave this ON in most cases. How much of tool_choice a server implements varies, but Kataribe detects it from the endpoint and steps down automatically if the server refuses (endpoints that only accept \"auto\", such as Meta, work with this ON). Turn it OFF only for servers that reject tools entirely, such as Sakura AI Engine or some local OpenAI-compatible servers (switches to instructing JSON output via the prompt).",
         save: "Save",
+        saveWithProfile: "Save + update saved model",
+        saveWithProfileTitle: "Also rewrite the selected saved model with the current form values (its name is kept)",
         saveNote:
-          "Rewrites .env (applied to the process immediately and persisted to file). Connects with the new model from the next “New game”.",
+          "Rewrites .env (applied to the process immediately and persisted to file). Connects with the new model from the next “New game”. “Save + update saved model” also rewrites the selected entry (model, endpoint, API key), so you no longer have to delete and re-create it just to change a key.",
         summaryHeading: "Synopsis-summary model",
         summarySameAsGm: "Same as GM (default)",
         summaryNote:
@@ -999,6 +1005,8 @@ export const messages = {
         nameRequired: "Please enter a display name",
         profileAdded: "Added “{name}” (press “Save” to write it to .env)",
         selectToDelete: "Please select a model to delete",
+        selectToUpdate: "Please select a saved model to rewrite",
+        profileUpdated: "Rewrote “{name}” (also written to .env)",
         confirmDelete: "Delete the saved model “{name}”?",
         profileDeleted: "Deleted “{name}”",
         summarySameAsGm: "Summarizing with the same model as the GM",

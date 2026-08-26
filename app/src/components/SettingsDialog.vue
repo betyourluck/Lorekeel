@@ -147,7 +147,9 @@ function resetVoice() {
 type Tab = "display" | "graphics" | "sound" | "image" | "log" | "language" | "model" | "dev" | "help";
 const tab = ref<Tab>("display");
 // ラベルは i18n（`settings.tabs.<id>`）。id は機械用のまま。
-const tabs: Tab[] = ["display", "graphics", "sound", "image", "log", "language", "model", "dev", "help"];
+// 並びはユーザー決定 (2026-08-26): 最初に決めるもの (表示・言語・AI モデル) を上へ、
+// 演出まわり (グラフィック・画像生成・サウンド) を中、道具 (ログ・開発者・ヘルプ) を下へ。
+const tabs: Tab[] = ["display", "language", "model", "graphics", "image", "sound", "log", "dev", "help"];
 
 // --- 開発者モード (KATARIBE_DEV_MODE) ---
 const devStatus = ref("");
@@ -440,7 +442,10 @@ async function applySummaryProfile() {
   }
 }
 
-async function saveLlm() {
+// 選択中の登録モデルがあるか (「登録モデルも更新」の可否)。
+const canUpdateProfile = computed(() => profiles.value.some((p) => p.id === selectedProfileId.value));
+
+async function saveLlm(): Promise<boolean> {
   llmStatus.value = t("settings.status.saving");
   try {
     await invoke("set_llm_config", {
@@ -452,9 +457,39 @@ async function saveLlm() {
     llmStatus.value = t("settings.status.llmSaved");
     syncSelectionToConfig(); // 直接編集が登録済みと一致すればコンボの選択に反映
     game.refreshLlmModel(); // TitleBar のバッジ + ウィンドウタイトルへ即時反映
+    return true;
   } catch (e) {
     llmStatus.value = t("settings.status.saveFailed", { error: String(e) });
+    return false;
   }
+}
+
+// .env に加えて**選択中の登録モデルも**書き換える (2026-08-26 ユーザー要望)。
+// 従来は API キーを変えるのに一度消して作り直すしかなかった — 登録は id と表示名を保ったまま
+// 中身だけ差し替える。id を保つので、あらすじ要約用に選ばれている場合の紐づきも切れない。
+async function saveLlmAndProfile() {
+  const p = profiles.value.find((x) => x.id === selectedProfileId.value);
+  if (!p) {
+    llmStatus.value = t("settings.status.selectToUpdate");
+    return;
+  }
+  // **.env を先に書き、成功したときだけ登録を書き換える** — 失敗したのに登録簿だけ新しくすると、
+  // 一度も適用されていない値が「登録済み」として残る。
+  if (!(await saveLlm())) return;
+  const updated: AiModelProfile = {
+    ...p,
+    model: llm.value.model.trim(),
+    baseUrl: llm.value.base_url.trim(),
+    apiKey: llm.value.api_key.trim(),
+    useTools: llm.value.use_tools,
+  };
+  profiles.value = profiles.value.map((x) => (x.id === p.id ? updated : x));
+  saveAiProfiles(profiles.value);
+  selectedProfileId.value = p.id; // 一致するようになったので選択が戻る
+  // このモデルをあらすじ要約に使っているなら、そちらの env も追随させる。
+  // (追随させないと GM だけ直り、要約は古いキーのまま静かに失敗し続ける)
+  if (summaryProfileId.value === p.id) await applySummaryProfile();
+  llmStatus.value = t("settings.status.profileUpdated", { name: p.name });
 }
 
 onMounted(async () => {
@@ -1260,11 +1295,21 @@ onMounted(async () => {
             <p class="text-parchment/40 text-xs -mt-1">
               {{ t("settings.model.useToolsNote") }}
             </p>
-            <div class="flex items-center gap-3 pt-1">
+            <!-- 保存は 2 種類 (2026-08-26): .env だけ / .env と登録モデルの両方。
+                 後者は選択中の登録が無ければ押せない (書き換える先が無い)。 -->
+            <div class="flex flex-wrap items-center gap-2 pt-1">
               <button class="rounded bg-ember/80 hover:bg-ember px-3 py-1 text-sm text-ink font-bold" @click="saveLlm">
                 {{ t("settings.model.save") }}
               </button>
-              <span class="text-xs text-parchment/60">{{ llmStatus }}</span>
+              <button
+                class="rounded bg-ash/60 hover:bg-ash px-3 py-1 text-sm text-parchment disabled:opacity-40"
+                :disabled="!canUpdateProfile"
+                :title="t('settings.model.saveWithProfileTitle')"
+                @click="saveLlmAndProfile"
+              >
+                {{ t("settings.model.saveWithProfile") }}
+              </button>
+              <span class="w-full text-xs text-parchment/60">{{ llmStatus }}</span>
             </div>
             <p class="text-parchment/40 text-xs">
               {{ t("settings.model.saveNote") }}
