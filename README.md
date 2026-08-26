@@ -19,8 +19,19 @@ Get the installer for your OS from the [**latest release**](https://github.com/b
 | OS | File | Status |
 |---|---|---|
 | **Windows** | `Kataribe_x.y.z_x64-setup.exe` (installer) / `.msi` | ✅ Verified working |
-| macOS (Apple Silicon) | `.dmg` | CI build only, unverified |
+| macOS (Apple Silicon) | `.dmg` / Homebrew | Signed & notarized from v0.5.16; app itself unverified |
 | Linux | `.deb` / `.AppImage` / `.rpm` | CI build only, unverified |
+
+On macOS you can install it with Homebrew instead:
+
+```sh
+brew install --cask betyourluck/tap/kataribe
+```
+
+The fully qualified name is not optional — tapping a repository does not grant Homebrew
+permission to load code from it. Apple Silicon only; there is no Intel build.
+`brew uninstall --cask kataribe` leaves your saves, packages and API keys in place
+(`--zap` deletes those too).
 
 After launching, go to **Settings → AI Model** and set the `base_url` / `model` / `api_key` for an OpenAI-compatible endpoint (a cloud LLM, or a local OpenAI-compatible server). Play scenario packages by adding a folder or fetching them from the distribution site.
 

@@ -19,8 +19,18 @@ AI Dungeon 这类 LLM-GM 一定会崩溃的死因，不是文笔，而是**遗�
 | 操作系统 | 文件 | 状态 |
 |---|---|---|
 | **Windows** | `Kataribe_x.y.z_x64-setup.exe`（安装程序）/ `.msi` | ✅ 已验证可用 |
-| macOS（Apple Silicon） | `.dmg` | 仅 CI 构建，未验证 |
+| macOS（Apple Silicon） | `.dmg` / Homebrew | 自 v0.5.16 起已签名并公证；应用本身未验证 |
 | Linux | `.deb` / `.AppImage` / `.rpm` | 仅 CI 构建，未验证 |
+
+macOS 也可以通过 Homebrew 安装：
+
+```sh
+brew install --cask betyourluck/tap/kataribe
+```
+
+**完整限定名不可省略** —— 仅执行 tap 并不会让 Homebrew 获得加载该仓库代码的许可。
+仅支持 Apple Silicon，没有 Intel 版本。`brew uninstall --cask kataribe` 会保留存档、
+剧本包和 API 密钥（加上 `--zap` 则会一并删除）。
 
 启动后，前往 **设置 → AI 模型**，为 OpenAI 兼容端点（云端 LLM，或本地的 OpenAI 兼容服务器）设置 `base_url` / `model` / `api_key`。通过添加文件夹或从分发站点获取，即可游玩剧本包。
 

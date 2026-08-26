@@ -19,8 +19,19 @@ AI Dungeon 系の LLM-GM が必ず崩れる死因は、文章力ではなく**�
 | OS | ファイル | 状態 |
 |---|---|---|
 | **Windows** | `Kataribe_x.y.z_x64-setup.exe`（インストーラ）/ `.msi` | ✅ 動作確認済み |
-| macOS (Apple Silicon) | `.dmg` | CI ビルドのみ・未検証 |
+| macOS (Apple Silicon) | `.dmg` / Homebrew | v0.5.16 から署名・公証あり。アプリ自体は未検証 |
 | Linux | `.deb` / `.AppImage` / `.rpm` | CI ビルドのみ・未検証 |
+
+macOS は Homebrew でも入れられる:
+
+```sh
+brew install --cask betyourluck/tap/kataribe
+```
+
+**完全修飾名は省略できない** — tap しただけでは、Homebrew はそのリポジトリのコードを
+読み込む許可を得ないため。Apple Silicon 専用で、Intel 版は無い。
+`brew uninstall --cask kataribe` はセーブデータ・パッケージ・API キーを残す
+（`--zap` を付けるとそれらも消える）。
 
 起動後、**設定 → AIモデル** で OpenAI 互換エンドポイントの `base_url` / `model` / `api_key` を設定する（クラウド LLM またはローカルの OpenAI 互換サーバ）。シナリオパッケージはフォルダ追加または配布サイトから取得して遊ぶ。
 
