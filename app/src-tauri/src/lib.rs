@@ -1280,6 +1280,38 @@ async fn put_reference_bytes(
     Ok(sheets_view(&dir, max))
 }
 
+/// 同梱アセット (顔アイコン等) を参照の枠へ入れる (spec 27 追補、2026-08-26 ユーザー要望)。
+///
+/// **spec 25 が意図的に捨てた「誰の参照か」を、機械に推測させずに人が手で置く形で取り戻す経路**
+/// — 右ペインの顔アイコンを枠へドラッグすると、そのキャラの絵が参照として送られる。engine も
+/// 挿絵の機構も「誰の絵か」を知らないままでよい (照合しないという spec 25 の決定は不変)。
+///
+/// frontend は**アセット ID しか運ばない** (`set_reference_slot` と同じ流儀で IPC に bytes を
+/// 流さない)。ID の検証は `resolve_asset` が担う (`^[A-Za-z0-9._-]{1,64}$` + `..` 除外 =
+/// トラバーサル遮断、spec 01 Phase 0)。**mime は先頭バイトで嗅ぎ分ける** ので、`.svg` の
+/// アイコン (houkago の moka.svg 等) はここで「参照にできない形式」として弾かれる — 画像
+/// モデルは SVG を受け取れないので、静かに送って失敗させるより名指しで断る方がよい。
+#[tauri::command]
+async fn put_reference_from_asset(
+    app: tauri::AppHandle,
+    provider: image_gen::Provider,
+    slot: usize,
+    icon: String,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<SettingsSheetsView, String> {
+    let guard = session.lock().await;
+    let sess = guard.as_ref().ok_or("ゲームが開始されていません")?;
+    let path = resolve_asset(&sess.package_root, AssetKind::Images, &icon)
+        .ok_or("その画像がパッケージに見つかりません")?;
+    let bytes = std::fs::read(&path).map_err(|e| format!("画像を読めません: {e}"))?;
+    let mime = ref_stock::sniff_mime(&bytes)
+        .ok_or("参照にできない形式です (png/jpg/webp のみ — SVG のアイコンは使えません)")?;
+    let max = image_gen::max_refs(provider);
+    let dir = session_refs_dir(&app, sess, max)?;
+    ref_stock::put_slot(&dir, slot, mime, &bytes, max)?;
+    Ok(sheets_view(&dir, max))
+}
+
 /// 参照の枠を消して後続を前へ詰める (spec 27 A-4「削除」/ 前詰め不変条件)。0 枚まで消せる
 /// = 参照なし生成に戻る (spec 25 の byte 一致経路がそのまま受ける)。
 #[tauri::command]
@@ -4358,6 +4390,7 @@ pub fn run() {
             list_settings_sheets,
             set_reference_slot,
             put_reference_bytes,
+            put_reference_from_asset,
             delete_reference_slot,
             reseed_reference_stock,
             open_package_folder,

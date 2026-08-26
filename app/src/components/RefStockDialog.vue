@@ -73,8 +73,15 @@ async function onReseed() {
 }
 function onDrop(slot: number, e: DragEvent) {
   dragOver.value = null;
+  if (!accepts(slots.value[slot - 1])) return;
+  // 右ペインの顔アイコン (spec 27 追補) — 運ばれてくるのはアセット ID だけ。
+  const assetId = e.dataTransfer?.getData("application/x-kataribe-asset");
+  if (assetId) {
+    game.putRefFromAsset(slot, assetId);
+    return;
+  }
   const file = e.dataTransfer?.files?.[0];
-  if (file && accepts(slots.value[slot - 1])) game.putRefFile(slot, file);
+  if (file) game.putRefFile(slot, file);
 }
 </script>
 

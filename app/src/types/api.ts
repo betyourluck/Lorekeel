@@ -196,7 +196,10 @@ export interface BeatView {
 export interface CharacterView {
   id: string;
   name: string;
+  /** 表示用。store が `asset://` URL に差し替える (backend が返すのは ID)。 */
   icon: string | null;
+  /** 生のアセット ID。URL に潰れた `icon` と違い、backend へ渡せる (参照ストックへのドラッグ)。 */
+  iconId?: string | null;
 }
 
 export interface GameView {

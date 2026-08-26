@@ -369,14 +369,14 @@ export const messages = {
     refStock: {
       heading: "参照画像",
       intro:
-        "生成のたびに添付される参照画像です。番号の順に %ref_1% から送られ、空きがあれば前へ詰まります。パッケージ同梱の画像は最初に遊んだときここへ写し取られ、以後はここの現物だけが使われます。",
+        "生成のたびに添付される参照画像です。番号の順に %ref_1% から送られ、空きがあれば前へ詰まります。パッケージ同梱の画像は最初に遊んだときここへ写し取られ、以後はここの現物だけが使われます。右ペインの顔アイコンを枠へドラッグすると、そのキャラの絵を参照にできます。",
       empty: "（空）",
       put: "この絵を入れる",
       replace: "この絵に差し替える",
       needImage: "先に挿絵を生成してください",
       fromImage: "いまの挿絵を入れる",
       fromFile: "ファイルから",
-      dropHint: "クリックで選ぶ / ここに落とす",
+      dropHint: "クリックで選ぶ / ドロップ",
       converting: "WebP に変換しています……",
       fileFailed: "画像を読めませんでした: {error}",
       delete: "消す",
@@ -1031,14 +1031,14 @@ export const messages = {
     refStock: {
       heading: "Reference images",
       intro:
-        "Attached to every generation. Sent in slot order starting at %ref_1%; gaps close up. Images shipped with the package are copied here the first time you play it, and from then on only what is here is used.",
+        "Attached to every generation. Sent in slot order starting at %ref_1%; gaps close up. Images shipped with the package are copied here the first time you play it, and from then on only what is here is used. You can also drag a face icon from the right pane into a slot.",
       empty: "(empty)",
       put: "Put this image here",
       replace: "Replace with this image",
       needImage: "Generate an illustration first",
       fromImage: "Use the current illustration",
       fromFile: "From a file",
-      dropHint: "Click to choose / drop here",
+      dropHint: "Click to choose / drop",
       converting: "Converting to WebP…",
       fileFailed: "Could not read the image: {error}",
       delete: "Remove",

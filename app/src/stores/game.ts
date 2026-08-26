@@ -881,6 +881,23 @@ export const useGameStore = defineStore("game", {
         this.refStockBusy = false;
       }
     },
+    /** 同梱アセット (顔アイコン) を参照の枠へ。ID だけ送り bytes は backend が読む。 */
+    async putRefFromAsset(slot: number, icon: string): Promise<void> {
+      if (this.refStockBusy) return;
+      this.refStockBusy = true;
+      try {
+        this.refStock = await invoke("put_reference_from_asset", {
+          provider: this.imageGen.provider,
+          slot,
+          icon,
+        });
+        this.refStockRev++;
+      } catch (e) {
+        this.logToast = t("refStock.fileFailed", { error: String(e) });
+      } finally {
+        this.refStockBusy = false;
+      }
+    },
     async reseedRefStock(): Promise<void> {
       await this.refStockCommand("reseed_reference_stock", {});
     },
@@ -1453,7 +1470,7 @@ export const useGameStore = defineStore("game", {
       this.state = view.state;
       this.background = assetUrl("images", view.background);
       this.bgm = assetUrl("audios", view.bgm);
-      this.presentCharacters = view.present_characters.map((c) => ({ ...c, icon: assetUrl("images", c.icon) }));
+      this.presentCharacters = view.present_characters.map((c) => ({ ...c, iconId: c.icon, icon: assetUrl("images", c.icon) }));
       this.map = view.map ?? { nodes: [], edges: [] };
       this.log = [{ kind: "opening", text: view.description }];
       this.cacheWarned = false; // 新しいセッション = 新しいクライアント (計測もゼロから)
@@ -1981,7 +1998,7 @@ export const useGameStore = defineStore("game", {
           this.recentLog = this.recentLog.filter((l) => l.turn > s.upto_turn);
         }
         this.state = turn.state;
-        this.presentCharacters = turn.present_characters.map((c) => ({ ...c, icon: assetUrl("images", c.icon) }));
+        this.presentCharacters = turn.present_characters.map((c) => ({ ...c, iconId: c.icon, icon: assetUrl("images", c.icon) }));
         // マップ (spec 15) — 移動/遷移で backend が差し替える (却下でも現状スナップショット)。
         if (turn.map) this.map = turn.map;
         // 背景は受理ターンのみ更新する。却下 = 物語が進んでいないので現在の背景 (=直前の CG) を保つ。

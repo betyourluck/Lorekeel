@@ -19,6 +19,17 @@ const PromptDialog = defineAsyncComponent(() => import("./PromptDialog.vue"));
 const game = useGameStore();
 const showRefStock = ref(false);
 const showPrompt = ref(false);
+// ボタンは開閉のトグル (ユーザーFB 2026-08-26 — ✕ を探すより押した所で閉じる方が自然)。
+// **排他**にするのは、浮遊パネルが 2 枚とも会話ペイン右下の同じ位置に出るから — 両方 ON に
+// できると 1 枚しか見えないのにボタンは 2 つとも「開いている」と映り、状態表示が嘘になる。
+function toggleRefStock() {
+  showPrompt.value = false;
+  showRefStock.value = !showRefStock.value;
+}
+function togglePrompt() {
+  showRefStock.value = false;
+  showPrompt.value = !showPrompt.value;
+}
 
 const genLabel = computed(() => (game.imageBusy ? t("image.generating") : t("image.generate")));
 const imageToggleLabel = computed(() =>
@@ -53,9 +64,11 @@ const textToggleLabel = computed(() => (game.showText ? t("image.hideText") : t(
       class="p-1.5 rounded-full text-glow/60 hover:text-ember hover:bg-glow/10 transition-colors
              disabled:opacity-50"
       :disabled="!game.started"
+      :class="{ 'text-ember bg-glow/10': showRefStock }"
       :title="t('refStock.heading')"
       :aria-label="t('refStock.heading')"
-      @click="showRefStock = true"
+      :aria-expanded="showRefStock"
+      @click="toggleRefStock"
     >
       <Icon name="folder" :size="15" />
     </button>
@@ -65,9 +78,11 @@ const textToggleLabel = computed(() => (game.showText ? t("image.hideText") : t(
       class="p-1.5 rounded-full text-glow/60 hover:text-ember hover:bg-glow/10 transition-colors
              disabled:opacity-50"
       :disabled="!game.started"
+      :class="{ 'text-ember bg-glow/10': showPrompt }"
       :title="t('promptWorkshop.heading')"
       :aria-label="t('promptWorkshop.heading')"
-      @click="showPrompt = true"
+      :aria-expanded="showPrompt"
+      @click="togglePrompt"
     >
       <Icon name="pencil" :size="15" />
     </button>

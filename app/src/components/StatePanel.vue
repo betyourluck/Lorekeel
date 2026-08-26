@@ -94,6 +94,16 @@ function onKeydown(e: KeyboardEvent) {
 }
 onMounted(() => window.addEventListener("keydown", onKeydown));
 onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
+// 顔アイコンを参照ストックの枠へドラッグできる (spec 27 追補、2026-08-26 ユーザー要望)。
+// **spec 25 が捨てた「誰の参照か」を、機械でなく人が置く形で取り戻す経路** — 運ぶのは
+// アセット ID だけで、bytes は backend が読む。ID を持たない (アイコン未設定の) キャラは
+// draggable にしない = 掴めない見た目が「置けない」を先に伝える。
+function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
+  if (!c.iconId || !e.dataTransfer) return;
+  e.dataTransfer.setData("application/x-kataribe-asset", c.iconId);
+  e.dataTransfer.effectAllowed = "copy";
+}
+
 </script>
 
 <template>
@@ -231,7 +241,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
                 :key="c.id"
                 class="flex flex-col items-center gap-1 group focus:outline-none"
                 :title="assignmentOf(c.id) ? `${c.name} — ${t('state.playedBy', { name: assignmentOf(c.id)!.displayName })}` : c.name"
+                :draggable="!!c.iconId"
                 @click="selectedId = c.id"
+                @dragstart="onIconDragStart(c, $event)"
               >
                 <!-- アイコンは CSS background で描画 (asset protocol の MIME に寛容)。無ければ initials。 -->
                 <!-- 多人数: 操作プレイヤーの席色リング (青=1人目/赤=2人目/黄=3人目…) で誰の手駒かを可視化。 -->
