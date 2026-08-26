@@ -6,7 +6,6 @@
 // プロバイダ切替は表示スロットの切替だけで、値は一切失われない (旧ヒューリスティック
 // 「既定値なら差し替え」は撤去 — A 用のカスタム URL が B へ漏れる事故の根治)。
 import comfyGeneric from "./assets/comfy_generic.json";
-import comfyKrea2Ref from "./assets/comfy_krea2_ref.json";
 
 export type ImageProvider = "openai" | "gemini" | "comfy";
 export type ImageShape = "square" | "landscape" | "portrait";
@@ -64,13 +63,29 @@ export const DEFAULT_MODEL: Record<ImageProvider, string> = {
 
 const PROVIDERS: ImageProvider[] = ["openai", "gemini", "comfy"];
 
+/**
+ * ComfyUI の negative の既定値 (2026-08-26 実測)。
+ *
+ * **空だと機能が壊れる欄なので、ここだけは値を焼く** (2026-08-20 に AI モデル欄の焼き込み既定を
+ * 撤去したのとは逆向きの判断。あちらは値を入れると誤解と意図しない課金が生まれる欄、こちらは
+ * 空でも普通に動いてしまい、出てきた絵が悪いことしか手がかりが無い)。
+ *
+ * 後半 4 語が参照画像 (spec 25/27) 由来の症状に効く — Krea 2 の参照は `reference_latents` で
+ * トークンごと連結されるので**参照の無地背景まで素材として扱われ**、灰色の帯や枠つきビネット、
+ * コマ割りとして画面に残る (2026-08-22 LAN 実機 n=1 → 2026-08-26 別盤面で n=2)。押し返す語は
+ * これしかレバーが無く、完全には消えない (作者の調整が要る)。
+ */
+const COMFY_DEFAULT_NEGATIVE =
+  "lowres, bad anatomy, low quality, blurry, jpeg artifacts, " +
+  "grey background, plain background, border, split screen";
+
 /** スロットの既定値 (移行・部分欠損の埋め草)。baseUrl/model は UI placeholder と同じ既定。 */
 export function defaultSlot(p: ImageProvider): ProviderSlot {
   return {
     baseUrl: DEFAULT_BASE_URL[p],
     model: DEFAULT_MODEL[p],
     style: "",
-    negative: "",
+    negative: p === "comfy" ? COMFY_DEFAULT_NEGATIVE : "",
     workflowJson: "",
     timeoutSecs: 0,
   };
@@ -192,17 +207,23 @@ export function genericComfyWorkflow(): string {
 }
 
 /**
- * 同梱の参照画像つきワークフロー (Krea 2 Turbo、API 形式)。設定画集を `%ref_1%`〜`%ref_3%` =
- * `TextEncodeQwenImageEditPlus.image1..3` へ差す。足りない分の LoadImage は backend が外すので
- * 画集 0〜3 枚をこの 1 本で受ける (spec 25 改訂 2026-08-22)。
+ * ワークフロー JSON が差し込み先を持つか (設定タブの警告用、純関数)。
+ *
+ * 置換語が無いと **Kataribe は正しく送っているのに受け取り口が無い** という沈黙の失敗になる
+ * (2026-08-26: seed を固定したのに絵が変わる、の切り分けで二度足を止めた形)。呼び出し側は
+ * **落ちる値が実際に在るときだけ**警告すること — 画集が 0 枚・seed 非固定・negative 空欄なら
+ * 差し込み先が無くても何も失われないので、鳴らすと誤警告になる (`workflowNoRefs` と同じ規則)。
  */
-export function krea2RefComfyWorkflow(): string {
-  return JSON.stringify(comfyKrea2Ref, null, 2);
-}
-
-/** ワークフロー JSON が参照画像の差し込み先 `%ref_1%` を持つか (設定タブの警告用、純関数)。 */
 export function workflowAcceptsRefs(workflowJson: string): boolean {
   return /%ref_1%/.test(workflowJson);
+}
+
+export function workflowAcceptsSeed(workflowJson: string): boolean {
+  return /%seed%/.test(workflowJson);
+}
+
+export function workflowAcceptsNegative(workflowJson: string): boolean {
+  return /%negative%/.test(workflowJson);
 }
 
 /** backend `image_gen::ImageGenConfig` の形 (snake_case)。 */

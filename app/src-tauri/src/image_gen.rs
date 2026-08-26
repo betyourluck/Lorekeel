@@ -1395,7 +1395,7 @@ mod live {
         run_with_sheet(Provider::Gemini, &k).await;
     }
 
-    /// ComfyUI 参照 live (spec 25 改訂 2026-08-22)。同梱テンプレート `comfy_krea2_ref.json` (%ref_1..3%) を
+    /// ComfyUI 参照 live (spec 25 改訂 2026-08-22)。テスト用フィクスチャ `testdata/comfy_ref_workflow.json` (%ref_1..3%) を
     /// **Kataribe の実経路** (upload → 置換 → 剪定 → /prompt → ポーリング → /view) で通す。
     /// 1 枚 (LoadImage 2 つを剪定) と 0 枚 (3 つ全部剪定・エンコーダは画像なし) の両方が PNG を返すこと。
     /// `COMFY_BASE_URL` (例 http://192.168.0.3:8188) と `KATARIBE_SHEET` が要る。
@@ -1417,7 +1417,7 @@ mod live {
             style: None,
             user_prefix: String::new(),
             negative: "low quality, bad anatomy".into(),
-            workflow_json: Some(include_str!("../../src/assets/comfy_krea2_ref.json").to_string()),
+            workflow_json: Some(include_str!("testdata/comfy_ref_workflow.json").to_string()),
             timeout_secs: None,
             lock_seed: false,
             seed: 0,

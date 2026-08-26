@@ -33,8 +33,9 @@ import {
   DEFAULT_BASE_URL,
   DEFAULT_MODEL,
   genericComfyWorkflow,
-  krea2RefComfyWorkflow,
   workflowAcceptsRefs,
+  workflowAcceptsSeed,
+  workflowAcceptsNegative,
   supportsNegative,
   toBackendConfig,
   type ImageGenSettings,
@@ -220,16 +221,28 @@ async function loadDefaultImageDir() {
 function insertGenericWorkflow() {
   setSlot({ workflowJson: genericComfyWorkflow() });
 }
-function insertKrea2RefWorkflow() {
-  setSlot({ workflowJson: krea2RefComfyWorkflow() });
-}
-// 画集が見つかっているのにワークフローに差し込み先が無い = 送られても使われない沈黙の失敗を見せる。
+// ワークフローに差し込み先が無い = 送られても使われない沈黙の失敗を見せる。**落ちる値が実際に
+// 在るときだけ**鳴らす (画集 0 枚・seed 非固定・negative 空欄なら何も失われないので誤警告になる)。
+const hasComfyWorkflow = computed(
+  () => img.value.provider === "comfy" && slot.value.workflowJson.trim() !== "",
+);
 const workflowIgnoresSheets = computed(
   () =>
-    img.value.provider === "comfy" &&
+    hasComfyWorkflow.value &&
     (sheets.value?.picked.length ?? 0) > 0 &&
-    slot.value.workflowJson.trim() !== "" &&
     !workflowAcceptsRefs(slot.value.workflowJson),
+);
+// seed を固定したのにワークフローに %seed% が無いと、ComfyUI 側の乱数で毎回別の絵になる
+// (2026-08-26: A/B が立たない原因の切り分けで実際に候補になった)。
+const workflowIgnoresSeed = computed(
+  () => hasComfyWorkflow.value && img.value.lockSeed && !workflowAcceptsSeed(slot.value.workflowJson),
+);
+// negative を書いたのに %negative% が無ければ、その一行は届かない。
+const workflowIgnoresNegative = computed(
+  () =>
+    hasComfyWorkflow.value &&
+    slot.value.negative.trim() !== "" &&
+    !workflowAcceptsNegative(slot.value.workflowJson),
 );
 // 設定画集 (spec 25): 今の盤面で見つかったもの。置いたのに効かないとき理由が見える。
 // spec 27: dir は**セッションフォルダ** (package の settings_sheets は種として写し取り済み)。
@@ -1016,15 +1029,13 @@ onMounted(async () => {
                 >
                   {{ t("settings.image.insertGeneric") }}
                 </button>
-                <button
-                  class="rounded bg-ash/40 hover:bg-ash/70 px-3 py-1 text-sm text-parchment/80"
-                  @click="insertKrea2RefWorkflow"
-                >
-                  {{ t("settings.image.insertKrea2Ref") }}
-                </button>
                 <span class="text-parchment/40 text-xs">{{ t("settings.image.workflowNote") }}</span>
               </div>
               <p v-if="workflowIgnoresSheets" class="text-xs text-ember">{{ t("settings.image.workflowNoRefs") }}</p>
+              <p v-if="workflowIgnoresSeed" class="text-xs text-ember">{{ t("settings.image.workflowNoSeed") }}</p>
+              <p v-if="workflowIgnoresNegative" class="text-xs text-ember">
+                {{ t("settings.image.workflowNoNegative") }}
+              </p>
             </div>
             <div class="flex flex-wrap gap-3 items-end">
               <label class="block text-sm text-parchment/70">

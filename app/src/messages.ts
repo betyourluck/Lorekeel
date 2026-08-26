@@ -225,9 +225,12 @@ export const messages = {
         workflow: "ワークフロー JSON（API 形式）",
         workflowPlaceholder: "ComfyUI で「Save (API Format)」したワークフローを貼り付け。%prompt% / %negative% / %seed% / %width% / %height% が置換され、設定画集は %ref_1%〜%ref_3% (LoadImage の image) に差し込まれます。",
         insertGeneric: "汎用ワークフローを挿入",
-        insertKrea2Ref: "参照画像つき (Krea 2 Turbo) を挿入",
         workflowNote: "挿入後、モデル名を自分の環境に合わせて書き換えてください。ComfyUI で一度開いて確認するのが確実です。",
         workflowNoRefs: "⚠ このワークフローには参照画像の差し込み先 (%ref_1%) がありません。設定画集は送られても使われません。",
+        workflowNoSeed:
+          "⚠ このワークフローには %seed% がありません。シード値を固定しても ComfyUI 側の乱数で毎回別の絵になります。",
+        workflowNoNegative:
+          "⚠ このワークフローには %negative% がありません。上のネガティブは送られません。",
         timeout: "タイムアウト（秒）",
         opacity: "挿絵の不透明度: {value}%",
         probe: "接続テスト",
@@ -235,7 +238,7 @@ export const messages = {
         lockSeed: "シードを固定する",
         seed: "シード値",
         lockSeedHint:
-          "参照画像やプロンプトを差し替えて見比べるときに使います。固定しないと毎回サンプリングの運が混じるので、変えた分の効果が読めません（シードを持つのは ComfyUI だけです）。",
+          "参照画像やプロンプトを差し替えて比べるときに使います。プロンプト工房の「そのまま生成」と対で使ってください — シードだけ固定しても、毎回プロンプトを書き直すので絵は一致しません（シードがあるのは ComfyUI だけです）。",
         sheetsHeading: "設定画集（参照画像）",
         sheetsIntro:
           "生成の参照として添付する画像です。パッケージの images/settings_sheets/ に置かれたものは、そのパッケージで最初に遊ぶときにセッションへ写し取られ、以後はここに出ている現物だけが使われます（写し取り後はパッケージ側を見ません）。1 枚に複数人の立ち絵と名前、背景をまとめた「設定資料集」の形で作ると、挿絵の見た目がそれに寄ります。",
@@ -883,9 +886,12 @@ export const messages = {
         workflow: "Workflow JSON (API format)",
         workflowPlaceholder: "Paste a workflow exported with ComfyUI's \"Save (API Format)\". %prompt% / %negative% / %seed% / %width% / %height% are substituted; reference sheets go into %ref_1%–%ref_3% (LoadImage.image).",
         insertGeneric: "Insert generic workflow",
-        insertKrea2Ref: "Insert reference-image workflow (Krea 2 Turbo)",
         workflowNote: "After inserting, change the model names to match your setup. Opening it once in ComfyUI is the safest check.",
         workflowNoRefs: "⚠ This workflow has no slot for reference images (%ref_1%). Reference sheets will be uploaded but not used.",
+        workflowNoSeed:
+          "⚠ This workflow has no %seed%. Locking the seed has no effect — ComfyUI will roll its own each run.",
+        workflowNoNegative:
+          "⚠ This workflow has no %negative%. The negative prompt above will not be sent.",
         timeout: "Timeout (seconds)",
         opacity: "Illustration opacity: {value}%",
         probe: "Test connection",
@@ -893,7 +899,7 @@ export const messages = {
         lockSeed: "Lock the seed",
         seed: "Seed",
         lockSeedHint:
-          "Use this when comparing reference images or prompts. Without it every run rolls a different sample, so you cannot tell what your change did (only ComfyUI has a seed).",
+          "Use this when comparing reference images or prompts. Pair it with the prompt workshop’s \"Send as-is\": locking the seed alone is not enough, because the prompt is rewritten on every run (only ComfyUI has a seed).",
         sheetsHeading: "Reference sheets",
         sheetsIntro:
           "Images attached as references when generating. Whatever the package ships in images/settings_sheets/ is copied into the session the first time you play it; from then on only what is listed here is used (the package folder is no longer read). Make them like a character sheet — several characters with their names written, backgrounds collected — and illustrations will follow their look.",
