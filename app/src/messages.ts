@@ -715,9 +715,7 @@ export const messages = {
       mediaDropHint: "画像・音声をここにドロップして追加",
       mediaEmpty: "アセットはまだありません",
       mediaNote:
-        "ファイル名がそのままアセット ID です — YAML の image / bgm / sound / icon 欄に書きます。クリックで ID をコピー。画像は WebP へ変換して取り込みます (音声は原本のまま — Ogg 推奨)。",
-      assetCopyTitle: "アセット ID をコピー",
-      assetCopied: "{id} をコピーしました",
+        "ファイル名がそのままアセット ID です — YAML の image / bgm / sound / icon 欄に書きます (エディタの補完に出ます)。クリックでプレビュー、ダブルクリックで名前を変更。画像は WebP へ変換して取り込みます (音声は原本のまま — Ogg 推奨)。",
       mediaAdded: "{file} を追加しました",
       mediaAddedMany: "{n} 件を追加しました",
       mediaCropped: "{file} を切り抜きました",
@@ -736,7 +734,7 @@ export const messages = {
       newFilePlaceholder: "ファイル名 (例: chapter2.yaml)",
       rowTitle: "クリックで開く / ダブルクリックで名前を変える",
       headerTitle: "ダブルクリック (または F2) で名前を変える",
-      assetRowTitle: "クリックで ID をコピー / ダブルクリックで名前を変える",
+      assetRowTitle: "クリックでプレビュー (画像は拡大 / 音声は再生) / ダブルクリックで名前を変える",
       assetRenameTitle:
         "名前を変えても YAML の image / bgm / sound / icon 欄は追随しません — 参照している側も直してください",
       newTitle_character:
@@ -1456,9 +1454,7 @@ export const messages = {
       mediaDropHint: "Drop images or audio here to add",
       mediaEmpty: "No assets yet",
       mediaNote:
-        "The file name is the asset id — write it in a YAML image / bgm / sound / icon field. Click to copy the id. Images are converted to WebP on import (audio is kept as-is — Ogg recommended).",
-      assetCopyTitle: "Copy asset id",
-      assetCopied: "Copied {id}",
+        "The file name is the asset id — write it in a YAML image / bgm / sound / icon field (it shows up in the editor's completion). Click to preview, double-click to rename. Images are converted to WebP on import (audio is kept as-is — Ogg recommended).",
       mediaAdded: "Added {file}",
       mediaAddedMany: "Added {n} files",
       mediaCropped: "Cropped {file}",
@@ -1477,7 +1473,7 @@ export const messages = {
       newFilePlaceholder: "file name (e.g. chapter2.yaml)",
       rowTitle: "Click to open / double-click to rename",
       headerTitle: "Double-click (or F2) to rename",
-      assetRowTitle: "Click to copy the id / double-click to rename",
+      assetRowTitle: "Click to preview (image opens / audio plays) / double-click to rename",
       assetRenameTitle:
         "Renaming does not update YAML image / bgm / sound / icon fields — fix the references too",
       newTitle_character:

@@ -72,16 +72,54 @@ function mediaUrl(relPath: string): string {
   return `${convertFileSrc(abs)}?v=${game.editor.mediaRev}`;
 }
 
-/** アセット ID をクリップボードへ (YAML の image/bgm/sound/icon 欄へ貼るため)。 */
-async function copyAssetId(relPath: string) {
-  const id = relPath.split("/").pop() ?? relPath;
-  try {
-    await navigator.clipboard.writeText(id);
-    game.logToast = t("editor.assetCopied", { id });
-  } catch {
-    game.logToast = id; // クリップボードが使えない環境では名前だけ見せる
+// クリックは**プレビュー** (2026-08-28 ユーザーFB「コピーは意味がない・プレビューが嬉しい」)。
+// ID をコピーする経路は撤去した — 補完 (Phase C) が YAML を書く手元で ID を出すので、
+// 一覧からコピーして貼る手順は二重だった。一覧の仕事は「どんな絵か・どんな音か」を見せること。
+const preview = ref<string | null>(null); // 拡大表示中の画像 (asset:// URL)
+const playingAudio = ref<string | null>(null); // 再生中の音声 (relPath)
+let audio: HTMLAudioElement | null = null;
+
+/** 音声のプレビュー: クリックで再生、もう一度で停止。別の行を押したら前を止める。
+ *  **サウンド設定 (音量/ミュート) は通さない** — 作者が中身を確かめる操作で、
+ *  ミュート中に無反応だと「壊れている」と読める (プレイの SE とは役割が違う)。 */
+function toggleAudio(relPath: string) {
+  if (audio) {
+    audio.pause();
+    audio = null;
   }
+  if (playingAudio.value === relPath) {
+    playingAudio.value = null;
+    return;
+  }
+  audio = new Audio(mediaUrl(relPath));
+  audio.onended = () => {
+    playingAudio.value = null;
+    audio = null;
+  };
+  playingAudio.value = relPath;
+  void audio.play().catch((e) => {
+    game.logToast = String(e);
+    playingAudio.value = null;
+    audio = null;
+  });
 }
+
+// 編集モードを出る / 別のパッケージへ移るときに鳴りっぱなしにしない。
+watch(
+  () => game.editor.on,
+  (on) => {
+    if (!on) {
+      audio?.pause();
+      audio = null;
+      playingAudio.value = null;
+      preview.value = null;
+    }
+  },
+);
+onBeforeUnmount(() => {
+  audio?.pause();
+  audio = null;
+});
 
 function onDrop(e: DragEvent) {
   dropping.value = false;
@@ -378,7 +416,8 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
                   v-if="g.category === 'image'"
                   :src="mediaUrl(f.relPath)"
                   alt=""
-                  class="h-6 w-6 shrink-0 rounded object-cover bg-ash/40"
+                  class="h-6 w-6 shrink-0 cursor-zoom-in rounded object-cover bg-ash/40"
+                  @click="preview = mediaUrl(f.relPath)"
                 />
                 <!-- 改名はテキスト側と同じ流儀 (ダブルクリック → その行が入力欄になる)。
                      **アセットは参照が lint の射程外**なので、名前を変えたら YAML 側の
@@ -395,12 +434,17 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
                 />
                 <template v-else>
                   <button
-                    class="min-w-0 flex-1 text-left px-1.5 py-1 rounded text-xs font-mono truncate text-parchment/70 hover:bg-ash/40 hover:text-parchment transition-colors"
+                    class="min-w-0 flex-1 text-left px-1.5 py-1 rounded text-xs font-mono truncate transition-colors"
+                    :class="
+                      playingAudio === f.relPath
+                        ? 'bg-ember/15 text-glow'
+                        : 'text-parchment/70 hover:bg-ash/40 hover:text-parchment'
+                    "
                     :title="t('editor.assetRowTitle')"
-                    @click="copyAssetId(f.relPath)"
+                    @click="g.category === 'image' ? (preview = mediaUrl(f.relPath)) : toggleAudio(f.relPath)"
                     @dblclick.prevent="startRename(f.relPath)"
                   >
-                    {{ f.relPath.split("/").pop() }}
+                    <span v-if="g.category === 'audio'" class="mr-1 text-[10px]">{{ playingAudio === f.relPath ? "■" : "▶" }}</span>{{ f.relPath.split("/").pop() }}
                   </button>
                   <!-- クロップ (画像のみ)。同じ ID へ上書きするので YAML は書き直さなくてよい。 -->
                   <button
@@ -844,6 +888,15 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
         </div>
       </div>
     </Transition>
+
+    <!-- 画像のプレビュー (2026-08-28)。どこを押しても閉じる — 見るだけの層に操作を置かない。 -->
+    <div
+      v-if="preview"
+      class="fixed inset-0 z-50 flex cursor-zoom-out items-center justify-center bg-black/80 p-8"
+      @click="preview = null"
+    >
+      <img :src="preview" alt="" class="max-h-full max-w-full object-contain" />
+    </div>
 
     <!-- クロップ (spec 28 追補)。動的 import — 触らないセッションで読み込まない。 -->
     <CropDialog v-if="cropping" :src="cropping.src" :rel-path="cropping.relPath" @close="cropping = null" />
