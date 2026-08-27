@@ -122,8 +122,18 @@ pub fn inspect_package(dir: &Path) -> InspectReport {
         }
     } else {
         match crate::package::load_package(dir) {
-            // load_package の warnings は manifest lint + entry シナリオの未知キー/lint 込み。
-            Ok(loaded) => report.warnings.extend(loaded.warnings),
+            // load_package の warnings は manifest lint + entry の未知キーまで。
+            // `Scenario::lints` (死んだ参照・専権フラグへの flag_hint 等) はここで足す —
+            // campaign 分岐は元から足していたのに単発分岐だけ抜けていた既存の穴
+            // (app の開幕 ⚠ は別経路で足すので隠れていた。spec 28 Phase B で発見)。
+            Ok(loaded) => {
+                report.warnings.extend(loaded.warnings);
+                report.warnings.extend(
+                    crate::scenario_lint_messages(&loaded.scenario)
+                        .into_iter()
+                        .map(|l| format!("{}: {l}", loaded.manifest.entry)),
+                );
+            }
             Err(e) => report.errors.push(describe(&e)),
         }
     }
@@ -239,5 +249,48 @@ mod tests {
         let r = inspect_scenario_file(&path);
         assert!(r.warnings.iter().any(|w| w.contains("entry")), "{:?}", r.warnings);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// 【単発 entry も `Scenario::lints` を報告する】(spec 28 Phase B で発見した既存の穴)。
+    /// campaign 分岐は `scenario_lint_messages` を足していたのに、単発分岐は
+    /// `load_package` の warnings (= manifest lint + 未知キーのみ) しか見ておらず、
+    /// 死んだ参照・専権フラグへの flag_hint 等の lint が **`play lint` では出ていなかった**
+    /// (app の開幕 ⚠ は別経路で足すので隠れていた)。
+    #[test]
+    fn single_entry_package_reports_scenario_lints() {
+        let dir = std::env::temp_dir()
+            .join(format!("kataribe_inspect_lints_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("scenarios")).unwrap();
+        std::fs::write(dir.join("package.yaml"), "title: t\nentry: scenarios/main.yaml\n").unwrap();
+        // flag_hints をトリガー専権フラグに付ける = FlagHintOnAuthoredOnly (lint・非 fatal)。
+        std::fs::write(
+            dir.join("scenarios/main.yaml"),
+            concat!(
+                "title: 盤面\nstart: room\n",
+                "goal: { kind: flag_is, key: done, value: true }\n",
+                "locations:\n  room:\n    description: 部屋\n",
+                "allowed_flags: [done]\n",
+                "flag_hints:\n  done: 済んだら立つ\n",
+                "triggers:\n  - id: t1\n    when: { kind: flag_is, key: done, value: true }\n",
+                "    narration: ✦\n    effects:\n      - { op: set_flag, key: done, value: true }\n",
+            ),
+        )
+        .unwrap();
+
+        let r = inspect_package(&dir);
+        assert!(r.errors.is_empty(), "lint は非 fatal のはず: {:?}", r.errors);
+        assert!(
+            r.warnings.iter().any(|w| w.contains("flag_hint") && w.contains("done")),
+            "単発 entry の Scenario::lints が warnings に載る: {:?}",
+            r.warnings
+        );
+        // 帰属: entry の相対パスが接頭に付く (エディタ層 2 のファイル紐づけの素)。
+        assert!(
+            r.warnings.iter().any(|w| w.starts_with("scenarios/main.yaml: ")),
+            "entry パスで帰属できる形: {:?}",
+            r.warnings
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

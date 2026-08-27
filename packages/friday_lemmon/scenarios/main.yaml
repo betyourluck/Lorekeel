@@ -30,22 +30,10 @@ flag_rules:
     key: cafe_key_obtained
     value: true
 
-flag_hints:
-  met_akari: 商店街で依頼人と話す
-  met_genzo: 喫茶店内で店主と話す
-  met_reiko: 金曜日の謎の女性と出会う
-  heard_lemon_pie: レモンパイの噂を聞く
-  cafe_key_obtained: 合鍵を手に入れる
-  kitchen_open: 厨房の鍵を開ける
-  found_recipe_note: レシピノートの端書きに気づく
-  found_old_photo: 2階の古い写真を見つける
-  found_diary: 源蔵の日記を読む
-  noticed_ring: 玲子とあかりの指輪の一致に気づく
-  reiko_identity_hint: 玲子が本音を漏らす
-  reminiscence_solved: 表向きの謎が解ける条件
-  truth_noticed: 家族の真実に気づける条件
-  family_reunion: 真実を3人に伝える
-  gentle_lie: 真実を知りつつ黙る
+# flag_hints は 2026-08-27 に全撤去 (spec 28 Phase B の inspect 修正で発覚した死に荷物)。
+# 全フラグがトリガー効果の専権 = GM の usable 語彙に出ず、ヒントはどこにも表示されて
+# いなかった (FlagHintOnAuthoredOnly lint の真陽性 15 件)。立てるのは筋書き (トリガー) の
+# 役割で完結している。挙動変化ゼロ。
 
 flag_titles:
   met_akari: 依頼人との再会
