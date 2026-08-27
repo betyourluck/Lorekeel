@@ -231,10 +231,23 @@ export interface EditorState {
   savedText: string;
   /** 保存の往復中 (Ctrl+S 連打の二重送信防止)。 */
   saving: boolean;
+  /** 層 2 診断 (spec 28 Phase B): パッケージ全体の inspect 結果。編集モード入場時と
+   *  保存成功時に更新。file が引けた行はクリックでそのファイルへ。 */
+  issues: { file: string | null; severity: string; message: string }[];
 }
 
 export function freshEditorState(): EditorState {
-  return { on: false, root: "", files: [], fromSite: false, current: "", text: "", savedText: "", saving: false };
+  return {
+    on: false,
+    root: "",
+    files: [],
+    fromSite: false,
+    current: "",
+    text: "",
+    savedText: "",
+    saving: false,
+    issues: [],
+  };
 }
 
 /** 席色 (participants 宣言順)。青=1人目 / 赤=2人目 / 黄=3人目… (ユーザーFB 2026-07-23)。 */
@@ -1010,8 +1023,21 @@ export const useGameStore = defineStore("game", {
           files: view.files.map((f) => ({ relPath: f.rel_path, category: f.category })),
           fromSite: view.from_site,
         };
+        // 入場時にも層 2 を一度走らせる (開幕 ⚠ の内容を直しに来る動線 — 保存する前に
+        // 何が悪いかが見えていないと、直す対象を別画面で覚えてくる羽目になる)。
+        void this.refreshEditorIssues();
       } catch (e) {
         this.logToast = String(e);
+      }
+    },
+
+    /** 層 2 診断の更新 (spec 28 Phase B)。失敗は沈黙 (層 1 が主・こちらは補助)。 */
+    async refreshEditorIssues() {
+      if (!this.editor.on) return;
+      try {
+        this.editor.issues = await invoke<EditorState["issues"]>("inspect_editor_package");
+      } catch {
+        /* 沈黙 */
       }
     },
 
@@ -1070,6 +1096,8 @@ export const useGameStore = defineStore("game", {
         } else {
           this.logToast = t("editor.saved", { file: ed.current });
         }
+        // 保存のたびに層 2 を更新 (ファイル横断の破れ — 幻フラグ・死んだ参照 — はここでしか出ない)。
+        void this.refreshEditorIssues();
       } catch (e) {
         this.logToast = String(e);
       } finally {

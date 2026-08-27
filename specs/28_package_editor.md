@@ -7,7 +7,18 @@ app backend 54 green（ignored 7）・clippy clean・vue-tsc + vite build green
 （main 346KB / CodeEditor 418KB の別 chunk 維持）。GUI 目視残。
 バッジの置き場は A.4 の「ファイルタブ上部」でなく**エディタヘッダ**（保存ボタンの隣 =
 フォーク確認が発生する場所の直近。事前認知の意図はこちらの方が満たす）。
-残 = Phase B（診断）/ C（補完）/ D（characters/ 新規作成）
+**Phase B も同日実装済**。PoC: app `editor_lint` 5 本（parse の正確な行 / 親キー列の
+絞り込みと誤爆なし / 位置なしフォールバック / kind 別 / 帰属 4 種）+ harness 1 本
+Red→Green。app backend 59 green・workspace 295 green。
+Phase B の小追補 2 つ: ①層 2 は**編集モード入場時にも**一度走らせる（保存時だけだと、
+開幕 ⚠ を直しに来た人が直す対象を別画面で覚えてくる羽目になる）②実装中に
+**既存の穴を発見して修正** — `inspect_package` の単発 entry 分岐が `Scenario::lints`
+（死んだ参照・専権フラグへの flag_hint）を報告していなかった（campaign 分岐は足して
+いた・app 開幕 ⚠ は別経路で足すので隠れていた = `play lint` の単発パッケージだけ
+lint が落ちていた）。塞いだ結果 friday_lemmon から**真陽性 15 件**（flag_hints 全部が
+トリガー専権フラグ宛て = どこにも表示されない死に荷物）が出て、ブロックごと撤去
+（挙動変化ゼロ）。
+残 = Phase C（補完）/ D（characters/ 新規作成）+ GUI 目視
 
 ## 動機
 

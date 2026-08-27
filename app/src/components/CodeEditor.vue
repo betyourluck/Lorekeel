@@ -14,7 +14,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirro
 import { json, jsonParseLinter } from "@codemirror/lang-json";
 import { yaml } from "@codemirror/lang-yaml";
 import { defaultHighlightStyle, syntaxHighlighting } from "@codemirror/language";
-import { linter } from "@codemirror/lint";
+import { linter, lintGutter, type Diagnostic } from "@codemirror/lint";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
 import { Compartment, EditorState } from "@codemirror/state";
 import {
@@ -35,6 +35,13 @@ import { theme } from "../theme";
  *  `yaml` = 構文色のみ (spec 28 — 診断は Phase B で backend の既存 lint を linter() に繋ぐ)。 */
 type EditorLanguage = "text" | "json" | "yaml";
 
+/** 外部診断 1 件 (spec 28 Phase B)。line は 1 始まり、null = 位置なし (先頭に出す)。 */
+export interface EditorLintIssue {
+  line: number | null;
+  severity: string;
+  message: string;
+}
+
 const props = withDefaults(
   defineProps<{
     modelValue: string;
@@ -43,8 +50,11 @@ const props = withDefaults(
     readonly?: boolean;
     /** エディタの高さ (CSS 値)。 */
     height?: string;
+    /** 外部診断の供給源 (spec 28 Phase B)。与えると linter (デバウンス 500ms) + ガターが付く。
+     *  検査そのものは backend の既存 lint — ここは位置を範囲へ写すだけ。 */
+    lintProvider?: (text: string) => Promise<EditorLintIssue[]>;
   }>(),
-  { language: "text", placeholder: "", readonly: false, height: "16rem" },
+  { language: "text", placeholder: "", readonly: false, height: "16rem", lintProvider: undefined },
 );
 
 const emit = defineEmits<{ (e: "update:modelValue", value: string): void }>();
@@ -109,15 +119,36 @@ function editorTheme(dark: boolean, height: string) {
   );
 }
 
+/** 外部診断 → CodeMirror Diagnostic。行が document の範囲内ならその行全体、外/なしは先頭。 */
+function externalLinter(provider: (text: string) => Promise<EditorLintIssue[]>) {
+  return linter(
+    async (view) => {
+      const issues = await provider(view.state.doc.toString());
+      const doc = view.state.doc;
+      return issues.map((i): Diagnostic => {
+        const severity = i.severity === "error" ? "error" : "warning";
+        if (i.line && i.line >= 1 && i.line <= doc.lines) {
+          const ln = doc.line(i.line);
+          return { from: ln.from, to: ln.to, severity, message: i.message };
+        }
+        return { from: 0, to: 0, severity, message: i.message };
+      });
+    },
+    { delay: 500 },
+  );
+}
+
 onMounted(() => {
   if (!host.value) return;
   const withLineNumbers = props.language !== "text" ? [lineNumbers(), highlightActiveLineGutter()] : [];
+  const withLint = props.lintProvider ? [lintGutter(), externalLinter(props.lintProvider)] : [];
   editor = new EditorView({
     parent: host.value,
     state: EditorState.create({
       doc: props.modelValue,
       extensions: [
         ...withLineNumbers,
+        ...withLint,
         highlightSpecialChars(),
         history(),
         drawSelection(),

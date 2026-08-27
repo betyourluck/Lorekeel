@@ -253,7 +253,32 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
             </li>
           </ul>
         </div>
-        <!-- 境界の常設 (spec 28 C.3 の前段 — Phase B で診断一覧が入っても残す)。 -->
+        <!-- 層 2 診断 (spec 28 Phase B): パッケージ全体の inspect。ファイル横断の破れは
+             ここにしか出ない。file が引けた行はクリックでそのファイルへ。 -->
+        <div v-if="game.editor.issues.length" class="mt-3 border-t border-ash pt-2">
+          <div class="text-parchment/40 mb-1.5 text-xs">
+            {{ t("editor.issuesTitle", { n: String(game.editor.issues.length) }) }}
+          </div>
+          <ul class="space-y-1">
+            <li v-for="(iss, i) in game.editor.issues" :key="i">
+              <button
+                class="w-full text-left px-2 py-1 rounded text-[11px] leading-snug transition-colors"
+                :class="iss.file ? 'hover:bg-ash/40' : 'cursor-default'"
+                @click="iss.file && game.openEditorFile(iss.file)"
+              >
+                <span
+                  class="font-mono"
+                  :class="iss.severity === 'error' ? 'text-red-400/90' : 'text-ember/90'"
+                >
+                  {{ iss.severity === "error" ? "✗" : "⚠" }}
+                  {{ iss.file ?? t("editor.issueWholePkg") }}
+                </span>
+                <span class="block text-parchment/70 whitespace-pre-wrap break-words">{{ iss.message }}</span>
+              </button>
+            </li>
+          </ul>
+        </div>
+        <!-- 境界の常設 (spec 28 C.3): 緑は「読める」であって「遊べる」ではない。 -->
         <p class="mt-auto pt-3 text-parchment/30 text-[10px] leading-relaxed">
           {{ t("editor.reflectNote") }}
         </p>

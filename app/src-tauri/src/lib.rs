@@ -10,6 +10,7 @@
 //! - `play_turn(action)`: session を lock し run_turn → 発火 recall を pending_lore に持ち越し → view を返す
 
 mod editor;
+mod editor_lint;
 mod image_gen;
 mod ref_stock;
 mod relay;
@@ -1514,6 +1515,52 @@ async fn save_package_file(
     let (forked, fork_warning) =
         editor::save_with_fork(base, &rel_path, &text, fork, update::SOURCE_META_FILE)?;
     Ok(EditorSaveView { forked, fork_warning })
+}
+
+/// 層 1 診断 (spec 28 Phase B): 単一ファイルで完結する検査。純テキストなので
+/// 編集ルート不要 (CodeMirror の linter がデバウンスして呼ぶ)。
+#[tauri::command]
+async fn lint_editor_text(
+    kind: String,
+    text: String,
+) -> Result<Vec<editor_lint::EditorDiagnostic>, String> {
+    editor_lint::lint_text(&kind, &text)
+}
+
+/// 層 2 診断 (spec 28 Phase B): パッケージ全体の `inspect_package` + ファイル帰属。
+/// ファイル横断の破れ (幻フラグ・死んだ参照・cast 不整合) はここでしか出ない。
+#[tauri::command]
+async fn inspect_editor_package(
+    editor_root: tauri::State<'_, EditorRoot>,
+) -> Result<Vec<editor_lint::EditorIssue>, String> {
+    let root = {
+        let guard = editor_root.lock().await;
+        guard.clone().ok_or_else(|| "編集モードではありません".to_string())?
+    };
+    // 帰属の素材 (entry の相対パス / campaign の modules 地図)。読めなくても続行 —
+    // 同じ失敗は inspect が errors として報告するので、ここで二重にエラーを作らない。
+    let entry = harness::read_manifest(&root).map(|m| m.entry).unwrap_or_default();
+    let mut modules = std::collections::BTreeMap::new();
+    if harness::is_campaign_entry(&entry) {
+        if let Ok(text) = std::fs::read_to_string(root.join(&entry)) {
+            if let Ok(c) = harness::Campaign::from_yaml(&text) {
+                modules = c.modules;
+            }
+        }
+    }
+    let report = harness::inspect_package(&root);
+    let to_issues = |severity: &str, msgs: Vec<String>| {
+        msgs.into_iter()
+            .map(|message| editor_lint::EditorIssue {
+                file: editor_lint::attribute_file(&message, &entry, &modules),
+                severity: severity.to_string(),
+                message,
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut out = to_issues("error", report.errors);
+    out.extend(to_issues("warning", report.warnings));
+    Ok(out)
 }
 
 /// フォルダを OS 標準のファイルマネージャで開く (プラットフォーム別)。
@@ -4495,6 +4542,8 @@ pub fn run() {
             close_editor,
             read_editor_file,
             save_package_file,
+            lint_editor_text,
+            inspect_editor_package,
             delete_autosave,
             facts_add,
             facts_edit,

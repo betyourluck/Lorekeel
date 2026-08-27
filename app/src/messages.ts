@@ -706,6 +706,8 @@ export const messages = {
       cat_scenario: "シナリオ",
       cat_character: "キャラクター",
       cat_memoria: "メモリア (伏線)",
+      issuesTitle: "検査 ({n} 件)",
+      issueWholePkg: "(パッケージ全体)",
       reflectNote:
         "保存の反映は次の「新しいゲーム」またはロードから。検査が通っても遊べるとは限りません — 各ゴールへの到達経路は手でたどってください。",
     },
@@ -1405,6 +1407,8 @@ export const messages = {
       cat_scenario: "Scenarios",
       cat_character: "Characters",
       cat_memoria: "Memoria (foreshadowing)",
+      issuesTitle: "Inspection ({n})",
+      issueWholePkg: "(whole package)",
       reflectNote:
         "Saves take effect from the next New Game or load. Passing checks doesn't mean the package is playable — walk each goal's path by hand.",
     },
