@@ -164,7 +164,7 @@ function onDrop(slot: number, e: DragEvent) {
               :title="t('refStock.crop')"
               @click.stop="cropping = { slot: s.slot, src: s.url!, label: t('refStock.slotLabel', { n: String(s.slot) }) }"
             >
-              <Icon name="image" :size="13" />
+              <Icon name="scissors" :size="13" />
             </button>
             <button
               class="rounded-full bg-ink/70 p-1.5 text-parchment/80 hover:text-warn"

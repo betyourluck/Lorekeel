@@ -2075,3 +2075,30 @@ destroy がプラグイン層で拒否 → 拒否はイベントリスナー内�
 
 **接地の限界**: 拒否がコンソールにどう出ていたかは未確認 (ユーザー実機・私は headless)。
 wrapper の実装 (`onCloseRequested` → destroy) は node_modules の実物で確認済み。
+
+### 91. `asset://` の画像を canvas に描くと汚染される — クロップが SecurityError で落ちた
+
+**症状**: spec 28 のクロップ (エディタのメディア / 参照ストックの枠) で「切り抜いて保存」を
+押すと `SecurityError: Failed to execute 'toBlob' on 'HTMLCanvasElement': Tainted canvases
+may not be exported.`。切り抜きの UI は動くのに、書き出しの一歩手前でだけ落ちる。
+
+**機序**: `<img>` を `crossorigin` 無しで読むと、ブラウザはその画像を **CORS で取得していない**
+ものとして扱い、canvas へ描いた時点で origin-clean フラグを落とす (汚染)。汚染された canvas は
+`toBlob` / `toDataURL` / `getImageData` が全部 SecurityError になる — **描画は成功し、
+取り出しだけが禁止される**ので、症状が「保存の瞬間」に寄る。`asset://` は Tauri のカスタム
+プロトコル = ページとは別 origin なので、ローカルのファイルでもこの規則に掛かる。
+
+**処置**: `<img crossorigin="anonymous">`。Tauri の asset protocol は
+`Access-Control-Allow-Origin: <window_origin>` を返す (`tauri/src/protocol/asset.rs:21`、
+実物のソースで確認) ので、CORS を宣言して取れば origin-clean のまま描ける。
+
+**代替案を採らなかった理由**: ①`fetch` して blob 化 — CSP の `connect-src` を localhost に
+絞ってある (#73) ので asset:// を足す改訂が要る ②backend から bytes を IPC で読む —
+確実だがエディタと参照ストックで別の command が要り、表示に使っている URL とは別経路に
+なる (同じ絵を二度読む)。**返ってくるヘッダを確認したうえで一番短い道を採った** —
+確認していなければ ② が正しい判断だった。
+
+**一般化**: **ローカルのファイルでも、カスタムプロトコル越しなら CORS の規則が掛かる。**
+「同じアプリの中のファイルだから素通し」は成り立たない。canvas で加工する予定のある画像は
+最初から `crossorigin` を宣言しておく (表示するだけなら不要なので、表示のコードを後から
+加工に流用したときに初めて出る = 発見が遅れる形)。

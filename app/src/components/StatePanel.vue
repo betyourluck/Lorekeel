@@ -456,11 +456,11 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
                   <!-- クロップ (画像のみ)。同じ ID へ上書きするので YAML は書き直さなくてよい。 -->
                   <button
                     v-if="g.category === 'image'"
-                    class="shrink-0 px-1 py-1 text-[10px] text-parchment/25 opacity-0 group-hover/media:opacity-100 hover:text-ember transition-opacity"
+                    class="shrink-0 px-1 py-1 text-parchment/25 opacity-0 group-hover/media:opacity-100 hover:text-ember transition-opacity"
                     :title="t('editor.cropTitle')"
                     @click="cropping = { src: mediaUrl(f.relPath), relPath: f.relPath }"
                   >
-                    ⧉
+                    <Icon name="scissors" :size="12" />
                   </button>
                   <button
                     class="shrink-0 px-1.5 py-1 text-xs text-parchment/25 opacity-0 group-hover/media:opacity-100 hover:text-red-400 transition-opacity"

@@ -154,7 +154,21 @@ onMounted(() => {
 
       <div class="relative min-h-0 flex-1 overflow-hidden bg-black/40">
         <div ref="frame" class="relative inline-block max-h-full">
-          <img ref="img" :src="src" alt="" class="max-h-[60vh] max-w-full select-none" draggable="false" @load="onLoad" />
+          <!-- **crossorigin が要る**: asset:// の画像をそのまま canvas に描くと
+               「Tainted canvases may not be exported」で toBlob が落ちる (実機で発覚)。
+               Tauri の asset protocol は `Access-Control-Allow-Origin: <window_origin>` を
+               返す (tauri/src/protocol/asset.rs) ので、CORS を宣言して取れば汚染されない。
+               読み込み失敗は沈黙させない — 出ない絵を黙って見せるより理由を出す。 -->
+          <img
+            ref="img"
+            :src="src"
+            alt=""
+            crossorigin="anonymous"
+            class="max-h-[60vh] max-w-full select-none"
+            draggable="false"
+            @load="onLoad"
+            @error="game.logToast = t('editor.cropLoadFailed')"
+          />
           <!-- 外側の暗幕 (4 枚) — 残る範囲だけが明るい。 -->
           <div class="pointer-events-none absolute inset-0">
             <div class="absolute bg-black/60" :style="{ left: 0, top: 0, right: 0, height: `${sel.y * 100}%` }"></div>
