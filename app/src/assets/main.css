@@ -2,6 +2,33 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * ワードマークのドット字 (2026-08-28)。**同梱の woff2** を使う — Google Fonts への
+ * ネットワーク参照は入れない (CSP の connect-src は localhost に絞ってあるうえ、
+ * オフラインで名前だけ別フォントに化けるのは配布物として気持ちが悪い)。
+ * latin サブセットで足りる: 冠名は "Outcasts" だけで、和字はここに載らない。
+ */
+@font-face {
+  font-family: "DotGothic16";
+  src: url("./fonts/dotgothic16-latin.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/*
+ * 冠名「Outcasts」の見た目。**Outcasts 製品で共通** — 参照は betyourluck.github.io の
+ * fuseforks.html `.outcasts-word` (色・発光とも同じ値をここへ写した)。Kataribe の
+ * 熾火テーマとは別系統の紫だが、これは製品の色ではなく**冠の色**なので揃える。
+ */
+.outcasts-word {
+  color: oklch(0.63 0.24 303);
+  font-family: "DotGothic16", sans-serif;
+  text-shadow:
+    0 0 6px oklch(0.63 0.24 303 / 0.8),
+    0 0 18px oklch(0.63 0.24 303 / 0.4);
+}
+
 /* 暖炉テーマの配色 (RGB チャンネル、tailwind の rgb(var(--x) / <alpha-value>) 用)。
    セマンティック名の値だけを data-theme で入れ替える = 全ユーティリティが自動反転する。 */
 /* `:root` に加え `[data-theme="dark"]` にも定義する = 子孫要素で data-theme を立てると

@@ -13,7 +13,8 @@ export const messages = {
   ja: {
     titlebar: {
       table: "多人数プレイ (卓)",
-      brand: "Outcasts Kataribe",
+      brandPrefix: "Outcasts",
+      brand: "Kataribe",
       toLight: "ライトモードに切替",
       toDark: "ダークモードに切替",
       themeToggle: "テーマ切替",
@@ -755,7 +756,8 @@ export const messages = {
   en: {
     titlebar: {
       table: "Multiplayer (table)",
-      brand: "Outcasts Kataribe",
+      brandPrefix: "Outcasts",
+      brand: "Kataribe",
       toLight: "Switch to light mode",
       toDark: "Switch to dark mode",
       themeToggle: "Toggle theme",
