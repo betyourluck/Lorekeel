@@ -215,6 +215,23 @@ fn collect_ids(root: &Path) -> BTreeMap<String, Vec<String>> {
 pub fn build_vocabulary(root: &Path) -> EditorVocabulary {
     let mut v = build_key_tables();
     v.ids = collect_ids(root);
+    // アセット ID (spec 01) は scenario でなく**ディスクの実ファイル**が正
+    // — engine は不透明 ID を運ぶだけで宣言を持たないので、宣言集合から導けない。
+    // 実在しない名前を書いても engine は黙って None に落とす (resolve_asset は寛容) =
+    // **死んだ参照 lint の射程外**。ゆえに補完で実名を出すのが唯一の予防になる。
+    let media = crate::editor::list_media(root);
+    for (cat, want) in [("images", "image"), ("audios", "audio")] {
+        let names: Vec<String> = media
+            .iter()
+            .filter(|e| e.category == want)
+            .filter_map(|e| e.rel_path.rsplit('/').next().map(String::from))
+            .collect();
+        // 空なら**キーごと入れない** (「そのカテゴリが在るが空」と「無い」を区別しない —
+        // 補完は候補ゼロなら開かないので同じ意味になる)。
+        if !names.is_empty() {
+            v.ids.insert(cat.to_string(), names);
+        }
+    }
     v
 }
 
@@ -247,9 +264,18 @@ mod tests {
     }
 
     /// id 語彙: 同梱パッケージから locations / flags / entities / challenges が集まる。
+    /// アセット (images/audios) は**ディスクの実ファイル名**が正 (宣言が無いので
+    /// 宣言集合からは導けない = 死んだ参照 lint の射程外を補完で埋める)。
     /// 壊れたルートでは空 (キー補完は静的部分なので生きる)。
     #[test]
     fn ids_are_collected_from_the_package_and_absent_when_broken() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/dice_trial");
+        let v = build_vocabulary(&root);
+        assert!(!v.ids["images"].is_empty(), "アセット名が載る: {:?}", v.ids.get("images"));
+        assert!(!v.ids["audios"].is_empty(), "{:?}", v.ids.get("audios"));
+        // ファイル名そのもの (拡張子込み = アセット ID) で、パスではない。
+        assert!(v.ids["images"].iter().all(|s| !s.contains('/')), "{:?}", v.ids["images"]);
+
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/lakeside_manor");
         let v = build_vocabulary(&root);
         assert!(!v.ids["locations"].is_empty(), "{:?}", v.ids);

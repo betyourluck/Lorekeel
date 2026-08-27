@@ -22,6 +22,13 @@ const EDITABLE_DIRS: &[(&str, &str)] = &[
     ("memoria", "memoria"),
 ];
 
+/// **参照専用**のメディアフォルダ (spec 01 のアセット)。編集対象ではない —
+/// 一覧の目的は「YAML の `image` / `bgm` / `sound` / `icon` 欄に書く名前」を作者に
+/// 見せることだけで、**アセット ID = ファイル名そのもの** (拡張子込み・不透明)。
+/// 保存・削除・診断の経路 (`validate_rel_path`) には**入れない** — テキストでない
+/// ものを編集経路に載せると、原子書き込みが画像を壊す形が生まれる。
+const MEDIA_DIRS: &[(&str, &str)] = &[("images", "image"), ("audios", "audio")];
+
 /// ファイル一覧の 1 行。`category` は frontend のグルーピングと Phase B の lint kind の素。
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct EditorFileEntry {
@@ -99,6 +106,125 @@ pub fn list_files(root: &Path) -> Vec<EditorFileEntry> {
     out
 }
 
+/// メディア一覧 (参照専用)。`images/` と `audios/` の**直下のみ**・拡張子は問わない
+/// (アセット ID は不透明 — `resolve_asset` はファイル名をそのまま解決する)。
+/// `images/settings_sheets/` を再帰しないのは意図的: あれは spec 25/27 の参照画像で
+/// **アセット ID ではない** (YAML から名前で参照しない)。
+pub fn list_media(root: &Path) -> Vec<EditorFileEntry> {
+    let mut out = Vec::new();
+    for (dir, cat) in MEDIA_DIRS {
+        let Ok(entries) = std::fs::read_dir(root.join(dir)) else { continue };
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter(|e| e.path().is_file())
+            .filter_map(|e| e.file_name().to_str().map(String::from))
+            .filter(|n| !n.starts_with('.'))
+            .collect();
+        names.sort();
+        out.extend(names.into_iter().map(|n| EditorFileEntry {
+            rel_path: format!("{dir}/{n}"),
+            category: cat.to_string(),
+        }));
+    }
+    out
+}
+
+/// バイト列からメディア種別を嗅ぎ分ける (フォルダ, 拡張子)。**申告を信じない** —
+/// 落とされたファイルの拡張子でなく中身で振り分けるので、`.txt` に改名した png も
+/// 正しく images/ へ入り、対応外は名指しで落ちる (#78 / #88 と同じ規律)。
+/// 画像は `ref_stock::sniff_mime` と重複させず、ここで音声込みの一枚の表にする。
+pub fn sniff_media(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
+    let riff = bytes.len() >= 12 && &bytes[0..4] == b"RIFF";
+    if riff && &bytes[8..12] == b"WEBP" {
+        return Some(("images", "webp"));
+    }
+    if riff && &bytes[8..12] == b"WAVE" {
+        return Some(("audios", "wav"));
+    }
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some(("images", "png"));
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some(("images", "jpg"));
+    }
+    if bytes.starts_with(b"<svg") || bytes.starts_with(b"<?xml") {
+        return Some(("images", "svg"));
+    }
+    if bytes.starts_with(b"OggS") {
+        return Some(("audios", "ogg"));
+    }
+    if bytes.starts_with(b"fLaC") {
+        return Some(("audios", "flac"));
+    }
+    if bytes.starts_with(b"ID3") || (bytes.len() >= 2 && bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0) {
+        return Some(("audios", "mp3"));
+    }
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        return Some(("audios", "m4a"));
+    }
+    None
+}
+
+/// アセット ID の stem を安全化する (`harness::is_valid_asset_id` の charset に合わせる)。
+/// 落とされたファイル名は日本語も空白も含みうるので、通らない文字は `_` に潰す。
+/// 全部潰れて空になったら `asset` を使う (名無しを作らない)。
+fn sanitize_stem(raw: &str) -> String {
+    let stem: String = raw
+        .rsplit('/')
+        .next()
+        .unwrap_or(raw)
+        .rsplit('.')
+        .next_back()
+        .unwrap_or(raw)
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '_' | '-') { c } else { '_' })
+        .collect();
+    let trimmed = stem.trim_matches('_').to_string();
+    let s = if trimmed.is_empty() { "asset".to_string() } else { trimmed };
+    s.chars().take(48).collect() // 連番と拡張子の余白を残す (上限 64)
+}
+
+/// メディアを追加する (spec 28 追補、2026-08-28 ユーザー要望のドラッグ投入)。
+/// **行き先は嗅ぎ分けた種別で決まる** (画像 → images/ 音声 → audios/)。
+/// 名前が衝突したら `_2`, `_3`… と連番を足す — **上書きしない**
+/// (既存アセットを黙って置き換えると、それを参照している盤面の見た目が変わる)。
+/// 返りは実際に書いたアセット ID (ファイル名)。
+pub fn put_media(root: &Path, raw_name: &str, bytes: &[u8]) -> Result<(String, String), String> {
+    let (dir, ext) = sniff_media(bytes)
+        .ok_or("対応していない形式です (画像 png/jpg/webp/svg、音声 ogg/wav/mp3/flac/m4a)")?;
+    let stem = sanitize_stem(raw_name);
+    let folder = root.join(dir);
+    std::fs::create_dir_all(&folder).map_err(|e| format!("{dir}/ を作れません: {e}"))?;
+    let mut name = format!("{stem}.{ext}");
+    let mut n = 2;
+    while folder.join(&name).exists() {
+        name = format!("{stem}_{n}.{ext}");
+        n += 1;
+    }
+    atomic_write_bytes(&folder.join(&name), bytes)?;
+    Ok((dir.to_string(), name))
+}
+
+/// **既存の**メディアを置き換える (クロップの書き戻し)。投入 (`put_media`) が衝突を
+/// 連番で避けるのと**逆に、こちらは意図的に上書きする** — クロップはそのアセットを
+/// 編集する操作で、名前が変わると参照している YAML を全部書き直す羽目になる。
+/// 不可逆なので確認は frontend の責務。種別の嗅ぎ分けは投入と共通 (中身で決まる)。
+pub fn replace_media(root: &Path, rel: &str, bytes: &[u8]) -> Result<(), String> {
+    let (dir, name) = rel.split_once('/').ok_or("不正なアセットです")?;
+    if !MEDIA_DIRS.iter().any(|(d, _)| *d == dir) || !harness::is_valid_asset_id(name) {
+        return Err(format!("不正なアセットです: {rel}"));
+    }
+    let path = root.join(dir).join(name);
+    if !path.is_file() {
+        return Err(format!("{rel} が見つかりません"));
+    }
+    let (sniffed, _) = sniff_media(bytes).ok_or("対応していない形式です")?;
+    if sniffed != dir {
+        return Err(format!("{dir}/ に置けない形式です"));
+    }
+    atomic_write_bytes(&path, bytes)
+}
+
 /// 相対パスを編集ルートで解決し、**canonicalize 後の containment** を確認して返す。
 /// 対象は実在ファイル前提 (v1 は編集のみ — 新規作成は Phase D)。
 pub fn resolve_in_root(root: &Path, rel: &str) -> Result<PathBuf, String> {
@@ -121,12 +247,17 @@ pub fn resolve_in_root(root: &Path, rel: &str) -> Result<PathBuf, String> {
 /// `tree_hash` (spec 17 — 除外リストでなく走査対象だが、rename で消えるので観測されない)
 /// にも実質載らない。
 pub fn atomic_write(path: &Path, text: &str) -> Result<(), String> {
+    atomic_write_bytes(path, text.as_bytes())
+}
+
+/// [`atomic_write`] のバイト版 (メディアの投入・クロップの書き戻し用)。
+pub fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| "不正な書き込み先です".to_string())?;
     let tmp = path.with_file_name(format!(".{name}.tmp"));
-    std::fs::write(&tmp, text).map_err(|e| format!("書き込みに失敗しました: {e}"))?;
+    std::fs::write(&tmp, bytes).map_err(|e| format!("書き込みに失敗しました: {e}"))?;
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         format!("書き込みの確定に失敗しました: {e}")
@@ -276,7 +407,24 @@ pub fn delete_file(
     if rel == "package.yaml" {
         return Err("package.yaml は削除できません (パッケージの土台です)".to_string());
     }
-    let path = resolve_in_root(root, rel)?; // 実在 + containment
+    // **メディアも消せる** (2026-08-28) — 編集 (テキスト) の経路とは別に、アセットの
+    // 管理面から。`validate_rel_path` はテキスト用なので media は別に形を検査する。
+    let path = if let Some((dir, name)) = rel.split_once('/') {
+        if MEDIA_DIRS.iter().any(|(d, _)| *d == dir) {
+            if !harness::is_valid_asset_id(name) {
+                return Err(format!("不正なアセットです: {rel}"));
+            }
+            let p = root.join(dir).join(name);
+            if !p.is_file() {
+                return Err(format!("{rel} が見つかりません"));
+            }
+            p
+        } else {
+            resolve_in_root(root, rel)? // 実在 + containment (テキスト)
+        }
+    } else {
+        resolve_in_root(root, rel)?
+    };
     std::fs::remove_file(&path).map_err(|e| format!("削除に失敗しました: {e}"))?;
     Ok(fork_meta(root, fork, meta_file))
 }
@@ -336,6 +484,18 @@ mod tests {
             files,
             vec!["package.yaml", "scenarios/a.yaml", "scenarios/b.yaml", "characters/alice.yaml"]
         );
+
+        // メディアは**編集経路に入らない** (参照専用) — 一覧には出るが save/delete は拒否。
+        std::fs::create_dir_all(dir.join("images/settings_sheets")).unwrap();
+        std::fs::write(dir.join("images/gate.webp"), "x").unwrap();
+        std::fs::write(dir.join("images/settings_sheets/ref1.webp"), "x").unwrap();
+        std::fs::create_dir_all(dir.join("audios")).unwrap();
+        std::fs::write(dir.join("audios/bgm.ogg"), "x").unwrap();
+        let media: Vec<String> = list_media(&dir).into_iter().map(|f| f.rel_path).collect();
+        // 直下のみ = settings_sheets/ は出ない (アセット ID ではない)。拡張子は問わない。
+        assert_eq!(media, vec!["images/gate.webp", "audios/bgm.ogg"]);
+        assert!(!list_files(&dir).iter().any(|f| f.rel_path.starts_with("images/")));
+        assert!(validate_rel_path("images/gate.webp").is_err(), "メディアは編集できない");
 
         assert!(resolve_in_root(&dir, "scenarios/a.yaml").is_ok());
         assert!(resolve_in_root(&dir, "scenarios/sub/deep.yaml").is_err(), "段数超過は形で落ちる");
@@ -399,6 +559,59 @@ mod tests {
         std::fs::write(dir.join(".meta"), "{}").unwrap();
         let (_, forked, _) = create_file(&dir, "character", "coral", true, ".meta").unwrap();
         assert!(forked && !dir.join(".meta").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// メディア投入 (2026-08-28): **行き先は中身で決まる** (拡張子の申告を信じない)・
+    /// 名前は charset に潰す・衝突は連番で避けて**上書きしない**。
+    /// クロップの書き戻し (`replace_media`) は逆に**意図的に上書き**する。
+    #[test]
+    fn put_media_routes_by_content_and_never_overwrites() {
+        let dir = std::env::temp_dir().join(format!("kataribe_editor_media_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let png = b"\x89PNG\r\n\x1a\n....".to_vec();
+        let ogg = b"OggS\0\0\0\0....".to_vec();
+        let wav = { let mut v = b"RIFF".to_vec(); v.extend(b"1234"); v.extend(b"WAVE"); v };
+
+        // 拡張子の申告 (.txt / .png) でなく中身で振り分ける。
+        let (d, n) = put_media(&dir, "gate.txt", &png).unwrap();
+        assert_eq!((d.as_str(), n.as_str()), ("images", "gate.png"));
+        let (d, n) = put_media(&dir, "chime.png", &ogg).unwrap();
+        assert_eq!((d.as_str(), n.as_str()), ("audios", "chime.ogg"));
+        assert_eq!(put_media(&dir, "hit.bin", &wav).unwrap().1, "hit.wav");
+
+        // 名前は charset へ潰す (日本語・空白)。空になったら asset。
+        assert_eq!(put_media(&dir, "扉 の絵.png", &png).unwrap().1, "asset.png");
+        // 衝突は連番 — 既存は無傷 (参照している盤面の見た目を変えない)。
+        assert_eq!(put_media(&dir, "gate.png", &png).unwrap().1, "gate_2.png");
+        assert!(dir.join("images/gate.png").is_file());
+
+        // 対応外は名指しで落ちる。
+        assert!(put_media(&dir, "x.pdf", b"%PDF-1.4").is_err());
+
+        // 一覧に載る (アセット ID = ファイル名)。
+        let media: Vec<String> = list_media(&dir).into_iter().map(|f| f.rel_path).collect();
+        assert!(media.contains(&"images/gate.png".to_string()));
+        assert!(media.contains(&"audios/chime.ogg".to_string()));
+
+        // クロップの書き戻しは上書き。種別違い・不在・トラバーサルは拒否。
+        let png2 = b"\x89PNG\r\n\x1a\n_edited".to_vec();
+        replace_media(&dir, "images/gate.png", &png2).unwrap();
+        assert_eq!(std::fs::read(dir.join("images/gate.png")).unwrap(), png2);
+        assert!(replace_media(&dir, "images/gate.png", &ogg).is_err(), "音声を images/ へは置けない");
+        assert!(replace_media(&dir, "images/missing.png", &png2).is_err());
+        assert!(replace_media(&dir, "images/../package.yaml", &png2).is_err());
+        assert!(replace_media(&dir, "scenarios/main.yaml", &png2).is_err());
+
+        // 削除もメディアに効く (UI の ✕ は一本の経路 — テキストと別扱いにしない)。
+        // トラバーサルは形で落ちる。
+        delete_file(&dir, "audios/chime.ogg", false, ".meta").unwrap();
+        assert!(!dir.join("audios/chime.ogg").exists());
+        assert!(delete_file(&dir, "images/../package.yaml", false, ".meta").is_err());
+        assert!(delete_file(&dir, "images/missing.png", false, ".meta").is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

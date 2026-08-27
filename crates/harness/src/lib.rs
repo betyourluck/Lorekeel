@@ -25,7 +25,7 @@ mod settings_sheets;
 mod synopsis;
 mod turn;
 
-pub use asset::{resolve_asset, AssetKind};
+pub use asset::{is_valid_asset_id, resolve_asset, AssetKind};
 pub use campaign::{
     advance_campaign, advance_campaign_injected, load_campaign, load_module, load_module_injected,
     Advance, Campaign, CampaignEdge, CampaignMemory, ModuleId,

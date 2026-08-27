@@ -1439,10 +1439,15 @@ fn open_package_folder(path: String) -> Result<(), String> {
 // =============================================================================
 
 /// `open_editor` の返り。ファイル一覧と、書庫由来か (バッジと初回保存のフォーク確認の素)。
+/// `media` は**参照専用**の一覧 (images/ audios/ のアセット ID) — 編集経路には入らない。
 #[derive(Serialize)]
 struct EditorOpenView {
     files: Vec<editor::EditorFileEntry>,
+    media: Vec<editor::EditorFileEntry>,
     from_site: bool,
+    /// 正規化した編集ルートの絶対パス。frontend はここに rel_path を継いで
+    /// `convertFileSrc` でサムネイルを描く (プレイ中パッケージとは限らないので必要)。
+    root: String,
 }
 
 /// 卓 (multiplayer) がアクティブか。編集モードとの排他 (spec 28) — パッケージの中身は
@@ -1458,6 +1463,7 @@ async fn table_is_active(session: &SharedSession) -> bool {
 /// 編集モードに入る: 編集ルートを登録してファイル一覧を返す。
 #[tauri::command]
 async fn open_editor(
+    app: tauri::AppHandle,
     path: String,
     session: tauri::State<'_, SharedSession>,
     editor_root: tauri::State<'_, EditorRoot>,
@@ -1472,8 +1478,13 @@ async fn open_editor(
     let canon = dir.canonicalize().map_err(|e| format!("フォルダを開けません: {e}"))?;
     let from_site = canon.join(update::SOURCE_META_FILE).is_file();
     let files = editor::list_files(&canon);
+    let media = editor::list_media(&canon);
+    // メディア一覧のサムネイルを asset:// で描くための許可 (new_game と同経路)。
+    // **編集対象のパッケージはプレイ中のものとは限らない**ので、ここで別途許す。
+    let _ = app.asset_protocol_scope().allow_directory(&canon, true);
+    let root = canon.display().to_string();
     *editor_root.0.lock().await = Some(canon);
-    Ok(EditorOpenView { files, from_site })
+    Ok(EditorOpenView { files, media, from_site, root })
 }
 
 /// 編集モードを出る (登録解除)。
@@ -1616,6 +1627,68 @@ async fn delete_editor_file(
     let (forked, fork_warning) =
         editor::delete_file(base, &rel_path, fork, update::SOURCE_META_FILE)?;
     Ok(EditorCreateView { rel_path, files: editor::list_files(base), forked, fork_warning })
+}
+
+/// メディアの投入 (spec 28 追補、2026-08-28)。**raw body** で受ける
+/// (`put_reference_bytes` と同じ流儀 — JSON の number[] は数 MB で数百万要素になる)。
+/// 名前は `x-name` ヘッダ (落とされた元のファイル名。charset へ潰すのは editor 層)。
+/// 行き先 (images/ audios/) は**中身の嗅ぎ分けで決まる** — 申告を信じない。
+#[tauri::command]
+async fn put_editor_media(
+    request: tauri::ipc::Request<'_>,
+    session: tauri::State<'_, SharedSession>,
+    editor_root: tauri::State<'_, EditorRoot>,
+) -> Result<EditorMediaView, String> {
+    if table_is_active(&session).await {
+        return Err("卓の最中は追加できません".into());
+    }
+    let raw_name = request
+        .headers()
+        .get("x-name")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("asset")
+        .to_string();
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("ファイルの本体がありません".into());
+    };
+    let guard = editor_root.0.lock().await;
+    let Some(base) = guard.as_ref() else { return Err("編集モードではありません".into()) };
+    let (dir, name) = editor::put_media(base, &raw_name, bytes)?;
+    Ok(EditorMediaView { rel_path: format!("{dir}/{name}"), media: editor::list_media(base) })
+}
+
+/// クロップの書き戻し (spec 28 追補、2026-08-28)。**既存アセットを上書きする** —
+/// 名前が変わると参照している YAML を全部書き直す羽目になるので、意図的に同じ ID を保つ。
+/// 不可逆の確認は frontend の責務。
+#[tauri::command]
+async fn replace_editor_media(
+    request: tauri::ipc::Request<'_>,
+    session: tauri::State<'_, SharedSession>,
+    editor_root: tauri::State<'_, EditorRoot>,
+) -> Result<EditorMediaView, String> {
+    if table_is_active(&session).await {
+        return Err("卓の最中は編集できません".into());
+    }
+    let rel = request
+        .headers()
+        .get("x-rel")
+        .and_then(|v| v.to_str().ok())
+        .ok_or("対象がありません")?
+        .to_string();
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("画像の本体がありません".into());
+    };
+    let guard = editor_root.0.lock().await;
+    let Some(base) = guard.as_ref() else { return Err("編集モードではありません".into()) };
+    editor::replace_media(base, &rel, bytes)?;
+    Ok(EditorMediaView { rel_path: rel, media: editor::list_media(base) })
+}
+
+/// メディア操作の返り (投入・置換とも更新後の一覧込み = 1 往復で UI が揃う)。
+#[derive(Serialize)]
+struct EditorMediaView {
+    rel_path: String,
+    media: Vec<editor::EditorFileEntry>,
 }
 
 /// 補完語彙 (spec 28 Phase C)。編集モード入場時と保存成功時に frontend が取り直す
@@ -4615,6 +4688,8 @@ pub fn run() {
             editor_vocabulary,
             create_editor_file,
             delete_editor_file,
+            put_editor_media,
+            replace_editor_media,
             delete_autosave,
             facts_add,
             facts_edit,

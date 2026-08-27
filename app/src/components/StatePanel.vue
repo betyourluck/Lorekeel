@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, watch, onMounted, onBeforeUnmount, defineAsyncComponent } from "vue";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { useGameStore } from "../stores/game";
 import { t } from "../i18n";
 import Icon from "./Icon.vue";
@@ -47,6 +48,46 @@ const editorGroups = computed(() =>
     creatable: category !== "package" && (category !== "campaign" || !game.editor.files.some((f) => f.category === "campaign")),
   })).filter((g) => g.files.length > 0 || g.creatable),
 );
+
+// --- メディア (spec 28 追補、2026-08-28) ---
+// 参照専用の一覧 + ドラッグ投入 + 画像のクロップ。アセット ID = ファイル名そのもの。
+const CropDialog = defineAsyncComponent(() => import("./CropDialog.vue"));
+const cropping = ref<{ src: string; relPath: string } | null>(null);
+const dropping = ref(false);
+
+const mediaGroups = computed(() =>
+  (["image", "audio"] as const)
+    .map((category) => ({
+      category: category as string,
+      files: game.editor.media.filter((f) => f.category === category),
+    }))
+    .filter((g) => g.files.length > 0),
+);
+
+/** サムネイル/クロップ用の URL。**mediaRev を付ける** — クロップは名前を保ったまま
+ *  中身を替えるので、付けないと WebView のキャッシュが古い絵を出す (failures #86 と同型)。 */
+function mediaUrl(relPath: string): string {
+  const sep = game.editor.absRoot.includes("\\") ? "\\" : "/";
+  const abs = `${game.editor.absRoot}${sep}${relPath.split("/").join(sep)}`;
+  return `${convertFileSrc(abs)}?v=${game.editor.mediaRev}`;
+}
+
+/** アセット ID をクリップボードへ (YAML の image/bgm/sound/icon 欄へ貼るため)。 */
+async function copyAssetId(relPath: string) {
+  const id = relPath.split("/").pop() ?? relPath;
+  try {
+    await navigator.clipboard.writeText(id);
+    game.logToast = t("editor.assetCopied", { id });
+  } catch {
+    game.logToast = id; // クリップボードが使えない環境では名前だけ見せる
+  }
+}
+
+function onDrop(e: DragEvent) {
+  dropping.value = false;
+  const files = Array.from(e.dataTransfer?.files ?? []);
+  if (files.length) void game.putEditorMedia(files);
+}
 
 // 新規ファイル (spec 28 Phase D → 4 カテゴリへ一般化)。+ → inline 入力 → Enter/作成。
 // campaign は固定名なので入力を出さず即作成。
@@ -253,6 +294,74 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
     <div class="flex-1 min-w-0 p-4 overflow-y-auto flex flex-col">
       <!-- ファイル一覧 (spec 28)。**game.state に依存しない** — 編集はプレイしていなくてもできる。 -->
       <template v-if="activeTab === 'files'">
+        <!-- テキスト / メディアの切替 (2026-08-28 ユーザーFB)。編集できるのはテキストだけで、
+             メディアは参照 (アセット ID を見る) と管理 (追加・クロップ・削除) の面。 -->
+        <div class="mb-3 flex rounded border border-ash text-xs">
+          <button
+            v-for="v in (['text', 'media'] as const)"
+            :key="v"
+            class="flex-1 py-1 transition-colors first:rounded-l last:rounded-r"
+            :class="game.editor.view === v ? 'bg-ember/20 text-glow' : 'text-parchment/50 hover:text-parchment'"
+            @click="game.editor.view = v"
+          >
+            {{ t(`editor.view_${v}`) }}
+          </button>
+        </div>
+
+        <!-- メディア: 参照専用の一覧。クリックでアセット ID をコピー (YAML へ貼る)。 -->
+        <template v-if="game.editor.view === 'media'">
+          <div
+            class="mb-3 rounded border border-dashed px-3 py-4 text-center text-xs transition-colors"
+            :class="dropping ? 'border-ember bg-ember/10 text-glow' : 'border-ash text-parchment/40'"
+            @dragover.prevent="dropping = true"
+            @dragleave="dropping = false"
+            @drop.prevent="onDrop"
+          >
+            {{ t("editor.mediaDropHint") }}
+          </div>
+          <div v-for="g in mediaGroups" :key="g.category" class="mb-3">
+            <div class="text-parchment/40 mb-1.5 flex items-center gap-1.5 text-xs">
+              <Icon name="folder" :size="12" />{{ t(`editor.cat_${g.category}`) }}
+            </div>
+            <ul class="space-y-0.5">
+              <li v-for="f in g.files" :key="f.relPath" class="group/media flex items-center gap-1">
+                <img
+                  v-if="g.category === 'image'"
+                  :src="mediaUrl(f.relPath)"
+                  alt=""
+                  class="h-6 w-6 shrink-0 rounded object-cover bg-ash/40"
+                />
+                <button
+                  class="min-w-0 flex-1 text-left px-1.5 py-1 rounded text-xs font-mono truncate text-parchment/70 hover:bg-ash/40 hover:text-parchment transition-colors"
+                  :title="t('editor.assetCopyTitle')"
+                  @click="copyAssetId(f.relPath)"
+                >
+                  {{ f.relPath.split("/").pop() }}
+                </button>
+                <!-- クロップ (画像のみ)。同じ ID へ上書きするので YAML は書き直さなくてよい。 -->
+                <button
+                  v-if="g.category === 'image'"
+                  class="shrink-0 px-1 py-1 text-[10px] text-parchment/25 opacity-0 group-hover/media:opacity-100 hover:text-ember transition-opacity"
+                  :title="t('editor.cropTitle')"
+                  @click="cropping = { src: mediaUrl(f.relPath), relPath: f.relPath }"
+                >
+                  ⧉
+                </button>
+                <button
+                  class="shrink-0 px-1.5 py-1 text-xs text-parchment/25 opacity-0 group-hover/media:opacity-100 hover:text-red-400 transition-opacity"
+                  :title="t('editor.deleteTitle', { file: f.relPath })"
+                  @click="game.deleteEditorFile(f.relPath)"
+                >
+                  ✕
+                </button>
+              </li>
+            </ul>
+          </div>
+          <p v-if="!mediaGroups.length" class="text-parchment/30 text-xs">{{ t("editor.mediaEmpty") }}</p>
+          <p class="mt-auto pt-3 text-parchment/30 text-[10px] leading-relaxed">{{ t("editor.mediaNote") }}</p>
+        </template>
+
+        <template v-else>
         <div v-for="g in editorGroups" :key="g.category" class="mb-3">
           <div class="text-parchment/40 mb-1.5 flex items-center gap-1.5 text-xs">
             <Icon name="folder" :size="12" />{{ t(`editor.cat_${g.category}`) }}
@@ -344,6 +453,7 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
         <p class="mt-auto pt-3 text-parchment/30 text-[10px] leading-relaxed">
           {{ t("editor.reflectNote") }}
         </p>
+        </template>
       </template>
       <template v-else-if="game.state">
         <!-- 1枚め「進行」: ターン / 目標 / この場にいる -->
@@ -659,6 +769,9 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
         </div>
       </div>
     </Transition>
+
+    <!-- クロップ (spec 28 追補)。動的 import — 触らないセッションで読み込まない。 -->
+    <CropDialog v-if="cropping" :src="cropping.src" :rel-path="cropping.relPath" @close="cropping = null" />
   </aside>
 </template>
 

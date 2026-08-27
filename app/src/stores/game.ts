@@ -3,6 +3,7 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { tableHooks, transport } from "../transport";
 import { t } from "../i18n";
 import type { EditorVocabulary } from "../editorCompletion";
+import { fileToWebp } from "../imageConvert";
 import * as tts from "../tts";
 import {
   currentSlot,
@@ -220,6 +221,8 @@ export interface EditorState {
   on: boolean;
   /** 編集対象のパッケージパス (open した瞬間の packagePath を凍結。プレイ中トーストの照合にも使う)。 */
   root: string;
+  /** 正規化した絶対パス (backend 由来)。メディアのサムネイル URL の起点。 */
+  absRoot: string;
   /** ファイル一覧 (backend list_files の写し。カテゴリでグルーピング表示)。 */
   files: { relPath: string; category: string }[];
   /** 書庫由来か (`.kataribe_source.json` あり) — バッジ + 初回保存のフォーク確認。 */
@@ -238,6 +241,14 @@ export interface EditorState {
   /** 補完語彙 (spec 28 Phase C)。ソースはディスクの保存済み状態 — 入場時と保存成功時に
    *  取り直す (未保存バッファの id は次の保存まで補完に出ない = spec の明記事項)。 */
   vocab: EditorVocabulary | null;
+  /** 参照専用のメディア一覧 (images/ audios/ のアセット ID)。**編集対象ではない** —
+   *  YAML の image/bgm/sound/icon 欄に書く名前を作者に見せるための一覧 (spec 28 追補)。 */
+  media: { relPath: string; category: string }[];
+  /** ファイルタブの表示 (テキスト = 編集 / メディア = 参照とアセット管理)。 */
+  view: "text" | "media";
+  /** メディアの版 (クロップで**名前は同じまま中身が替わる**ので、サムネイル URL の
+   *  キャッシュ破棄に使う。failures #86 と同型の問題)。 */
+  mediaRev: number;
   /** 開いているファイルの元の改行コード。**CodeMirror は内部を常に LF に正規化する**ので、
    *  CRLF のまま比較すると「開いただけで ●」になる (実機で発覚)。読み込みで覚えて LF 化し、
    *  保存で戻す — ディスクの改行を変えない (変えると tree_hash と diff が荒れる)。 */
@@ -248,6 +259,7 @@ export function freshEditorState(): EditorState {
   return {
     on: false,
     root: "",
+    absRoot: "",
     files: [],
     fromSite: false,
     current: "",
@@ -256,6 +268,9 @@ export function freshEditorState(): EditorState {
     saving: false,
     issues: [],
     vocab: null,
+    media: [],
+    view: "text",
+    mediaRev: 0,
     eol: "\n",
   };
 }
@@ -1022,15 +1037,19 @@ export const useGameStore = defineStore("game", {
       // 一次ガード (卓中・未選択はボタン側 disable と二層)。
       if (!this.packagePath || this.multi.role !== "solo") return;
       try {
-        const view = await invoke<{ files: { rel_path: string; category: string }[]; from_site: boolean }>(
-          "open_editor",
-          { path: this.packagePath },
-        );
+        const view = await invoke<{
+          files: { rel_path: string; category: string }[];
+          media: { rel_path: string; category: string }[];
+          from_site: boolean;
+          root: string;
+        }>("open_editor", { path: this.packagePath });
         this.editor = {
           ...freshEditorState(),
           on: true,
           root: this.packagePath,
+          absRoot: view.root,
           files: view.files.map((f) => ({ relPath: f.rel_path, category: f.category })),
+          media: view.media.map((f) => ({ relPath: f.rel_path, category: f.category })),
           fromSite: view.from_site,
         };
         // 入場時にも層 2 を一度走らせる (開幕 ⚠ の内容を直しに来る動線 — 保存する前に
@@ -1116,6 +1135,65 @@ export const useGameStore = defineStore("game", {
         void this.refreshEditorVocab();
       } catch (e) {
         this.logToast = String(e);
+      }
+    },
+
+    /**
+     * メディアの投入 (spec 28 追補、2026-08-28)。**画像は WebView で WebP へ変換**してから
+     * 送る (spec 27 のローカル取り込みと同じ規律 — Rust に image crate も libwebp も足さない。
+     * 長辺 1536・q0.88 で 4000px の写真が配布可能なサイズに落ちる)。音声は**変換しない**
+     * (ブラウザに transcode の口が無い) ので原本のまま — 作法は Ogg 推奨。
+     * 行き先は backend が中身で振り分けるので、ここでは種別を申告しない。
+     */
+    async putEditorMedia(files: File[]) {
+      if (!this.editor.on || !files.length) return;
+      let added = 0;
+      let last = "";
+      for (const file of files) {
+        try {
+          const isImage = file.type.startsWith("image/") || /\.(png|jpe?g|webp|gif|bmp)$/i.test(file.name);
+          // SVG はラスタ化すると意味が変わる (拡大に強いのが取り柄) のでそのまま通す。
+          const isSvg = file.type === "image/svg+xml" || /\.svg$/i.test(file.name);
+          const bytes =
+            isImage && !isSvg
+              ? await fileToWebp(file)
+              : new Uint8Array(await file.arrayBuffer());
+          const res = await invoke<{ rel_path: string; media: { rel_path: string; category: string }[] }>(
+            "put_editor_media",
+            bytes,
+            { headers: { "x-name": encodeURIComponent(file.name) } },
+          );
+          this.editor.media = res.media.map((f) => ({ relPath: f.rel_path, category: f.category }));
+          last = res.rel_path;
+          added++;
+        } catch (e) {
+          // 1 枚ずつ報告する (まとめて握り潰すと、どれが弾かれたか分からない)。
+          this.logToast = `${file.name}: ${String(e)}`;
+        }
+      }
+      if (added === 1) this.logToast = t("editor.mediaAdded", { file: last });
+      else if (added > 1) this.logToast = t("editor.mediaAddedMany", { n: String(added) });
+      if (added) void this.refreshEditorVocab(); // 補完に新しいアセット名を載せる
+    },
+
+    /** クロップの書き戻し (spec 28 追補)。**同じ ID を上書き** — 参照している YAML を
+     *  書き直さずに済ませるため。不可逆なので確認を挟む。 */
+    async replaceEditorMedia(relPath: string, bytes: Uint8Array) {
+      if (!this.editor.on) return false;
+      try {
+        const res = await invoke<{ media: { rel_path: string; category: string }[] }>(
+          "replace_editor_media",
+          bytes,
+          { headers: { "x-rel": relPath } },
+        );
+        this.editor.media = res.media.map((f) => ({ relPath: f.rel_path, category: f.category }));
+        // 同じ名前で中身が替わった = URL キャッシュが古い絵を出す (failures #86 と同型)。
+        this.editor.mediaRev++;
+        this.logToast = t("editor.mediaCropped", { file: relPath });
+        return true;
+      } catch (e) {
+        this.logToast = String(e);
+        return false;
       }
     },
 
