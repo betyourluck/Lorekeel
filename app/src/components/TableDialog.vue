@@ -155,7 +155,8 @@ const leave = confirmAndLeave;
           <p class="mb-2 text-xs text-parchment/60">{{ t("table.hostHint") }}</p>
           <button
             class="rounded bg-ember/80 px-3 py-1 font-bold text-ink hover:bg-ember disabled:opacity-40"
-            :disabled="busy || !game.started || !name.trim()"
+            :disabled="busy || !game.started || !name.trim() || game.editor.on"
+            :title="game.editor.on ? t('editor.tableBlockedByEdit') : ''"
             @click="openTable"
           >
             {{ t("table.openTable") }}
@@ -180,7 +181,8 @@ const leave = confirmAndLeave;
           </template>
           <button
             class="rounded bg-ember/80 px-3 py-1 font-bold text-ink hover:bg-ember disabled:opacity-40"
-            :disabled="busy || !name.trim() || !roomInput.trim() || (manualPkg && !joinPackage)"
+            :disabled="busy || !name.trim() || !roomInput.trim() || (manualPkg && !joinPackage) || game.editor.on"
+            :title="game.editor.on ? t('editor.tableBlockedByEdit') : ''"
             @click="join"
           >
             {{ t("table.join") }}

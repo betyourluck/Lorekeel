@@ -9,6 +9,7 @@
 //! - `new_game(scenario_path?)`: シナリオ + characters + 伏線をロードし初期 state を作って session に格納
 //! - `play_turn(action)`: session を lock し run_turn → 発火 recall を pending_lore に持ち越し → view を返す
 
+mod editor;
 mod image_gen;
 mod ref_stock;
 mod relay;
@@ -750,6 +751,11 @@ type SharedSession = Mutex<Option<GameSession>>;
 /// これだけを持つ (session と別に manage する = 遊休 backend の唯一の状態)。
 type GuestAssetRoot = Mutex<Option<PathBuf>>;
 
+/// spec 28: 編集モードの編集ルート (`open_editor` が登録)。読み書き command は**相対パス
+/// だけ**を受けてここから解決する — 保存の瞬間に選択パッケージが替わっていた、という
+/// TOCTOU を構造的に消す (frontend がフルパスを毎回渡す形にしない)。
+type EditorRoot = Mutex<Option<PathBuf>>;
+
 // =============================================================================
 // 多人数プレイ (spec 23 Phase B) — participants / 入力窓 / 開帳カウンタ
 // =============================================================================
@@ -1419,6 +1425,95 @@ fn open_package_folder(path: String) -> Result<(), String> {
         return Err(format!("フォルダが見つかりません: {}", dir.display()));
     }
     open_in_file_manager(&dir)
+}
+
+// =============================================================================
+// パッケージエディタ (spec 28 Phase A) — 編集モード
+// =============================================================================
+
+/// `open_editor` の返り。ファイル一覧と、書庫由来か (バッジと初回保存のフォーク確認の素)。
+#[derive(Serialize)]
+struct EditorOpenView {
+    files: Vec<editor::EditorFileEntry>,
+    from_site: bool,
+}
+
+/// 卓 (multiplayer) がアクティブか。編集モードとの排他 (spec 28) — パッケージの中身は
+/// `package_match` / relay キャッシュの鍵なので、卓の最中に変わると卓が黙って壊れる。
+/// 一次ガードは frontend (鉛筆トグル / 卓開始の disable)、これは二層目の安全網
+/// (`update_site_package` のプレイ中ガードと同型)。**ホスト側しか見えない** —
+/// participants はホストの session にだけあり、ゲストの卓状態は frontend しか知らない
+/// (GuestAssetRoot は解除経路が無く、卓の生死シグナルには使えない)。
+async fn table_is_active(session: &SharedSession) -> bool {
+    session.lock().await.as_ref().is_some_and(|s| !s.participants.is_empty())
+}
+
+/// 編集モードに入る: 編集ルートを登録してファイル一覧を返す。
+#[tauri::command]
+async fn open_editor(
+    path: String,
+    session: tauri::State<'_, SharedSession>,
+    editor_root: tauri::State<'_, EditorRoot>,
+) -> Result<EditorOpenView, String> {
+    if table_is_active(&session).await {
+        return Err("卓の最中は編集モードに入れません".into());
+    }
+    let dir = resolve_pkg_dir(&path);
+    if !dir.join("package.yaml").is_file() {
+        return Err(format!("package.yaml が見つかりません: {}", dir.display()));
+    }
+    let canon = dir.canonicalize().map_err(|e| format!("フォルダを開けません: {e}"))?;
+    let from_site = canon.join(update::SOURCE_META_FILE).is_file();
+    let files = editor::list_files(&canon);
+    *editor_root.lock().await = Some(canon);
+    Ok(EditorOpenView { files, from_site })
+}
+
+/// 編集モードを出る (登録解除)。
+#[tauri::command]
+async fn close_editor(editor_root: tauri::State<'_, EditorRoot>) -> Result<(), String> {
+    *editor_root.lock().await = None;
+    Ok(())
+}
+
+/// 編集ルート内のファイルを読む。
+#[tauri::command]
+async fn read_editor_file(
+    rel_path: String,
+    editor_root: tauri::State<'_, EditorRoot>,
+) -> Result<String, String> {
+    let guard = editor_root.lock().await;
+    let Some(base) = guard.as_ref() else { return Err("編集モードではありません".into()) };
+    let path = editor::resolve_in_root(base, &rel_path)?;
+    std::fs::read_to_string(&path).map_err(|e| format!("読み込みに失敗しました: {e}"))
+}
+
+/// 保存の返り。`forked` なら出所メタが消えた (以後は手動配置扱い)。メタ削除だけ失敗したら
+/// `forked=false` + 警告 — 保存本体は成功、frontend が from_site を保てば次の保存で再試行。
+#[derive(Serialize)]
+struct EditorSaveView {
+    forked: bool,
+    fork_warning: Option<String>,
+}
+
+/// 編集ルート内のファイルへ保存する。判定順は spec 28 A.6 で凍結:
+/// ①卓ガード → ②パス検証 → ③原子書き込み → ④(fork) 出所メタ削除。
+#[tauri::command]
+async fn save_package_file(
+    rel_path: String,
+    text: String,
+    fork: bool,
+    session: tauri::State<'_, SharedSession>,
+    editor_root: tauri::State<'_, EditorRoot>,
+) -> Result<EditorSaveView, String> {
+    if table_is_active(&session).await {
+        return Err("卓の最中は保存できません".into());
+    }
+    let guard = editor_root.lock().await;
+    let Some(base) = guard.as_ref() else { return Err("編集モードではありません".into()) };
+    let (forked, fork_warning) =
+        editor::save_with_fork(base, &rel_path, &text, fork, update::SOURCE_META_FILE)?;
+    Ok(EditorSaveView { forked, fork_warning })
 }
 
 /// フォルダを OS 標準のファイルマネージャで開く (プラットフォーム別)。
@@ -4341,6 +4436,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(SharedSession::new(None))
         .manage(GuestAssetRoot::new(None))
+        .manage(EditorRoot::new(None))
         .setup(|app| {
             // 前回 set_llm_config が保存した app_data_dir/.env を読み込む (無ければ何もしない)。
             // **override で読む**: dev では main.rs の dotenvy が repo .env を先に読んでおり、
@@ -4395,6 +4491,10 @@ pub fn run() {
             reseed_reference_stock,
             open_package_folder,
             pick_package_folder,
+            open_editor,
+            close_editor,
+            read_editor_file,
+            save_package_file,
             delete_autosave,
             facts_add,
             facts_edit,

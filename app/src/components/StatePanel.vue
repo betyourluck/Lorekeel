@@ -12,7 +12,7 @@ const game = useGameStore();
 // ・ map=マップ: 訪問済み+1歩先の有向グラフ、spec 15 ・ synopsis=あらすじ: 圧縮済み章 +
 // 最近の出来事、spec 10 ・ facts=既成事実: GM とユーザーの覚え書き、spec 20)。
 // 既成事実は末尾 (ユーザーFB 2026-07-21)。
-const TABS = ["progress", "world", "map", "synopsis", "facts"] as const;
+const TABS = ["progress", "world", "map", "synopsis", "facts", "files"] as const;
 type Tab = (typeof TABS)[number];
 const activeTab = ref<Tab>("progress");
 
@@ -21,6 +21,30 @@ const activeTab = ref<Tab>("progress");
 const factsVisible = computed(() => game.factsPolicy !== "locked");
 watch(factsVisible, (v) => {
   if (!v && activeTab.value === "facts") activeTab.value = "progress";
+});
+
+// 編集モード (spec 28): ファイルタブは編集モード中だけ。ON で自動的に開き、OFF で
+// **入る直前にいたタブへ戻す** (progress 固定に飛ばさない — 査読反映)。
+const filesVisible = computed(() => game.editor.on);
+let tabBeforeEdit: Tab = "progress";
+watch(filesVisible, (v) => {
+  if (v) {
+    tabBeforeEdit = activeTab.value;
+    activeTab.value = "files";
+  } else if (activeTab.value === "files") {
+    activeTab.value = tabBeforeEdit === "facts" && !factsVisible.value ? "progress" : tabBeforeEdit;
+  }
+});
+
+// ファイル一覧のカテゴリ別グルーピング (backend の列挙順 = カテゴリ順を保つ)。
+const editorGroups = computed(() => {
+  const groups: { category: string; files: { relPath: string; category: string }[] }[] = [];
+  for (const f of game.editor.files) {
+    const last = groups[groups.length - 1];
+    if (last && last.category === f.category) last.files.push(f);
+    else groups.push({ category: f.category, files: [f] });
+  }
+  return groups;
 });
 
 // 顔アイコンをクリックして詳細を見るキャラ (presence → クリックでプロフィール)。
@@ -77,8 +101,11 @@ function onKeydown(e: KeyboardEvent) {
   // IME 変換中はショートカットを発火させない (変換候補操作のキーを奪わない)。
   if (e.isComposing) return;
   if (!e.ctrlKey || e.altKey || e.metaKey) return;
-  // locked 盤面では既成事実タブは存在しない扱い (巡回にも直接選択にも出さない)。
-  const tabs = TABS.filter((x) => x !== "facts" || factsVisible.value);
+  // locked 盤面では既成事実タブは、編集モード外ではファイルタブは、存在しない扱い
+  // (巡回にも直接選択にも出さない)。
+  const tabs = TABS.filter(
+    (x) => (x !== "facts" || factsVisible.value) && (x !== "files" || filesVisible.value),
+  );
   if (e.key === "Tab") {
     // Ctrl+Tab: タブ巡回 (Shift 併用で逆順)。
     e.preventDefault();
@@ -181,10 +208,57 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
         <Icon name="pencil" :size="12" />
         <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">{{ t("state.tabFacts") }}</span>
       </button>
+      <!-- ファイル (spec 28): 編集モード中のみ。パッケージ内の YAML 一覧。 -->
+      <button
+        v-if="filesVisible"
+        class="flex flex-col items-center gap-1 py-2 border-l-2 transition-opacity focus:outline-none"
+        :class="
+          activeTab === 'files'
+            ? 'border-ember text-glow'
+            : 'border-transparent text-parchment opacity-40 hover:opacity-90'
+        "
+        :title="t('state.tabFilesTitle')"
+        @click="activeTab = 'files'"
+      >
+        <Icon name="folder" :size="12" />
+        <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">{{ t("state.tabFiles") }}</span>
+      </button>
     </nav>
 
     <div class="flex-1 min-w-0 p-4 overflow-y-auto flex flex-col">
-      <template v-if="game.state">
+      <!-- ファイル一覧 (spec 28)。**game.state に依存しない** — 編集はプレイしていなくてもできる。 -->
+      <template v-if="activeTab === 'files'">
+        <div v-for="g in editorGroups" :key="g.category" class="mb-3">
+          <div class="text-parchment/40 mb-1.5 flex items-center gap-1.5 text-xs">
+            <Icon name="folder" :size="12" />{{ t(`editor.cat_${g.category}`) }}
+          </div>
+          <ul class="space-y-0.5">
+            <li v-for="f in g.files" :key="f.relPath">
+              <button
+                class="w-full text-left px-2 py-1 rounded text-xs font-mono truncate transition-colors"
+                :class="
+                  game.editor.current === f.relPath
+                    ? 'bg-ember/15 text-glow'
+                    : 'text-parchment/70 hover:bg-ash/40 hover:text-parchment'
+                "
+                @click="game.openEditorFile(f.relPath)"
+              >
+                {{ f.relPath.split("/").pop()
+                }}<span
+                  v-if="game.editor.current === f.relPath && game.editorDirty"
+                  class="text-ember ml-1"
+                  >●</span
+                >
+              </button>
+            </li>
+          </ul>
+        </div>
+        <!-- 境界の常設 (spec 28 C.3 の前段 — Phase B で診断一覧が入っても残す)。 -->
+        <p class="mt-auto pt-3 text-parchment/30 text-[10px] leading-relaxed">
+          {{ t("editor.reflectNote") }}
+        </p>
+      </template>
+      <template v-else-if="game.state">
         <!-- 1枚め「進行」: ターン / 目標 / この場にいる -->
         <template v-if="activeTab === 'progress'">
           <div class="mb-3 flex items-center">

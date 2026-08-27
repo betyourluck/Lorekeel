@@ -212,6 +212,31 @@ export interface MultiState {
   voiceLevels: Record<string, number>;
 }
 
+/** 編集モード (spec 28 Phase A)。骨格は「backend に編集ルートを登録し、相対パスだけで
+ *  読み書きする」— frontend は表示とダーティ管理だけを持つ。 */
+export interface EditorState {
+  /** 編集モード中か (鉛筆トグル)。 */
+  on: boolean;
+  /** 編集対象のパッケージパス (open した瞬間の packagePath を凍結。プレイ中トーストの照合にも使う)。 */
+  root: string;
+  /** ファイル一覧 (backend list_files の写し。カテゴリでグルーピング表示)。 */
+  files: { relPath: string; category: string }[];
+  /** 書庫由来か (`.kataribe_source.json` あり) — バッジ + 初回保存のフォーク確認。 */
+  fromSite: boolean;
+  /** 開いているファイルの相対パス ("" = 未選択)。 */
+  current: string;
+  /** エディタ本文 (v-model)。 */
+  text: string;
+  /** 最後に保存 (または読み込み) した本文。text との差 = ダーティ。 */
+  savedText: string;
+  /** 保存の往復中 (Ctrl+S 連打の二重送信防止)。 */
+  saving: boolean;
+}
+
+export function freshEditorState(): EditorState {
+  return { on: false, root: "", files: [], fromSite: false, current: "", text: "", savedText: "", saving: false };
+}
+
 /** 席色 (participants 宣言順)。青=1人目 / 赤=2人目 / 黄=3人目… (ユーザーFB 2026-07-23)。 */
 export const SEAT_COLORS = ["#3b82f6", "#ef4444", "#eab308", "#22c55e", "#a855f7"];
 
@@ -527,6 +552,8 @@ interface GameState {
   logDir: string;
   // ログ保存/フォルダ操作の一時トースト (App.vue が数秒表示して消す)。
   logToast: string;
+  // --- 編集モード (spec 28 Phase A) ---
+  editor: EditorState;
   // 使用中の AI モデル名 (TitleBar バッジ + OS ウィンドウタイトル)。get_llm_config から取得。
   llmModel: string;
   // 配布サイトに現在版より新しいアプリがあるか (TitleBar の「最新版があります」表示)。
@@ -636,6 +663,7 @@ export const useGameStore = defineStore("game", {
       updatingPath: null,
       logDir: loadLogDir(),
       logToast: "",
+      editor: freshEditorState(),
       llmModel: "",
       updateAvailable: false,
       latestVersion: "",
@@ -672,6 +700,9 @@ export const useGameStore = defineStore("game", {
   getters: {
     // ゴール到達済みか (入力を締める判断に使う)。
     cleared: (s): boolean => s.state?.goal_reached ?? false,
+    // 編集モードで未保存の変更があるか (● マーカー / 4 契機の確認の判定)。
+    editorDirty: (s): boolean =>
+      s.editor.on && s.editor.current !== "" && s.editor.text !== s.editor.savedText,
     // 開帳待ちのダイスが残っているか (spec 18 Phase A: 全部開くまで入力欄を締める)。
     hasUnrevealedDice: (s): boolean =>
       s.log.some(
@@ -953,6 +984,97 @@ export const useGameStore = defineStore("game", {
       this.confirmDialog = null;
       confirmResolver?.(ok);
       confirmResolver = null;
+    },
+
+    // ------------------------------------------------------------------
+    // 編集モード (spec 28 Phase A)
+    // ------------------------------------------------------------------
+
+    /** 鉛筆トグル。ON = backend に編集ルートを登録して一覧を受ける / OFF = exitEditor。 */
+    async toggleEditor() {
+      if (this.editor.on) {
+        await this.exitEditor();
+        return;
+      }
+      // 一次ガード (卓中・未選択はボタン側 disable と二層)。
+      if (!this.packagePath || this.multi.role !== "solo") return;
+      try {
+        const view = await invoke<{ files: { rel_path: string; category: string }[]; from_site: boolean }>(
+          "open_editor",
+          { path: this.packagePath },
+        );
+        this.editor = {
+          ...freshEditorState(),
+          on: true,
+          root: this.packagePath,
+          files: view.files.map((f) => ({ relPath: f.rel_path, category: f.category })),
+          fromSite: view.from_site,
+        };
+      } catch (e) {
+        this.logToast = String(e);
+      }
+    },
+
+    /** 編集モードを出る。未保存があれば確認 (force は確認済みの経路 = パッケージ切替/終了)。
+     *  戻り値 false = ユーザーがキャンセルして留まった。 */
+    async exitEditor(force = false): Promise<boolean> {
+      if (!this.editor.on) return true;
+      if (!force && this.editorDirty) {
+        if (!(await this.askConfirm(t("editor.discardConfirm"), t("editor.discardOk")))) return false;
+      }
+      try {
+        await invoke("close_editor");
+      } catch {
+        // 登録解除の失敗は無視してよい (次の open_editor が上書く)。
+      }
+      this.editor = freshEditorState();
+      return true;
+    },
+
+    /** ファイルを開く。未保存があれば確認 (OK = 破棄して切替。保存したければ先に Ctrl+S)。 */
+    async openEditorFile(relPath: string) {
+      if (!this.editor.on || relPath === this.editor.current) return;
+      if (this.editorDirty) {
+        if (!(await this.askConfirm(t("editor.discardConfirm"), t("editor.discardOk")))) return;
+      }
+      try {
+        const text = await invoke<string>("read_editor_file", { relPath });
+        this.editor.current = relPath;
+        this.editor.text = text;
+        this.editor.savedText = text;
+      } catch (e) {
+        this.logToast = String(e);
+      }
+    },
+
+    /** 保存 (Ctrl+S / 保存ボタン)。書庫由来なら初回にフォーク確認 (spec 28 B)。 */
+    async saveEditorFile() {
+      const ed = this.editor;
+      if (!ed.on || !ed.current || ed.saving) return;
+      const fork = ed.fromSite;
+      if (fork && !(await this.askConfirm(t("editor.forkConfirm"), t("editor.forkOk")))) return;
+      ed.saving = true;
+      try {
+        const res = await invoke<{ forked: boolean; fork_warning: string | null }>("save_package_file", {
+          relPath: ed.current,
+          text: ed.text,
+          fork,
+        });
+        ed.savedText = ed.text;
+        if (res.forked) ed.fromSite = false; // メタが消えた = 以後は手動配置と同じ
+        if (res.fork_warning) {
+          this.logToast = res.fork_warning; // 保存は成功・メタ削除だけ失敗 (次の保存で再試行)
+        } else if (this.started && this.activePackagePath === ed.root) {
+          // プレイ中のパッケージを編集した — 黙って効かないのは不信の元 (spec 28)。
+          this.logToast = t("editor.savedWhilePlaying");
+        } else {
+          this.logToast = t("editor.saved", { file: ed.current });
+        }
+      } catch (e) {
+        this.logToast = String(e);
+      } finally {
+        ed.saving = false;
+      }
     },
 
     // 開発者モードの現在値を backend (プロセス env) から取り直す (起動時)。

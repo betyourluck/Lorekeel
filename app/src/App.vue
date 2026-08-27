@@ -10,7 +10,7 @@
  * 状態の真実は backend (GameState) が握る。ここは command が返す view を描画するだけ。
  * パッケージパスの追加/削除は PackageDialog、その他設定は SettingsDialog に分離。
  */
-import { computed, ref, watch, onMounted, onUnmounted } from "vue";
+import { computed, defineAsyncComponent, ref, watch, onMounted, onUnmounted } from "vue";
 import { transport } from "./transport";
 import { useGameStore } from "./stores/game";
 import { t } from "./i18n";
@@ -27,6 +27,10 @@ import TableBar from "./components/TableBar.vue";
 import TtsControls from "./components/TtsControls.vue";
 import ImageControls from "./components/ImageControls.vue";
 import Icon from "./components/Icon.vue";
+// 編集モード (spec 28)。CodeEditor (CodeMirror) を静的に握らないため動的 import —
+// chunk 境界は EditorPane (設定を開かない・編集しないセッションで CodeMirror を起動時に
+// 解析させない、spec 27 Phase C と同じ判断)。
+const EditorPane = defineAsyncComponent(() => import("./components/EditorPane.vue"));
 
 const game = useGameStore();
 const showSettings = ref(false);
@@ -132,6 +136,36 @@ watch(
 
 // 起動時: パッケージ一覧の取得 + 保存済みフォントサイズ (表示設定) の適用。
 // + ユーザー操作のたびに BGM 再生を試みる (初回 play が autoplay で弾かれても次の操作で復帰する)。
+// --- 編集モード (spec 28) の守り 2 つ ---
+// ①パッケージ切替: 編集中に選択が替わったら確認して強制 OFF (spec 28 A.7 契機 (c))。
+//   キャンセルなら選択を戻す (revert 中の再入は reverting で塞ぐ)。
+let revertingPkg = false;
+watch(
+  () => game.packagePath,
+  async (nv, ov) => {
+    if (!game.editor.on || nv === game.editor.root || revertingPkg) return;
+    const ok = await game.askConfirm(t("editor.switchPkgConfirm"), t("editor.switchPkgOk"));
+    if (ok) {
+      await game.exitEditor(true); // 確認はいま取った (二重確認にしない)
+    } else {
+      revertingPkg = true;
+      game.packagePath = ov;
+      revertingPkg = false;
+    }
+  },
+);
+// ②アプリ終了 (spec 28 A.7 契機 (d)): 未保存があれば確認してから閉じる。
+onMounted(async () => {
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  await getCurrentWindow().onCloseRequested(async (event) => {
+    if (!game.editorDirty) return;
+    event.preventDefault();
+    if (await game.askConfirm(t("editor.closeAppConfirm"), t("editor.discardOk"))) {
+      await getCurrentWindow().destroy();
+    }
+  });
+});
+
 onMounted(() => {
   game.refreshPackages();
   game.refreshLlmModel(); // TitleBar のモデル名バッジ + OS ウィンドウタイトル
@@ -261,6 +295,10 @@ onUnmounted(() => {
         class="flex-1 flex flex-col min-w-0 bg-cover bg-center transition-[background-image] duration-700"
         :style="game.backgroundStyle"
       >
+        <!-- 編集モード (spec 28): 会話ペイン + 入力欄の代わりにエディタ。表示の差し替えのみ —
+             プレイ状態は破棄せず、OFF で元に戻る (タブ切替と同じ揮発性)。 -->
+        <EditorPane v-if="game.editor.on" />
+        <template v-else>
         <div
           v-if="!game.started"
           class="flex-1 flex items-center justify-center text-parchment/40 px-6 text-center"
@@ -311,6 +349,7 @@ onUnmounted(() => {
              ここに常設しないと「提出する」と「締める」が同時に見えない。 -->
         <TableBar />
         <ActionInput />
+        </template>
       </main>
 
       <!-- 右ペインの幅可変ツマミ。ドラッグで StatePanel の幅を変える (localStorage 永続)。

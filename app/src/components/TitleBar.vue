@@ -89,6 +89,29 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
       {{ t("titlebar.brand") }}<span v-if="version" class="ml-1.5 text-[10px] font-normal tracking-normal text-parchment/40">{{ version }}</span><span v-if="title" class="text-parchment/40 font-normal"> — {{ title }}</span>
     </div>
 
+    <!-- 編集モード (spec 28): タイトル横の鉛筆トグル。卓中・パッケージ未選択は disable
+         (一次ガード。backend の卓ガードと二層)。ON 中は ember で灯る。 -->
+    <button
+      class="tb-btn"
+      :class="game.editor.on ? 'edit-on' : ''"
+      :disabled="!game.packagePath || game.multi.role !== 'solo'"
+      :title="
+        game.multi.role !== 'solo'
+          ? t('editor.toggleBlockedTable')
+          : !game.packagePath
+            ? t('editor.toggleBlockedNoPkg')
+            : game.editor.on
+              ? t('editor.toggleOff')
+              : t('editor.toggleOn')
+      "
+      :aria-label="t('editor.toggleAria')"
+      @click="game.toggleEditor()"
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M17 3a2.8 2.8 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5z" />
+      </svg>
+    </button>
+
     <div data-tauri-drag-region class="flex-1 h-full"></div>
 
     <!-- テーマ切替 (ダーク時=太陽でライトへ / ライト時=月でダークへ)。既定ダーク・localStorage 永続。 -->
@@ -227,6 +250,15 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
 .tb-btn:hover {
   background: rgb(var(--parchment) / 0.1);
   color: rgb(var(--parchment) / 0.95);
+}
+/* 編集モード ON の鉛筆 (spec 28): ember で灯る。disable は減光 (卓中・未選択)。 */
+.tb-btn.edit-on {
+  color: rgb(var(--ember));
+  background: rgb(var(--ember) / 0.12);
+}
+.tb-btn:disabled {
+  opacity: 0.3;
+  pointer-events: none;
 }
 .tb-close:hover {
   background: #e53935;

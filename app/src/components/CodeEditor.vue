@@ -12,6 +12,7 @@
 import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { json, jsonParseLinter } from "@codemirror/lang-json";
+import { yaml } from "@codemirror/lang-yaml";
 import { defaultHighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { linter } from "@codemirror/lint";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
@@ -30,8 +31,9 @@ import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import { theme } from "../theme";
 
-/** `text` = 行番号も構文も持たない素の複数行 (プロンプト)。`json` = 構文色 + パースの lint。 */
-type EditorLanguage = "text" | "json";
+/** `text` = 行番号も構文も持たない素の複数行 (プロンプト)。`json` = 構文色 + パースの lint。
+ *  `yaml` = 構文色のみ (spec 28 — 診断は Phase B で backend の既存 lint を linter() に繋ぐ)。 */
+type EditorLanguage = "text" | "json" | "yaml";
 
 const props = withDefaults(
   defineProps<{
@@ -56,7 +58,9 @@ let editor: EditorView | null = null;
 
 /** `text` では構文も lint も付けない (プロンプトに文法は無い — 赤線は誤警告にしかならない)。 */
 function languageExtension(language: EditorLanguage) {
-  return language === "json" ? [json(), linter(jsonParseLinter())] : [];
+  if (language === "json") return [json(), linter(jsonParseLinter())];
+  if (language === "yaml") return [yaml()];
+  return [];
 }
 
 function readOnlyExtension(readonly: boolean) {
@@ -107,7 +111,7 @@ function editorTheme(dark: boolean, height: string) {
 
 onMounted(() => {
   if (!host.value) return;
-  const withLineNumbers = props.language === "json" ? [lineNumbers(), highlightActiveLineGutter()] : [];
+  const withLineNumbers = props.language !== "text" ? [lineNumbers(), highlightActiveLineGutter()] : [];
   editor = new EditorView({
     parent: host.value,
     state: EditorState.create({
