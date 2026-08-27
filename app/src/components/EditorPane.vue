@@ -78,11 +78,16 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
     </div>
 
     <!-- 本文。ファイル未選択なら案内 (選ぶ場所は右ペインのファイルタブ)。 -->
+    <!-- CodeEditor のルート div は高さを持たない (ダイアログ用途では固定 height の
+         .cm-editor を包むだけ)。ここでは height="100%" の連鎖を通すために class の
+         fallthrough で h-full を与える — 無いと本体が中身の高さまで伸び、flex 親に
+         切られて**下がスクロールできない** (実機で発覚)。 -->
     <div v-if="game.editor.current" class="flex-1 min-h-0 p-2">
       <CodeEditor
         v-model="game.editor.text"
         language="yaml"
         height="100%"
+        class="h-full"
         :lint-provider="lintProvider"
         :completion-source="completionSource"
       />
