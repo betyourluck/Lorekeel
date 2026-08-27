@@ -11,7 +11,7 @@
  * サムネイルは `asset://` だが、**前詰めでファイル名が固定のまま中身が入れ替わる**ので URL に
  * 版 (`?v=`) を付けてキャッシュを割る (failures #86)。
  */
-import { computed, onMounted, ref } from "vue";
+import { computed, defineAsyncComponent, onMounted, ref } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useGameStore } from "../stores/game";
 import { t } from "../i18n";
@@ -20,6 +20,18 @@ import Icon from "./Icon.vue";
 
 const game = useGameStore();
 const emit = defineEmits<{ (e: "close"): void }>();
+
+// クロップ (2026-08-28 ユーザー要望)。**エディタのメディアと同じダイアログ** —
+// CropDialog は保存先を知らず bytes を返すだけなので、ここでは枠へ差し替える。
+const CropDialog = defineAsyncComponent(() => import("./CropDialog.vue"));
+const cropping = ref<{ slot: number; src: string; label: string } | null>(null);
+async function applyCrop(bytes: Uint8Array) {
+  const target = cropping.value;
+  if (!target) return;
+  // 枠は拡張子を選ばない (backend が先頭バイトで嗅ぎ分ける) ので WebP 固定。
+  await game.putRefBytes(target.slot, bytes);
+  cropping.value = null;
+}
 
 onMounted(() => game.loadRefStock());
 
@@ -144,6 +156,16 @@ function onDrop(slot: number, e: DragEvent) {
             >
               <Icon name="folder" :size="13" />
             </button>
+            <!-- クロップ (2026-08-28 ユーザー要望): **たくさんキャラのいる設定画集から、
+                 今の場面に居ない人物を削る**ための切り抜き。エディタのメディアと同じ
+                 ダイアログを使い、結果はこの枠へ差し替える。 -->
+            <button
+              class="rounded-full bg-ink/70 p-1.5 text-parchment/80 hover:text-ember"
+              :title="t('refStock.crop')"
+              @click.stop="cropping = { slot: s.slot, src: s.url!, label: t('refStock.slotLabel', { n: String(s.slot) }) }"
+            >
+              <Icon name="image" :size="13" />
+            </button>
             <button
               class="rounded-full bg-ink/70 p-1.5 text-parchment/80 hover:text-warn"
               :title="t('refStock.delete')"
@@ -187,4 +209,15 @@ function onDrop(slot: number, e: DragEvent) {
       <span class="text-[10px] text-parchment/35">{{ t("refStock.reseedHint") }}</span>
     </div>
   </FloatingPanel>
+
+  <!-- クロップ (エディタのメディアと共通の部品)。参照ストックは枠へ差し替えるので
+       出力は WebP 固定 (枠は拡張子を選ばない = backend が先頭バイトで嗅ぎ分ける)。 -->
+  <CropDialog
+    v-if="cropping"
+    :src="cropping.src"
+    :label="cropping.label"
+    :note="t('refStock.cropNote')"
+    @apply="applyCrop"
+    @close="cropping = null"
+  />
 </template>

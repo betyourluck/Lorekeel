@@ -2,22 +2,40 @@
 /**
  * 画像のクロップ (spec 28 追補、2026-08-28 ユーザー要望「画像はクロップで削れる」)。
  *
- * **同じアセット ID へ書き戻す** — 名前が変わると参照している YAML を全部書き直す
- * 羽目になるので、切ったあとも `gate.webp` は `gate.webp` のまま。不可逆なので
- * 確認を挟む (シードリセット・「入れ直す」と同じ線)。
+ * **保存先を知らない部品** — 切り抜いたバイト列を `apply` で返すだけで、どこへ
+ * 書くかは親が決める。使い手は 2 つ:
+ * - エディタのメディア (spec 28): **同じアセット ID へ上書き** — 名前が変わると
+ *   参照している YAML を全部書き直す羽目になるため。
+ * - 参照ストックの枠 (spec 27、2026-08-28 ユーザー要望): **その枠を差し替え** —
+ *   「たくさんキャラのいる設定画集から、今の場面に居ない人物を削る」ため。
+ * 保存先の知識をここに持たせないのは、二つ目が来たときに分岐が増えるのを避けるため
+ * (最初の実装は `replaceEditorMedia` を直に呼んでいた = 一般化はこの要望で入った)。
  *
  * 切り抜きは canvas で完結する (Rust に image crate を足さない — spec 27 の
- * ローカル取り込みと同じ規律)。出力は元の形式に合わせる: WebP/PNG は同じ形式、
- * JPEG も WebP へは変えない (backend が中身を嗅ぎ分けて置き場を決めるので、
- * 形式が変わると拡張子と食い違う)。
+ * ローカル取り込みと同じ規律)。出力形式は親が `mime` で決める: エディタは元の
+ * 形式に合わせ (backend が中身を嗅ぎ分けて置き場を決めるので拡張子と食い違わせない)、
+ * 参照ストックは WebP 固定 (枠は拡張子を選ばない)。
  */
 import { computed, onMounted, ref } from "vue";
 
 import { t } from "../i18n";
 import { useGameStore } from "../stores/game";
 
-const props = defineProps<{ src: string; relPath: string }>();
-const emit = defineEmits<{ (e: "close"): void }>();
+const props = withDefaults(
+  defineProps<{
+    /** 切り抜く元画像 (asset:// URL)。 */
+    src: string;
+    /** 確認ダイアログに出す対象名 (ファイル名 / 「参照 2」など)。 */
+    label: string;
+    /** 出力形式。親が保存先の作法に合わせて決める。 */
+    mime?: string;
+    /** 下段の注記。**保存先ごとに言うべきことが違う**ので親が渡す
+     *  (エディタ = ID が変わらない / 参照ストック = 枠を差し替える)。 */
+    note?: string;
+  }>(),
+  { mime: "image/webp", note: "" },
+);
+const emit = defineEmits<{ (e: "close"): void; (e: "apply", bytes: Uint8Array): void }>();
 
 const game = useGameStore();
 const img = ref<HTMLImageElement | null>(null);
@@ -90,7 +108,7 @@ function reset() {
 async function apply() {
   const el = img.value;
   if (!el || busy.value) return;
-  if (!(await game.askConfirm(t("editor.cropConfirm", { file: props.relPath }), t("editor.cropOk")))) return;
+  if (!(await game.askConfirm(t("editor.cropConfirm", { file: props.label }), t("editor.cropOk")))) return;
   busy.value = true;
   try {
     const { w: nw, h: nh } = natural.value;
@@ -104,12 +122,11 @@ async function apply() {
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("canvas 2d context unavailable");
     ctx.drawImage(el, sx, sy, sw, sh, 0, 0, sw, sh);
-    // 出力形式は元に合わせる (backend が中身で置き場を決めるので、拡張子と食い違わせない)。
-    const mime = props.relPath.toLowerCase().endsWith(".png") ? "image/png" : "image/webp";
-    const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, mime, 0.92));
+    const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, props.mime, 0.92));
     if (!blob) throw new Error("encode failed");
-    const ok = await game.replaceEditorMedia(props.relPath, new Uint8Array(await blob.arrayBuffer()));
-    if (ok) emit("close");
+    // 保存は親の責務 (この部品は保存先を知らない)。閉じるのも親が決める —
+    // 保存に失敗したときに枠を閉じてしまうと、切った範囲がやり直しになる。
+    emit("apply", new Uint8Array(await blob.arrayBuffer()));
   } catch (e) {
     game.logToast = String(e);
   } finally {
@@ -127,7 +144,7 @@ onMounted(() => {
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6" @click.self="emit('close')">
     <div class="flex max-h-full w-full max-w-3xl flex-col rounded border border-ash bg-ink p-4">
       <div class="mb-2 flex items-center gap-2 text-sm">
-        <span class="font-mono text-parchment/80">{{ relPath }}</span>
+        <span class="font-mono text-parchment/80">{{ label }}</span>
         <span class="text-parchment/40 text-xs">{{ outSize.w }} × {{ outSize.h }} px</span>
         <span class="flex-1"></span>
         <button class="px-2 py-0.5 rounded border border-ash text-xs text-parchment/70 hover:text-parchment" @click="reset">
@@ -168,7 +185,7 @@ onMounted(() => {
       </div>
 
       <div class="mt-3 flex items-center gap-2">
-        <p class="flex-1 text-xs text-parchment/40">{{ t("editor.cropNote") }}</p>
+        <p class="flex-1 text-xs text-parchment/40">{{ note }}</p>
         <button class="px-3 py-1 rounded border border-ash text-sm text-parchment/70 hover:text-parchment" @click="emit('close')">
           {{ t("editor.cropCancel") }}
         </button>

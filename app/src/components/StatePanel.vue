@@ -121,6 +121,13 @@ onBeforeUnmount(() => {
   audio = null;
 });
 
+/** 切り抜きを**同じアセット ID へ**書き戻す (名前が変わると参照している YAML を
+ *  全部書き直す羽目になるため)。保存に失敗したらダイアログは閉じない。 */
+async function applyCrop(bytes: Uint8Array) {
+  if (!cropping.value) return;
+  if (await game.replaceEditorMedia(cropping.value.relPath, bytes)) cropping.value = null;
+}
+
 function onDrop(e: DragEvent) {
   dropping.value = false;
   const files = Array.from(e.dataTransfer?.files ?? []);
@@ -899,7 +906,15 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
     </div>
 
     <!-- クロップ (spec 28 追補)。動的 import — 触らないセッションで読み込まない。 -->
-    <CropDialog v-if="cropping" :src="cropping.src" :rel-path="cropping.relPath" @close="cropping = null" />
+    <CropDialog
+      v-if="cropping"
+      :src="cropping.src"
+      :label="cropping.relPath"
+      :mime="cropping.relPath.toLowerCase().endsWith('.png') ? 'image/png' : 'image/webp'"
+      :note="t('editor.cropNote')"
+      @apply="applyCrop"
+      @close="cropping = null"
+    />
   </aside>
 </template>
 

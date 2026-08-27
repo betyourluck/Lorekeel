@@ -951,14 +951,22 @@ export const useGameStore = defineStore("game", {
      * 変換は Chromium のネイティブ WebP エンコーダ = Rust 側に image crate も libwebp も足さない。
      */
     async putRefFile(slot: number, file: File): Promise<void> {
+      const { fileToWebp } = await import("../imageConvert");
+      await this.putRefBytes(slot, await fileToWebp(file).catch((e) => {
+        this.logToast = t("refStock.fileFailed", { error: String(e) });
+        throw e;
+      }));
+    },
+    /** 変換済みバイト列を枠へ入れる (ローカル取り込みとクロップの共通部)。
+     *  枠は拡張子を選ばない — backend が先頭バイトで mime を嗅ぎ分ける。 */
+    async putRefBytes(slot: number, bytes: Uint8Array): Promise<void> {
       if (this.refStockBusy) return;
       this.refStockBusy = true;
       try {
-        const { fileToWebp } = await import("../imageConvert");
-        const bytes = await fileToWebp(file);
         this.refStock = await invoke("put_reference_bytes", bytes, {
           headers: { "x-slot": String(slot), "x-provider": this.imageGen.provider },
         });
+        // 前詰めで**名前が同じまま中身が入れ替わる**ので URL キャッシュを破る (failures #86)。
         this.refStockRev++;
       } catch (e) {
         this.logToast = t("refStock.fileFailed", { error: String(e) });
