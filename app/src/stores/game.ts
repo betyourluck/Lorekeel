@@ -1047,8 +1047,8 @@ export const useGameStore = defineStore("game", {
       }
     },
 
-    /** 新規キャラクター作成 (spec 28 Phase D)。作成 → 一覧差し替え → そのまま開く。 */
-    async createCharacter(stem: string) {
+    /** 新規ファイル作成 (spec 28 Phase D、4 カテゴリ)。作成 → 一覧差し替え → そのまま開く。 */
+    async createEditorFile(category: string, stem: string) {
       const ed = this.editor;
       if (!ed.on) return;
       // 未保存の確認は作成の**前** (作ってから切替をキャンセルされると、
@@ -1064,7 +1064,7 @@ export const useGameStore = defineStore("game", {
           files: { rel_path: string; category: string }[];
           forked: boolean;
           fork_warning: string | null;
-        }>("create_character_file", { stem, fork });
+        }>("create_editor_file", { category, stem, fork });
         ed.files = res.files.map((f) => ({ relPath: f.rel_path, category: f.category }));
         if (res.forked) ed.fromSite = false;
         if (res.fork_warning) this.logToast = res.fork_warning;
@@ -1074,6 +1074,36 @@ export const useGameStore = defineStore("game", {
         ed.text = text;
         ed.savedText = text;
         // 新ファイルは診断・語彙の対象 (cast に足せば entities にも載る)。
+        void this.refreshEditorIssues();
+        void this.refreshEditorVocab();
+      } catch (e) {
+        this.logToast = String(e);
+      }
+    },
+
+    /** ファイル削除 (2026-08-27 に v1 昇格)。不可逆の確認 → (書庫由来なら) フォーク確認。 */
+    async deleteEditorFile(relPath: string) {
+      const ed = this.editor;
+      if (!ed.on) return;
+      if (!(await this.askConfirm(t("editor.deleteConfirm", { file: relPath }), t("editor.deleteOk")))) return;
+      const fork = ed.fromSite;
+      if (fork && !(await this.askConfirm(t("editor.forkConfirm"), t("editor.forkOk")))) return;
+      try {
+        const res = await invoke<{
+          files: { rel_path: string; category: string }[];
+          forked: boolean;
+          fork_warning: string | null;
+        }>("delete_editor_file", { relPath, fork });
+        ed.files = res.files.map((f) => ({ relPath: f.rel_path, category: f.category }));
+        if (res.forked) ed.fromSite = false;
+        if (res.fork_warning) this.logToast = res.fork_warning;
+        else this.logToast = t("editor.deleted", { file: relPath });
+        // 開いていたファイルを消したらエディタを空へ (dirty ごと消えるのは削除確認が覆う)。
+        if (ed.current === relPath) {
+          ed.current = "";
+          ed.text = "";
+          ed.savedText = "";
+        }
         void this.refreshEditorIssues();
         void this.refreshEditorVocab();
       } catch (e) {

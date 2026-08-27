@@ -708,11 +708,21 @@ export const messages = {
       cat_memoria: "伏線 (メモリア)",
       issuesTitle: "検査 ({n} 件)",
       issueWholePkg: "(パッケージ全体)",
-      newChar: "新しいキャラクター…",
-      newCharPlaceholder: "ファイル名 (英数字)",
-      newCharTitle:
+      new_character: "新しいキャラクター…",
+      new_scenario: "新しいシナリオ…",
+      new_memoria: "新しい伏線…",
+      new_campaign: "campaign.yaml を作成 (複数シナリオを束ねる)",
+      newFilePlaceholder: "ファイル名 (英数字)",
+      newTitle_character:
         "ファイル名がそのままキャラクターの id になります (英数字と _ -)。盤面に出すには scenario の cast / present への追加が必要です (ジオラマの cast: [\"*\"] なら自動)",
-      newCharCreate: "作成",
+      newTitle_scenario:
+        "package.yaml の entry や campaign の modules から参照する名前です (英数字と _ -)",
+      newTitle_memoria: "ファイル名がそのまま伏線の id になります (英数字と _ -)",
+      newFileCreate: "作成",
+      deleteTitle: "{file} を削除",
+      deleteConfirm: "{file} を削除しますか？ 元に戻せません。",
+      deleteOk: "削除する",
+      deleted: "{file} を削除しました",
       reflectNote:
         "保存の反映は次の「新しいゲーム」またはロードから。検査が通っても遊べるとは限りません — 各ゴールへの到達経路は手でたどってください。",
     },
@@ -1414,11 +1424,21 @@ export const messages = {
       cat_memoria: "Foreshadowing (memoria/)",
       issuesTitle: "Inspection ({n})",
       issueWholePkg: "(whole package)",
-      newChar: "New character…",
-      newCharPlaceholder: "file name (alphanumeric)",
-      newCharTitle:
+      new_character: "New character…",
+      new_scenario: "New scenario…",
+      new_memoria: "New foreshadowing…",
+      new_campaign: "Create campaign.yaml (bundle multiple scenarios)",
+      newFilePlaceholder: "file name (alphanumeric)",
+      newTitle_character:
         "The file name becomes the character's id (alphanumeric, _ -). Add it to the scenario's cast / present to bring it on stage (automatic with cast: [\"*\"])",
-      newCharCreate: "Create",
+      newTitle_scenario:
+        "The name referenced by package.yaml's entry or a campaign's modules (alphanumeric, _ -)",
+      newTitle_memoria: "The file name becomes the fragment's id (alphanumeric, _ -)",
+      newFileCreate: "Create",
+      deleteTitle: "Delete {file}",
+      deleteConfirm: "Delete {file}? This cannot be undone.",
+      deleteOk: "Delete",
+      deleted: "Deleted {file}",
       reflectNote:
         "Saves take effect from the next New Game or load. Passing checks doesn't mean the package is playable — walk each goal's path by hand.",
     },

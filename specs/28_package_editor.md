@@ -32,7 +32,20 @@ lint と同じ表）、id はディスクの保存済みパッケージから（
 derive（`struct_keys` の要件）。PoC: app `editor_vocab` 3 本（型導出の表明 / 同梱
 パッケージからの id 収集と壊れ耐性 / campaign 全モジュール和）。app backend 62 green・
 workspace 362 green。
-**Phase D も同日実装済**。`create_character_file(stem, fork)` — 判定順は保存と同じ
+**Phase D は同日実装後、ユーザーFB でスコープ改訂** — 「削除も欲しい。作成は
+キャラクターだけでなく伏線・シナリオ・キャンペーンも。+ は各カテゴリのグループ内へ」。
+確定 3（characters/ のみ・削除は v2）をユーザー決定で上書き:
+**作成 4 カテゴリ**（`create_editor_file(category, stem, fork)` — scenario / character /
+memoria は入力つき、campaign は固定名 `campaign.yaml` ゆえ不在時だけワンクリック。
+雛形は全カテゴリ**そのまま parse できる**形で、scenario は validate も通る最小盤面。
+campaign を作っただけでは campaign-entry にならない — entry の差し替えは作者の判断）+
+**削除を v1 へ昇格**（`delete_editor_file` — **package.yaml だけ拒否**〔土台。UI 非表示 +
+backend 拒否の二層〕。entry シナリオや campaign.yaml の削除は許す — 壊れることは層 2 の
+inspect がエラーで報告する = 再構成の途中経過を機械が先回りで禁止しない。確認は
+不可逆の askConfirm → 書庫由来ならフォーク確認。リネームは v2 のまま）。
+UI は固定カテゴリ順のグループ + 各グループ内に「+ 新しい…」+ 行 hover の ✕。
+以下は初版 Phase D (characters/ のみ) の記録:
+`create_character_file(stem, fork)` — 判定順は保存と同じ
 （卓ガード → stem 検証 → 原子書き込み → fork のメタ削除）。stem 検証は確定 3 の
 保守的文字集合（英数 + `_` `-`、1〜64）に加え**予約 EntityId（`player` / `party` / `*`）
 を名指しで拒否**（ファイル名 = EntityId なので `characters/player.yaml` は主人公
@@ -239,7 +252,8 @@ Kataribe にとってはこちらの方が正しい形になる — 検査規則
 ## スコープ外（v1）
 
 - LSP サーバ / 外部エディタ連携（上記「前提の訂正」— 立てる理由が無い）
-- ファイルの削除・リネーム / 画像・音声アセットの管理（既存「フォルダを開く」の領分）
+- ファイルのリネーム（削除は 2026-08-27 ユーザーFB で v1 へ昇格 — Status 参照）/
+  画像・音声アセットの管理（既存「フォルダを開く」の領分）
 - YAML 以外の編集（`README` 等）/ サブディレクトリの列挙
 - 診断の行位置の厳密解決・バッファ内 id の補完反映（Lezer 木 — 近似で足りなければ v2 で一緒に）
 - `campaign` / `memoria` の未知キー lint（parse のみ。実害が観測されたら

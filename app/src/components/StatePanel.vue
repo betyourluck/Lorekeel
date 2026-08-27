@@ -36,29 +36,39 @@ watch(filesVisible, (v) => {
   }
 });
 
-// ファイル一覧のカテゴリ別グルーピング (backend の列挙順 = カテゴリ順を保つ)。
-const editorGroups = computed(() => {
-  const groups: { category: string; files: { relPath: string; category: string }[] }[] = [];
-  for (const f of game.editor.files) {
-    const last = groups[groups.length - 1];
-    if (last && last.category === f.category) last.files.push(f);
-    else groups.push({ category: f.category, files: [f] });
-  }
-  return groups;
-});
+// ファイル一覧は**固定カテゴリ順** (2026-08-27 ユーザーFB: + は各カテゴリのグループ内へ)。
+// ファイルが 0 でも作成できるカテゴリはグループごと出す (フォルダ不在でも始められる)。
+const CATEGORY_ORDER = ["package", "campaign", "scenario", "character", "memoria"] as const;
+const editorGroups = computed(() =>
+  CATEGORY_ORDER.map((category) => ({
+    category: category as string,
+    files: game.editor.files.filter((f) => f.category === category),
+    // package は作成不可 (常に在る土台)。campaign は固定名 1 枚なので不在時だけ。
+    creatable: category !== "package" && (category !== "campaign" || !game.editor.files.some((f) => f.category === "campaign")),
+  })).filter((g) => g.files.length > 0 || g.creatable),
+);
 
-// 新規キャラクター (spec 28 Phase D)。+ ボタン → inline 入力 → Enter/作成。
-// characters/ グループの有無に依らず出す (フォルダ不在のパッケージでもここから始められる)。
-const newCharOpen = ref(false);
-const newCharStem = ref("");
-async function submitNewChar() {
-  const stem = newCharStem.value.trim();
-  if (!stem) return;
-  await game.createCharacter(stem);
+// 新規ファイル (spec 28 Phase D → 4 カテゴリへ一般化)。+ → inline 入力 → Enter/作成。
+// campaign は固定名なので入力を出さず即作成。
+const newFileCat = ref<string | null>(null);
+const newFileStem = ref("");
+function openNewFile(category: string) {
+  if (category === "campaign") {
+    void game.createEditorFile("campaign", "");
+    return;
+  }
+  newFileCat.value = category;
+  newFileStem.value = "";
+}
+async function submitNewFile() {
+  const cat = newFileCat.value;
+  const stem = newFileStem.value.trim();
+  if (!cat || !stem) return;
+  await game.createEditorFile(cat, stem);
   // 成功したら current が新ファイルを指す。失敗はトーストが出るので入力は残す。
-  if (game.editor.current === `characters/${stem}.yaml`) {
-    newCharOpen.value = false;
-    newCharStem.value = "";
+  if (game.editor.current.endsWith(`/${stem}.yaml`)) {
+    newFileCat.value = null;
+    newFileStem.value = "";
   }
 }
 
@@ -248,9 +258,9 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
             <Icon name="folder" :size="12" />{{ t(`editor.cat_${g.category}`) }}
           </div>
           <ul class="space-y-0.5">
-            <li v-for="f in g.files" :key="f.relPath">
+            <li v-for="f in g.files" :key="f.relPath" class="group/file flex items-center">
               <button
-                class="w-full text-left px-2 py-1 rounded text-xs font-mono truncate transition-colors"
+                class="min-w-0 flex-1 text-left px-2 py-1 rounded text-xs font-mono truncate transition-colors"
                 :class="
                   game.editor.current === f.relPath
                     ? 'bg-ember/15 text-glow'
@@ -265,36 +275,45 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
                   >●</span
                 >
               </button>
+              <!-- 削除 (2026-08-27 に v1 昇格)。package.yaml は土台なので出さない
+                   (backend も拒否する = 二層)。hover で現れる小さな ×。 -->
+              <button
+                v-if="f.relPath !== 'package.yaml'"
+                class="shrink-0 px-1.5 py-1 text-xs text-parchment/25 opacity-0 group-hover/file:opacity-100 hover:text-red-400 transition-opacity"
+                :title="t('editor.deleteTitle', { file: f.relPath })"
+                @click="game.deleteEditorFile(f.relPath)"
+              >
+                ✕
+              </button>
+            </li>
+            <!-- + 新規 (カテゴリ内・2026-08-27 ユーザーFB)。campaign は固定名なので即作成。 -->
+            <li v-if="g.creatable">
+              <button
+                v-if="newFileCat !== g.category"
+                class="w-full text-left px-2 py-1 rounded text-xs text-parchment/40 hover:bg-ash/40 hover:text-parchment transition-colors"
+                @click="openNewFile(g.category)"
+              >
+                <Icon name="plus" :size="11" /> {{ t(`editor.new_${g.category}`) }}
+              </button>
+              <div v-else class="flex items-center gap-1">
+                <input
+                  v-model="newFileStem"
+                  class="min-w-0 flex-1 rounded border border-ash bg-ash/30 px-2 py-1 text-xs font-mono"
+                  :placeholder="t('editor.newFilePlaceholder')"
+                  :title="t(`editor.newTitle_${g.category}`)"
+                  @keydown.enter.prevent="submitNewFile"
+                  @keydown.esc="newFileCat = null"
+                />
+                <button
+                  class="shrink-0 px-2 py-1 rounded border border-ash text-xs text-parchment/70 hover:border-ember/60 hover:text-parchment disabled:opacity-40"
+                  :disabled="!newFileStem.trim()"
+                  @click="submitNewFile"
+                >
+                  {{ t("editor.newFileCreate") }}
+                </button>
+              </div>
             </li>
           </ul>
-        </div>
-        <!-- 新規キャラクター (spec 28 Phase D)。ジオラマ (cast: ["*"]) の
-             「キャラファイルを足せば動く」をアプリ内で完結させる導線。 -->
-        <div class="mb-3">
-          <button
-            v-if="!newCharOpen"
-            class="w-full text-left px-2 py-1 rounded text-xs text-parchment/50 hover:bg-ash/40 hover:text-parchment transition-colors"
-            @click="newCharOpen = true"
-          >
-            <Icon name="plus" :size="11" /> {{ t("editor.newChar") }}
-          </button>
-          <div v-else class="flex items-center gap-1">
-            <input
-              v-model="newCharStem"
-              class="min-w-0 flex-1 rounded border border-ash bg-ash/30 px-2 py-1 text-xs font-mono"
-              :placeholder="t('editor.newCharPlaceholder')"
-              :title="t('editor.newCharTitle')"
-              @keydown.enter.prevent="submitNewChar"
-              @keydown.esc="newCharOpen = false"
-            />
-            <button
-              class="shrink-0 px-2 py-1 rounded border border-ash text-xs text-parchment/70 hover:border-ember/60 hover:text-parchment disabled:opacity-40"
-              :disabled="!newCharStem.trim()"
-              @click="submitNewChar"
-            >
-              {{ t("editor.newCharCreate") }}
-            </button>
-          </div>
         </div>
         <!-- 層 2 診断 (spec 28 Phase B): パッケージ全体の inspect。ファイル横断の破れは
              ここにしか出ない。file が引けた行はクリックでそのファイルへ。 -->

@@ -162,60 +162,123 @@ pub fn save_with_fork(
     }
 }
 
-/// 新規キャラクターのファイル名 stem の検証 (spec 28 Phase D)。
-/// **ファイル名 = EntityId** なので保守的に縛る (`resolve_asset` と同系):
-/// 英数と `_` `-`、1〜64 字。加えて**予約 EntityId を拒否** — `player` は主人公スロット、
-/// `party` はパーティ sentinel、`*` はワイルドカード (文字集合でも落ちるが名指しで言う)。
-/// 既存ファイルの編集は縛らない (一覧は実在ファイルから作る) — これは新規だけの門。
-pub fn validate_new_character_stem(stem: &str) -> Result<(), String> {
+/// 新規ファイルの stem の検証 (spec 28 Phase D)。保守的に縛る (`resolve_asset` と同系):
+/// 英数と `_` `-`、1〜64 字。既存ファイルの編集は縛らない (一覧は実在ファイルから作る) —
+/// これは新規だけの門。character では**ファイル名 = EntityId** になるので、加えて
+/// 予約 id (`player` = 主人公スロット / `party` = sentinel / `*` = ワイルドカード) を
+/// 名指しで拒否する。
+fn validate_new_stem(stem: &str, id_note: &str) -> Result<(), String> {
     if stem.is_empty() || stem.len() > 64 {
         return Err("ファイル名は 1〜64 文字で入力してください".to_string());
     }
     if !stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-        return Err(format!(
-            "ファイル名に使えるのは英数字と _ - だけです (ファイル名がそのままキャラクターの id になります): {stem}"
-        ));
-    }
-    if stem == gm_core::PLAYER || stem == gm_core::PARTY || stem == gm_core::WILDCARD {
-        return Err(format!("「{stem}」は予約された id です (主人公/パーティ用)"));
+        return Err(format!("ファイル名に使えるのは英数字と _ - だけです ({id_note}): {stem}"));
     }
     Ok(())
 }
 
-/// 新規キャラクターの作成 (spec 28 Phase D)。characters/ 直下に雛形を書き、相対パスを返す。
-/// 雛形の `name` は stem を入れておく (`name:` の null は CharacterDef の String で
-/// parse エラーになるし、空欄より「そのまま動いて後で直す」が新規の摩擦を減らす)。
-/// 重複は明示エラー (既存ファイルを黙って開き直さない — 上書きの芽を作らない)。
-/// fork の意味論は保存と同じ (新ファイルの追加も tree_hash を変える = 書庫更新の対象外化)。
-pub fn create_character(
+/// fork のメタ削除 (書き込み/削除の**成功後**に呼ぶ。順序と冪等則は spec 28 A.6)。
+fn fork_meta(root: &Path, fork: bool, meta_file: &str) -> (bool, Option<String>) {
+    if !fork {
+        return (false, None);
+    }
+    match std::fs::remove_file(root.join(meta_file)) {
+        Ok(()) => (true, None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (true, None),
+        Err(e) => (
+            false,
+            Some(format!("出所メタの削除に失敗しました (次の保存で再試行します): {e}")),
+        ),
+    }
+}
+
+/// 新規ファイルの作成 (spec 28 Phase D、2026-08-27 に 4 カテゴリへ一般化 = ユーザーFB)。
+/// 雛形は**そのまま parse できる**形にする (作った瞬間に赤線が出る雛形は摩擦):
+/// - character: `name` に stem (null は String で parse エラー・後で直せばよい)
+/// - scenario: start + goal + 場所 1 つ (validate も通る最小盤面)
+/// - memoria: tags + text (text は必須欄)
+/// - campaign: **固定名 campaign.yaml** (stem 不要・在れば拒否)。作っただけでは
+///   campaign-entry にならない — package.yaml の entry を差し替えるのは作者の判断
+///
+/// 重複は明示エラー (黙って開き直さない — 上書きの芽を作らない)。
+/// fork の意味論は保存と同じ (新ファイルの追加も tree_hash を変える)。
+pub fn create_file(
     root: &Path,
+    category: &str,
     stem: &str,
     fork: bool,
     meta_file: &str,
 ) -> Result<(String, bool, Option<String>), String> {
-    validate_new_character_stem(stem)?;
-    let rel = format!("characters/{stem}.yaml");
-    let dir = root.join("characters");
-    let path = dir.join(format!("{stem}.yaml"));
+    let (rel, template) = match category {
+        "character" => {
+            validate_new_stem(stem, "ファイル名がそのままキャラクターの id になります")?;
+            if stem == gm_core::PLAYER || stem == gm_core::PARTY || stem == gm_core::WILDCARD {
+                return Err(format!("「{stem}」は予約された id です (主人公/パーティ用)"));
+            }
+            (format!("characters/{stem}.yaml"), format!("name: {stem}\nprofile: \"\"\n"))
+        }
+        "memoria" => {
+            validate_new_stem(stem, "ファイル名がそのまま伏線の id になります")?;
+            (format!("memoria/{stem}.yaml"), "tags: []\ntext: \"\"\n".to_string())
+        }
+        "scenario" => {
+            validate_new_stem(stem, "package.yaml の entry や campaign の modules から参照する名前です")?;
+            (
+                format!("scenarios/{stem}.yaml"),
+                concat!(
+                    "title: \"\"\n",
+                    "start: start\n",
+                    "goal: { kind: flag_is, key: goal_flag, value: true }\n",
+                    "allowed_flags: [goal_flag]\n",
+                    "locations:\n",
+                    "  start:\n",
+                    "    description: \"\"\n",
+                )
+                .to_string(),
+            )
+        }
+        "campaign" => (
+            "campaign.yaml".to_string(),
+            concat!(
+                "title: \"\"\n",
+                "start: main\n",
+                "modules:\n",
+                "  main: scenarios/main.yaml\n",
+                "edges: []\n",
+            )
+            .to_string(),
+        ),
+        other => return Err(format!("このカテゴリには作成できません: {other}")),
+    };
+    let path = root.join(&rel);
     if path.exists() {
         return Err(format!("{rel} は既にあります"));
     }
-    std::fs::create_dir_all(&dir).map_err(|e| format!("characters/ を作れません: {e}"))?;
-    let template = format!("name: {stem}\nprofile: \"\"\n");
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("フォルダを作れません: {e}"))?;
+    }
     atomic_write(&path, &template)?;
-    // メタ削除は書き込み成功の後 (save_with_fork と同じ順序・同じ冪等則)。
-    if !fork {
-        return Ok((rel, false, None));
+    let (forked, warning) = fork_meta(root, fork, meta_file);
+    Ok((rel, forked, warning))
+}
+
+/// ファイルの削除 (2026-08-27 に v1 へ昇格 = ユーザーFB。リネームは v2 のまま)。
+/// **package.yaml だけは拒否** (消すとパッケージごと読めなくなる = エディタの土台が消える)。
+/// entry シナリオや campaign.yaml の削除は許す — 壊れることは層 2 の inspect が
+/// エラーとして報告する (作者の再構成の途中経過を機械が先回りで禁止しない)。
+/// 確認 (不可逆) は frontend の責務。fork の意味論は保存と同じ。
+pub fn delete_file(
+    root: &Path,
+    rel: &str,
+    fork: bool,
+    meta_file: &str,
+) -> Result<(bool, Option<String>), String> {
+    if rel == "package.yaml" {
+        return Err("package.yaml は削除できません (パッケージの土台です)".to_string());
     }
-    match std::fs::remove_file(root.join(meta_file)) {
-        Ok(()) => Ok((rel, true, None)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((rel, true, None)),
-        Err(e) => Ok((
-            rel,
-            false,
-            Some(format!("出所メタの削除に失敗しました (次の保存で再試行します): {e}")),
-        )),
-    }
+    let path = resolve_in_root(root, rel)?; // 実在 + containment
+    std::fs::remove_file(&path).map_err(|e| format!("削除に失敗しました: {e}"))?;
+    Ok(fork_meta(root, fork, meta_file))
 }
 
 #[cfg(test)]
@@ -281,40 +344,83 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Phase D: 新規キャラクター — stem 検証 (予約 id 込み)・雛形が CharacterDef として
-    /// parse できる・characters/ 不在でも作れる・重複は明示エラー・一覧に載る。
+    /// Phase D: 新規作成 4 カテゴリ — stem 検証 (character は予約 id 込み)・雛形が
+    /// それぞれの型として parse できる・フォルダ不在でも作れる・重複は明示エラー・一覧に載る。
     #[test]
-    fn create_character_writes_a_parseable_template_and_rejects_collisions() {
-        // stem 検証: 受ける / 拒否 (文字集合・長さ・予約 id)。
-        for ok in ["alice", "my_npc-2", "A1"] {
-            assert!(validate_new_character_stem(ok).is_ok(), "{ok}");
-        }
-        for bad in ["", "アリス", "a.b", "a/b", "a b", "player", "party", "*", &"x".repeat(65)] {
-            assert!(validate_new_character_stem(bad).is_err(), "{bad} は拒否すべき");
-        }
-
+    fn create_file_writes_parseable_templates_for_every_category() {
+        // stem 検証: 受ける / 拒否 (文字集合・長さ・character の予約 id)。
         let dir = std::env::temp_dir().join(format!("kataribe_editor_new_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("package.yaml"), "title: t\n").unwrap();
 
-        // characters/ が無くても作れる。
-        let (rel, forked, warn) = create_character(&dir, "beryl", false, ".meta").unwrap();
+        for bad in ["", "アリス", "a.b", "a/b", "a b", &"x".repeat(65)] {
+            assert!(create_file(&dir, "character", bad, false, ".meta").is_err(), "{bad}");
+            assert!(create_file(&dir, "scenario", bad, false, ".meta").is_err(), "{bad}");
+        }
+        for reserved in ["player", "party", "*"] {
+            assert!(create_file(&dir, "character", reserved, false, ".meta").is_err(), "{reserved}");
+        }
+        // 予約 id は character だけの縛り (memoria の promise_of_player 等は自由)。
+        assert!(create_file(&dir, "memoria", "player", false, ".meta").is_ok());
+
+        // character: 雛形が CharacterDef として parse でき、name に stem が入る。
+        let (rel, forked, warn) = create_file(&dir, "character", "beryl", false, ".meta").unwrap();
         assert_eq!(rel, "characters/beryl.yaml");
         assert!(!forked && warn.is_none());
-        // 雛形は CharacterDef として parse でき、name に stem が入っている。
-        let text = std::fs::read_to_string(dir.join(&rel)).unwrap();
-        let def: gm_core::CharacterDef = serde_yaml::from_str(&text).expect("雛形は必ず読める");
+        let def: gm_core::CharacterDef =
+            serde_yaml::from_str(&std::fs::read_to_string(dir.join(&rel)).unwrap()).unwrap();
         assert_eq!(def.name, "beryl");
-        // 一覧に載る。
-        assert!(list_files(&dir).iter().any(|f| f.rel_path == rel && f.category == "character"));
-        // 重複は明示エラー (黙って開き直さない)。
-        assert!(create_character(&dir, "beryl", false, ".meta").is_err());
+
+        // scenario: 雛形が parse でき **validate も通る** (作った瞬間に壊れていない)。
+        let (rel, ..) = create_file(&dir, "scenario", "chapter2", false, ".meta").unwrap();
+        let sc: gm_core::Scenario =
+            serde_yaml::from_str(&std::fs::read_to_string(dir.join(&rel)).unwrap()).unwrap();
+        assert!(sc.validate().is_empty(), "{:?}", sc.validate());
+
+        // memoria: text 必須欄が入って parse できる。
+        let (rel, ..) = create_file(&dir, "memoria", "old_promise", false, ".meta").unwrap();
+        let _: harness::MemoryFragment =
+            serde_yaml::from_str(&std::fs::read_to_string(dir.join(&rel)).unwrap()).unwrap();
+
+        // campaign: 固定名・stem 不要・二度目は拒否。parse できる。
+        let (rel, ..) = create_file(&dir, "campaign", "", false, ".meta").unwrap();
+        assert_eq!(rel, "campaign.yaml");
+        assert!(harness::Campaign::from_yaml(&std::fs::read_to_string(dir.join(&rel)).unwrap()).is_ok());
+        assert!(create_file(&dir, "campaign", "", false, ".meta").is_err());
+
+        // 一覧に載る + 重複は明示エラー。
+        let files = list_files(&dir);
+        assert!(files.iter().any(|f| f.rel_path == "characters/beryl.yaml"));
+        assert!(files.iter().any(|f| f.rel_path == "campaign.yaml"));
+        assert!(create_file(&dir, "character", "beryl", false, ".meta").is_err());
 
         // fork の順序は保存と同じ: 作成成功でメタが消える。
         std::fs::write(dir.join(".meta"), "{}").unwrap();
-        let (_, forked, _) = create_character(&dir, "coral", true, ".meta").unwrap();
+        let (_, forked, _) = create_file(&dir, "character", "coral", true, ".meta").unwrap();
         assert!(forked && !dir.join(".meta").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 削除 (v1 昇格): package.yaml は拒否・実在ファイルは消える・fork は成功後・
+    /// 実在しないファイルは明示エラー。
+    #[test]
+    fn delete_file_removes_but_protects_the_manifest() {
+        let dir = std::env::temp_dir().join(format!("kataribe_editor_del_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("scenarios")).unwrap();
+        std::fs::write(dir.join("package.yaml"), "title: t\n").unwrap();
+        std::fs::write(dir.join("scenarios/old.yaml"), "title: t\n").unwrap();
+        std::fs::write(dir.join(".meta"), "{}").unwrap();
+
+        assert!(delete_file(&dir, "package.yaml", false, ".meta").is_err(), "土台は守る");
+        assert!(delete_file(&dir, "scenarios/missing.yaml", false, ".meta").is_err());
+
+        let (forked, warn) = delete_file(&dir, "scenarios/old.yaml", true, ".meta").unwrap();
+        assert!(forked && warn.is_none());
+        assert!(!dir.join("scenarios/old.yaml").exists());
+        assert!(!dir.join(".meta").exists(), "fork は削除成功の後");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

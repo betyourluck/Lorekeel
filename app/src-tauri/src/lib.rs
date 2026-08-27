@@ -1579,10 +1579,11 @@ struct EditorCreateView {
     fork_warning: Option<String>,
 }
 
-/// characters/ へ新規キャラクターの雛形を作る (spec 28 Phase D)。判定順は保存と同じ:
-/// ①卓ガード → ②stem 検証 (editor::create_character 内) → ③原子書き込み → ④fork。
+/// 新規ファイルの雛形を作る (spec 28 Phase D、4 カテゴリ = scenario/character/memoria/
+/// campaign)。判定順は保存と同じ: ①卓ガード → ②stem 検証 → ③原子書き込み → ④fork。
 #[tauri::command]
-async fn create_character_file(
+async fn create_editor_file(
+    category: String,
     stem: String,
     fork: bool,
     session: tauri::State<'_, SharedSession>,
@@ -1594,7 +1595,26 @@ async fn create_character_file(
     let guard = editor_root.0.lock().await;
     let Some(base) = guard.as_ref() else { return Err("編集モードではありません".into()) };
     let (rel_path, forked, fork_warning) =
-        editor::create_character(base, &stem, fork, update::SOURCE_META_FILE)?;
+        editor::create_file(base, &category, &stem, fork, update::SOURCE_META_FILE)?;
+    Ok(EditorCreateView { rel_path, files: editor::list_files(base), forked, fork_warning })
+}
+
+/// ファイルの削除 (2026-08-27 に v1 昇格 = ユーザーFB)。package.yaml は editor 層が拒否。
+/// 不可逆の確認は frontend の責務 (askConfirm)。返りは作成と同じ形 (更新後の一覧込み)。
+#[tauri::command]
+async fn delete_editor_file(
+    rel_path: String,
+    fork: bool,
+    session: tauri::State<'_, SharedSession>,
+    editor_root: tauri::State<'_, EditorRoot>,
+) -> Result<EditorCreateView, String> {
+    if table_is_active(&session).await {
+        return Err("卓の最中は削除できません".into());
+    }
+    let guard = editor_root.0.lock().await;
+    let Some(base) = guard.as_ref() else { return Err("編集モードではありません".into()) };
+    let (forked, fork_warning) =
+        editor::delete_file(base, &rel_path, fork, update::SOURCE_META_FILE)?;
     Ok(EditorCreateView { rel_path, files: editor::list_files(base), forked, fork_warning })
 }
 
@@ -4593,7 +4613,8 @@ pub fn run() {
             lint_editor_text,
             inspect_editor_package,
             editor_vocabulary,
-            create_character_file,
+            create_editor_file,
+            delete_editor_file,
             delete_autosave,
             facts_add,
             facts_edit,
