@@ -286,6 +286,30 @@ onUnmounted(() => {
         >
           <Icon name="new" :size="18" />
         </button>
+        <!-- 編集モード (spec 28)。**ゲームの操作列に置く** (2026-08-28 ユーザーFB:
+             タイトルバーはアプリ全体の操作の場で、編集はパッケージに対する操作)。
+             ON は ember で灯る。卓中・パッケージ未選択は disable + 理由 (backend の
+             卓ガードと二層)。 -->
+        <button
+          :disabled="!game.packagePath || game.multi.role !== 'solo'"
+          class="grid h-8 w-8 place-items-center rounded hover:bg-ash/60 disabled:opacity-40"
+          :class="game.editor.on ? 'text-ember bg-ember/12' : 'text-parchment/60 hover:text-parchment'"
+          :title="
+            game.multi.role !== 'solo'
+              ? t('editor.toggleBlockedTable')
+              : !game.packagePath
+                ? t('editor.toggleBlockedNoPkg')
+                : game.editor.on
+                  ? t('editor.toggleOff')
+                  : t('editor.toggleOn')
+          "
+          :aria-label="t('editor.toggleAria')"
+          @click="game.toggleEditor()"
+        >
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M17 3a2.8 2.8 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5z" />
+          </svg>
+        </button>
       </div>
     </header>
 
