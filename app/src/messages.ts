@@ -4,7 +4,8 @@
  * 方針:
  * - エリア（コンポーネント/機能）ごとにネストする。key は英語の意味語で付ける。
  * - `{name}` はプレースホルダ（`t(key, { name })` で置換）。
- * - ブランド語（「語り部」/ "Kataribe"）は固有名として原則そのまま。
+ * - ブランド語は **"Outcasts Kataribe"**（ja/en 共通・訳さない）。2026-08-28 に
+ *   「語り部」/ "Kataribe" から改称 — 単独の Kataribe は検索で埋もれるため。
  * - **段階的移行中** — TitleBar / App ヘッダ / SettingsDialog を収録。残りのコンポーネント
  *   （StatePanel / PackageDialog / ConversationLog / ActionInput）は後続の増分で追加する。
  */
@@ -12,7 +13,7 @@ export const messages = {
   ja: {
     titlebar: {
       table: "多人数プレイ (卓)",
-      brand: "語り部",
+      brand: "Outcasts Kataribe",
       toLight: "ライトモードに切替",
       toDark: "ダークモードに切替",
       themeToggle: "テーマ切替",
@@ -635,9 +636,9 @@ export const messages = {
       closeTableReally: "本当に閉じる",
     },
     store: {
-      brandFallback: "語り部",
-      windowTitle: "Kataribe — 語り部",
-      windowTitleModel: "Kataribe — 語り部 ({model})",
+      brandFallback: "Outcasts Kataribe",
+      windowTitle: "Outcasts Kataribe",
+      windowTitleModel: "Outcasts Kataribe ({model})",
       openSiteFailed: "サイトを開けませんでした: {error}",
       folderPickFailed: "フォルダの選択に失敗しました: {error}",
       deleteSaveConfirm:
@@ -754,7 +755,7 @@ export const messages = {
   en: {
     titlebar: {
       table: "Multiplayer (table)",
-      brand: "Kataribe",
+      brand: "Outcasts Kataribe",
       toLight: "Switch to light mode",
       toDark: "Switch to dark mode",
       themeToggle: "Toggle theme",
@@ -1375,9 +1376,9 @@ export const messages = {
       closeTableReally: "Close it",
     },
     store: {
-      brandFallback: "Kataribe",
-      windowTitle: "Kataribe",
-      windowTitleModel: "Kataribe ({model})",
+      brandFallback: "Outcasts Kataribe",
+      windowTitle: "Outcasts Kataribe",
+      windowTitleModel: "Outcasts Kataribe ({model})",
       openSiteFailed: "Couldn't open the site: {error}",
       folderPickFailed: "Folder selection failed: {error}",
       deleteSaveConfirm:
