@@ -1047,6 +1047,40 @@ export const useGameStore = defineStore("game", {
       }
     },
 
+    /** 新規キャラクター作成 (spec 28 Phase D)。作成 → 一覧差し替え → そのまま開く。 */
+    async createCharacter(stem: string) {
+      const ed = this.editor;
+      if (!ed.on) return;
+      // 未保存の確認は作成の**前** (作ってから切替をキャンセルされると、
+      // 開かれないファイルだけが残って紛らわしい)。
+      if (this.editorDirty) {
+        if (!(await this.askConfirm(t("editor.discardConfirm"), t("editor.discardOk")))) return;
+      }
+      const fork = ed.fromSite;
+      if (fork && !(await this.askConfirm(t("editor.forkConfirm"), t("editor.forkOk")))) return;
+      try {
+        const res = await invoke<{
+          rel_path: string;
+          files: { rel_path: string; category: string }[];
+          forked: boolean;
+          fork_warning: string | null;
+        }>("create_character_file", { stem, fork });
+        ed.files = res.files.map((f) => ({ relPath: f.rel_path, category: f.category }));
+        if (res.forked) ed.fromSite = false;
+        if (res.fork_warning) this.logToast = res.fork_warning;
+        // 作った雛形をそのまま開く (dirty は上で確認済みなので素通り)。
+        const text = await invoke<string>("read_editor_file", { relPath: res.rel_path });
+        ed.current = res.rel_path;
+        ed.text = text;
+        ed.savedText = text;
+        // 新ファイルは診断・語彙の対象 (cast に足せば entities にも載る)。
+        void this.refreshEditorIssues();
+        void this.refreshEditorVocab();
+      } catch (e) {
+        this.logToast = String(e);
+      }
+    },
+
     /** 補完語彙の更新 (spec 28 Phase C)。失敗は沈黙 (補完が出ないだけ — 編集は止めない)。 */
     async refreshEditorVocab() {
       if (!this.editor.on) return;

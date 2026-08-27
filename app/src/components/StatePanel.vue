@@ -47,6 +47,21 @@ const editorGroups = computed(() => {
   return groups;
 });
 
+// 新規キャラクター (spec 28 Phase D)。+ ボタン → inline 入力 → Enter/作成。
+// characters/ グループの有無に依らず出す (フォルダ不在のパッケージでもここから始められる)。
+const newCharOpen = ref(false);
+const newCharStem = ref("");
+async function submitNewChar() {
+  const stem = newCharStem.value.trim();
+  if (!stem) return;
+  await game.createCharacter(stem);
+  // 成功したら current が新ファイルを指す。失敗はトーストが出るので入力は残す。
+  if (game.editor.current === `characters/${stem}.yaml`) {
+    newCharOpen.value = false;
+    newCharStem.value = "";
+  }
+}
+
 // 顔アイコンをクリックして詳細を見るキャラ (presence → クリックでプロフィール)。
 const selectedId = ref<string | null>(null);
 // 多人数 (spec 23): この entity を操作するプレイヤー (卓開始後のみ)。席色リングと
@@ -252,6 +267,34 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
               </button>
             </li>
           </ul>
+        </div>
+        <!-- 新規キャラクター (spec 28 Phase D)。ジオラマ (cast: ["*"]) の
+             「キャラファイルを足せば動く」をアプリ内で完結させる導線。 -->
+        <div class="mb-3">
+          <button
+            v-if="!newCharOpen"
+            class="w-full text-left px-2 py-1 rounded text-xs text-parchment/50 hover:bg-ash/40 hover:text-parchment transition-colors"
+            @click="newCharOpen = true"
+          >
+            <Icon name="plus" :size="11" /> {{ t("editor.newChar") }}
+          </button>
+          <div v-else class="flex items-center gap-1">
+            <input
+              v-model="newCharStem"
+              class="min-w-0 flex-1 rounded border border-ash bg-ash/30 px-2 py-1 text-xs font-mono"
+              :placeholder="t('editor.newCharPlaceholder')"
+              :title="t('editor.newCharTitle')"
+              @keydown.enter.prevent="submitNewChar"
+              @keydown.esc="newCharOpen = false"
+            />
+            <button
+              class="shrink-0 px-2 py-1 rounded border border-ash text-xs text-parchment/70 hover:border-ember/60 hover:text-parchment disabled:opacity-40"
+              :disabled="!newCharStem.trim()"
+              @click="submitNewChar"
+            >
+              {{ t("editor.newCharCreate") }}
+            </button>
+          </div>
         </div>
         <!-- 層 2 診断 (spec 28 Phase B): パッケージ全体の inspect。ファイル横断の破れは
              ここにしか出ない。file が引けた行はクリックでそのファイルへ。 -->

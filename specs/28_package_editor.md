@@ -1,6 +1,6 @@
 # spec 28: パッケージエディタ — 編集モード（YAML エディタ + Kataribe 特化診断）
 
-**Status**: rev2・**Phase A 実装済**（2026-08-27 起草 → 同日査読 2 本（軽微 8 + 要整理 5 +
+**Status**: rev2・**Phase A〜D 実装済 (GUI 目視残)**（2026-08-27 起草 → 同日査読 2 本（軽微 8 + 要整理 5 +
 追記 3）を反映、未決 4 点は両査読とも提案どおりで確定 → 同日 Phase A 実装。
 PoC: app backend 4 本（パス検証 / 一覧と containment / fork の順序 / 原子書き込み）。
 app backend 54 green（ignored 7）・clippy clean・vue-tsc + vite build green
@@ -32,7 +32,23 @@ lint と同じ表）、id はディスクの保存済みパッケージから（
 derive（`struct_keys` の要件）。PoC: app `editor_vocab` 3 本（型導出の表明 / 同梱
 パッケージからの id 収集と壊れ耐性 / campaign 全モジュール和）。app backend 62 green・
 workspace 362 green。
-残 = Phase D（characters/ 新規作成）+ GUI 目視
+**Phase D も同日実装済**。`create_character_file(stem, fork)` — 判定順は保存と同じ
+（卓ガード → stem 検証 → 原子書き込み → fork のメタ削除）。stem 検証は確定 3 の
+保守的文字集合（英数 + `_` `-`、1〜64）に加え**予約 EntityId（`player` / `party` / `*`）
+を名指しで拒否**（ファイル名 = EntityId なので `characters/player.yaml` は主人公
+スロットと静かに衝突する — 実装時に見つけた穴）。雛形の `name` は空欄でなく
+**stem を入れる**（`name:` の null は CharacterDef の String で parse エラーになるし、
+「そのまま動いて後で直す」が新規の摩擦を小さくする — 確定 3 の「空欄」から改訂）。
+重複は明示エラー（黙って開き直さない = 上書きの芽を作らない）。characters/ 不在でも
+作れる（フォルダごと作成）。返りは更新後の一覧込み（ref_stock の変更系と同じ
+1 往復流儀）。UI はファイルタブの「新しいキャラクター…」→ inline 入力
+（Enter/Esc）→ 作成後そのまま開く + 診断・語彙を再取得。fork 確認・未保存確認は
+作成の**前**（作ってから切替をキャンセルされると開かれないファイルだけが残る）。
+PoC: app 1 本（stem 検証 + 雛形が CharacterDef として parse できる + 重複拒否 +
+フォルダ作成 + fork 順序）。app backend 63 green。
+残 = **GUI 目視のみ**（A〜D 通し: トグル・卓排他・ファイル切替・●・4 契機の確認・
+赤線と近似行・検査一覧のクリック遷移・補完（キー/タグ値/id）・フォーク確認と
+バッジ・新規キャラ作成）
 
 ## 動機
 

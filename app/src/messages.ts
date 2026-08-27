@@ -708,6 +708,11 @@ export const messages = {
       cat_memoria: "メモリア (伏線)",
       issuesTitle: "検査 ({n} 件)",
       issueWholePkg: "(パッケージ全体)",
+      newChar: "新しいキャラクター…",
+      newCharPlaceholder: "ファイル名 (英数字)",
+      newCharTitle:
+        "ファイル名がそのままキャラクターの id になります (英数字と _ -)。盤面に出すには scenario の cast / present への追加が必要です (ジオラマの cast: [\"*\"] なら自動)",
+      newCharCreate: "作成",
       reflectNote:
         "保存の反映は次の「新しいゲーム」またはロードから。検査が通っても遊べるとは限りません — 各ゴールへの到達経路は手でたどってください。",
     },
@@ -1409,6 +1414,11 @@ export const messages = {
       cat_memoria: "Memoria (foreshadowing)",
       issuesTitle: "Inspection ({n})",
       issueWholePkg: "(whole package)",
+      newChar: "New character…",
+      newCharPlaceholder: "file name (alphanumeric)",
+      newCharTitle:
+        "The file name becomes the character's id (alphanumeric, _ -). Add it to the scenario's cast / present to bring it on stage (automatic with cast: [\"*\"])",
+      newCharCreate: "Create",
       reflectNote:
         "Saves take effect from the next New Game or load. Passing checks doesn't mean the package is playable — walk each goal's path by hand.",
     },

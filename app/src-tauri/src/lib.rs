@@ -1564,6 +1564,35 @@ async fn inspect_editor_package(
     Ok(out)
 }
 
+/// 新規キャラクター作成の返り (spec 28 Phase D)。files は更新後の一覧
+/// (1 往復で UI が揃う — ref_stock の変更系と同じ流儀)。
+#[derive(Serialize)]
+struct EditorCreateView {
+    rel_path: String,
+    files: Vec<editor::EditorFileEntry>,
+    forked: bool,
+    fork_warning: Option<String>,
+}
+
+/// characters/ へ新規キャラクターの雛形を作る (spec 28 Phase D)。判定順は保存と同じ:
+/// ①卓ガード → ②stem 検証 (editor::create_character 内) → ③原子書き込み → ④fork。
+#[tauri::command]
+async fn create_character_file(
+    stem: String,
+    fork: bool,
+    session: tauri::State<'_, SharedSession>,
+    editor_root: tauri::State<'_, EditorRoot>,
+) -> Result<EditorCreateView, String> {
+    if table_is_active(&session).await {
+        return Err("卓の最中は作成できません".into());
+    }
+    let guard = editor_root.lock().await;
+    let Some(base) = guard.as_ref() else { return Err("編集モードではありません".into()) };
+    let (rel_path, forked, fork_warning) =
+        editor::create_character(base, &stem, fork, update::SOURCE_META_FILE)?;
+    Ok(EditorCreateView { rel_path, files: editor::list_files(base), forked, fork_warning })
+}
+
 /// 補完語彙 (spec 28 Phase C)。編集モード入場時と保存成功時に frontend が取り直す
 /// (id 語彙のソースはディスクの保存済み状態 — 未保存バッファの id は次の保存まで出ない)。
 #[tauri::command]
@@ -4559,6 +4588,7 @@ pub fn run() {
             lint_editor_text,
             inspect_editor_package,
             editor_vocabulary,
+            create_character_file,
             delete_autosave,
             facts_add,
             facts_edit,

@@ -162,6 +162,62 @@ pub fn save_with_fork(
     }
 }
 
+/// 新規キャラクターのファイル名 stem の検証 (spec 28 Phase D)。
+/// **ファイル名 = EntityId** なので保守的に縛る (`resolve_asset` と同系):
+/// 英数と `_` `-`、1〜64 字。加えて**予約 EntityId を拒否** — `player` は主人公スロット、
+/// `party` はパーティ sentinel、`*` はワイルドカード (文字集合でも落ちるが名指しで言う)。
+/// 既存ファイルの編集は縛らない (一覧は実在ファイルから作る) — これは新規だけの門。
+pub fn validate_new_character_stem(stem: &str) -> Result<(), String> {
+    if stem.is_empty() || stem.len() > 64 {
+        return Err("ファイル名は 1〜64 文字で入力してください".to_string());
+    }
+    if !stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err(format!(
+            "ファイル名に使えるのは英数字と _ - だけです (ファイル名がそのままキャラクターの id になります): {stem}"
+        ));
+    }
+    if stem == gm_core::PLAYER || stem == gm_core::PARTY || stem == gm_core::WILDCARD {
+        return Err(format!("「{stem}」は予約された id です (主人公/パーティ用)"));
+    }
+    Ok(())
+}
+
+/// 新規キャラクターの作成 (spec 28 Phase D)。characters/ 直下に雛形を書き、相対パスを返す。
+/// 雛形の `name` は stem を入れておく (`name:` の null は CharacterDef の String で
+/// parse エラーになるし、空欄より「そのまま動いて後で直す」が新規の摩擦を減らす)。
+/// 重複は明示エラー (既存ファイルを黙って開き直さない — 上書きの芽を作らない)。
+/// fork の意味論は保存と同じ (新ファイルの追加も tree_hash を変える = 書庫更新の対象外化)。
+pub fn create_character(
+    root: &Path,
+    stem: &str,
+    fork: bool,
+    meta_file: &str,
+) -> Result<(String, bool, Option<String>), String> {
+    validate_new_character_stem(stem)?;
+    let rel = format!("characters/{stem}.yaml");
+    let dir = root.join("characters");
+    let path = dir.join(format!("{stem}.yaml"));
+    if path.exists() {
+        return Err(format!("{rel} は既にあります"));
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| format!("characters/ を作れません: {e}"))?;
+    let template = format!("name: {stem}\nprofile: \"\"\n");
+    atomic_write(&path, &template)?;
+    // メタ削除は書き込み成功の後 (save_with_fork と同じ順序・同じ冪等則)。
+    if !fork {
+        return Ok((rel, false, None));
+    }
+    match std::fs::remove_file(root.join(meta_file)) {
+        Ok(()) => Ok((rel, true, None)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((rel, true, None)),
+        Err(e) => Ok((
+            rel,
+            false,
+            Some(format!("出所メタの削除に失敗しました (次の保存で再試行します): {e}")),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +277,44 @@ mod tests {
         assert!(resolve_in_root(&dir, "scenarios/a.yaml").is_ok());
         assert!(resolve_in_root(&dir, "scenarios/sub/deep.yaml").is_err(), "段数超過は形で落ちる");
         assert!(resolve_in_root(&dir, "scenarios/missing.yaml").is_err(), "実在しないファイルは開けない");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Phase D: 新規キャラクター — stem 検証 (予約 id 込み)・雛形が CharacterDef として
+    /// parse できる・characters/ 不在でも作れる・重複は明示エラー・一覧に載る。
+    #[test]
+    fn create_character_writes_a_parseable_template_and_rejects_collisions() {
+        // stem 検証: 受ける / 拒否 (文字集合・長さ・予約 id)。
+        for ok in ["alice", "my_npc-2", "A1"] {
+            assert!(validate_new_character_stem(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", "アリス", "a.b", "a/b", "a b", "player", "party", "*", &"x".repeat(65)] {
+            assert!(validate_new_character_stem(bad).is_err(), "{bad} は拒否すべき");
+        }
+
+        let dir = std::env::temp_dir().join(format!("kataribe_editor_new_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("package.yaml"), "title: t\n").unwrap();
+
+        // characters/ が無くても作れる。
+        let (rel, forked, warn) = create_character(&dir, "beryl", false, ".meta").unwrap();
+        assert_eq!(rel, "characters/beryl.yaml");
+        assert!(!forked && warn.is_none());
+        // 雛形は CharacterDef として parse でき、name に stem が入っている。
+        let text = std::fs::read_to_string(dir.join(&rel)).unwrap();
+        let def: gm_core::CharacterDef = serde_yaml::from_str(&text).expect("雛形は必ず読める");
+        assert_eq!(def.name, "beryl");
+        // 一覧に載る。
+        assert!(list_files(&dir).iter().any(|f| f.rel_path == rel && f.category == "character"));
+        // 重複は明示エラー (黙って開き直さない)。
+        assert!(create_character(&dir, "beryl", false, ".meta").is_err());
+
+        // fork の順序は保存と同じ: 作成成功でメタが消える。
+        std::fs::write(dir.join(".meta"), "{}").unwrap();
+        let (_, forked, _) = create_character(&dir, "coral", true, ".meta").unwrap();
+        assert!(forked && !dir.join(".meta").exists());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
