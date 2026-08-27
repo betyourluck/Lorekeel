@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount, defineAsyncComponent } from "vue";
+import { ref, computed, watch, onMounted, onBeforeUnmount, defineAsyncComponent, nextTick } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useGameStore } from "../stores/game";
 import { t } from "../i18n";
@@ -89,28 +89,77 @@ function onDrop(e: DragEvent) {
   if (files.length) void game.putEditorMedia(files);
 }
 
-// 新規ファイル (spec 28 Phase D → 4 カテゴリへ一般化)。+ → inline 入力 → Enter/作成。
-// campaign は固定名なので入力を出さず即作成。
-const newFileCat = ref<string | null>(null);
-const newFileStem = ref("");
-function openNewFile(category: string) {
+// --- 行内編集 (2026-08-28 ユーザーFB: VS Code の流儀へ) ---
+// 「+ ボタン → 別の入力欄」ではなく、**一覧の中にその場で行が生まれて入力する**。
+// Enter で確定 / Esc で取り消し / blur も確定 (VS Code と同じ — 打った名前を捨てない)。
+// 作成 (creating) と改名 (renaming) が同じ器を使う。
+const creating = ref<string | null>(null); // 作成中のカテゴリ
+const renaming = ref<string | null>(null); // 改名中の relPath
+const draft = ref("");
+const draftInput = ref<HTMLInputElement | null>(null);
+// blur の確定と Enter/Esc の二重発火を防ぐ (Enter は blur も呼ぶ)。
+let settled = false;
+
+async function focusDraft(selectStem: boolean) {
+  await nextTick();
+  const el = draftInput.value;
+  if (!el) return;
+  el.focus();
+  // VS Code はリネームで**拡張子を除いた部分だけ**を選択する (拡張子は変えないことが多い)。
+  const dot = draft.value.lastIndexOf(".");
+  if (selectStem && dot > 0) el.setSelectionRange(0, dot);
+  else el.select();
+}
+
+function startCreate(category: string) {
   if (category === "campaign") {
-    void game.createEditorFile("campaign", "");
+    void game.createEditorFile("campaign", ""); // 固定名なので入力しない
     return;
   }
-  newFileCat.value = category;
-  newFileStem.value = "";
+  renaming.value = null;
+  creating.value = category;
+  draft.value = "";
+  settled = false;
+  void focusDraft(false);
 }
-async function submitNewFile() {
-  const cat = newFileCat.value;
-  const stem = newFileStem.value.trim();
-  if (!cat || !stem) return;
-  await game.createEditorFile(cat, stem);
-  // 成功したら current が新ファイルを指す。失敗はトーストが出るので入力は残す。
-  if (game.editor.current.endsWith(`/${stem}.yaml`)) {
-    newFileCat.value = null;
-    newFileStem.value = "";
-  }
+
+function startRename(relPath: string) {
+  creating.value = null;
+  renaming.value = relPath;
+  draft.value = relPath.split("/").pop() ?? "";
+  settled = false;
+  void focusDraft(true);
+}
+
+// エディタヘッダの F2 / ダブルクリックからの要求を拾う (入力欄は一覧の行だけ)。
+watch(
+  () => game.editorRenameRequest,
+  (rel) => {
+    if (!rel) return;
+    game.editorRenameRequest = null;
+    activeTab.value = "files";
+    game.editor.view = "text";
+    startRename(rel);
+  },
+);
+
+function cancelDraft() {
+  settled = true;
+  creating.value = null;
+  renaming.value = null;
+}
+
+async function commitDraft() {
+  if (settled) return;
+  settled = true;
+  const name = draft.value.trim();
+  const cat = creating.value;
+  const rel = renaming.value;
+  creating.value = null;
+  renaming.value = null;
+  if (!name) return; // 空のまま抜けた = 取り消し
+  if (cat) await game.createEditorFile(cat, name);
+  else if (rel && name !== rel.split("/").pop()) await game.renameEditorFile(rel, name);
 }
 
 // 顔アイコンをクリックして詳細を見るキャラ (presence → クリックでプロフィール)。
@@ -331,29 +380,45 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
                   alt=""
                   class="h-6 w-6 shrink-0 rounded object-cover bg-ash/40"
                 />
-                <button
-                  class="min-w-0 flex-1 text-left px-1.5 py-1 rounded text-xs font-mono truncate text-parchment/70 hover:bg-ash/40 hover:text-parchment transition-colors"
-                  :title="t('editor.assetCopyTitle')"
-                  @click="copyAssetId(f.relPath)"
-                >
-                  {{ f.relPath.split("/").pop() }}
-                </button>
-                <!-- クロップ (画像のみ)。同じ ID へ上書きするので YAML は書き直さなくてよい。 -->
-                <button
-                  v-if="g.category === 'image'"
-                  class="shrink-0 px-1 py-1 text-[10px] text-parchment/25 opacity-0 group-hover/media:opacity-100 hover:text-ember transition-opacity"
-                  :title="t('editor.cropTitle')"
-                  @click="cropping = { src: mediaUrl(f.relPath), relPath: f.relPath }"
-                >
-                  ⧉
-                </button>
-                <button
-                  class="shrink-0 px-1.5 py-1 text-xs text-parchment/25 opacity-0 group-hover/media:opacity-100 hover:text-red-400 transition-opacity"
-                  :title="t('editor.deleteTitle', { file: f.relPath })"
-                  @click="game.deleteEditorFile(f.relPath)"
-                >
-                  ✕
-                </button>
+                <!-- 改名はテキスト側と同じ流儀 (ダブルクリック → その行が入力欄になる)。
+                     **アセットは参照が lint の射程外**なので、名前を変えたら YAML 側の
+                     image/bgm/sound/icon 欄も自分で直す必要がある (title で告げる)。 -->
+                <input
+                  v-if="renaming === f.relPath"
+                  ref="draftInput"
+                  v-model="draft"
+                  class="min-w-0 flex-1 rounded border border-ember/60 bg-ash/40 px-1.5 py-1 text-xs font-mono outline-none"
+                  :title="t('editor.assetRenameTitle')"
+                  @keydown.enter.prevent="commitDraft"
+                  @keydown.esc.prevent="cancelDraft"
+                  @blur="commitDraft"
+                />
+                <template v-else>
+                  <button
+                    class="min-w-0 flex-1 text-left px-1.5 py-1 rounded text-xs font-mono truncate text-parchment/70 hover:bg-ash/40 hover:text-parchment transition-colors"
+                    :title="t('editor.assetRowTitle')"
+                    @click="copyAssetId(f.relPath)"
+                    @dblclick.prevent="startRename(f.relPath)"
+                  >
+                    {{ f.relPath.split("/").pop() }}
+                  </button>
+                  <!-- クロップ (画像のみ)。同じ ID へ上書きするので YAML は書き直さなくてよい。 -->
+                  <button
+                    v-if="g.category === 'image'"
+                    class="shrink-0 px-1 py-1 text-[10px] text-parchment/25 opacity-0 group-hover/media:opacity-100 hover:text-ember transition-opacity"
+                    :title="t('editor.cropTitle')"
+                    @click="cropping = { src: mediaUrl(f.relPath), relPath: f.relPath }"
+                  >
+                    ⧉
+                  </button>
+                  <button
+                    class="shrink-0 px-1.5 py-1 text-xs text-parchment/25 opacity-0 group-hover/media:opacity-100 hover:text-red-400 transition-opacity"
+                    :title="t('editor.deleteTitle', { file: f.relPath })"
+                    @click="game.deleteEditorFile(f.relPath)"
+                  >
+                    ✕
+                  </button>
+                </template>
               </li>
             </ul>
           </div>
@@ -362,65 +427,75 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
         </template>
 
         <template v-else>
-        <div v-for="g in editorGroups" :key="g.category" class="mb-3">
+        <div v-for="g in editorGroups" :key="g.category" class="group/cat mb-3">
+          <!-- カテゴリ見出し (VS Code のエクスプローラ節と同じ形): hover で新規アイコン。 -->
           <div class="text-parchment/40 mb-1.5 flex items-center gap-1.5 text-xs">
             <Icon name="folder" :size="12" />{{ t(`editor.cat_${g.category}`) }}
+            <span class="flex-1"></span>
+            <button
+              v-if="g.creatable"
+              class="px-1 text-parchment/30 opacity-0 group-hover/cat:opacity-100 hover:text-ember transition-opacity"
+              :title="t(`editor.new_${g.category}`)"
+              @click="startCreate(g.category)"
+            >
+              <Icon name="plus" :size="12" />
+            </button>
           </div>
           <ul class="space-y-0.5">
             <li v-for="f in g.files" :key="f.relPath" class="group/file flex items-center">
-              <button
-                class="min-w-0 flex-1 text-left px-2 py-1 rounded text-xs font-mono truncate transition-colors"
-                :class="
-                  game.editor.current === f.relPath
-                    ? 'bg-ember/15 text-glow'
-                    : 'text-parchment/70 hover:bg-ash/40 hover:text-parchment'
-                "
-                @click="game.openEditorFile(f.relPath)"
-              >
-                {{ f.relPath.split("/").pop()
-                }}<span
-                  v-if="game.editor.current === f.relPath && game.editorDirty"
-                  class="text-ember ml-1"
-                  >●</span
-                >
-              </button>
-              <!-- 削除 (2026-08-27 に v1 昇格)。package.yaml は土台なので出さない
-                   (backend も拒否する = 二層)。hover で現れる小さな ×。 -->
-              <button
-                v-if="f.relPath !== 'package.yaml'"
-                class="shrink-0 px-1.5 py-1 text-xs text-parchment/25 opacity-0 group-hover/file:opacity-100 hover:text-red-400 transition-opacity"
-                :title="t('editor.deleteTitle', { file: f.relPath })"
-                @click="game.deleteEditorFile(f.relPath)"
-              >
-                ✕
-              </button>
-            </li>
-            <!-- + 新規 (カテゴリ内・2026-08-27 ユーザーFB)。campaign は固定名なので即作成。 -->
-            <li v-if="g.creatable">
-              <button
-                v-if="newFileCat !== g.category"
-                class="w-full text-left px-2 py-1 rounded text-xs text-parchment/40 hover:bg-ash/40 hover:text-parchment transition-colors"
-                @click="openNewFile(g.category)"
-              >
-                <Icon name="plus" :size="11" /> {{ t(`editor.new_${g.category}`) }}
-              </button>
-              <div v-else class="flex items-center gap-1">
-                <input
-                  v-model="newFileStem"
-                  class="min-w-0 flex-1 rounded border border-ash bg-ash/30 px-2 py-1 text-xs font-mono"
-                  :placeholder="t('editor.newFilePlaceholder')"
-                  :title="t(`editor.newTitle_${g.category}`)"
-                  @keydown.enter.prevent="submitNewFile"
-                  @keydown.esc="newFileCat = null"
-                />
+              <!-- 改名中はその行が入力欄に化ける (VS Code と同じ — 別の場所へ飛ばない)。 -->
+              <input
+                v-if="renaming === f.relPath"
+                ref="draftInput"
+                v-model="draft"
+                class="min-w-0 flex-1 rounded border border-ember/60 bg-ash/40 px-2 py-1 text-xs font-mono outline-none"
+                @keydown.enter.prevent="commitDraft"
+                @keydown.esc.prevent="cancelDraft"
+                @blur="commitDraft"
+              />
+              <template v-else>
                 <button
-                  class="shrink-0 px-2 py-1 rounded border border-ash text-xs text-parchment/70 hover:border-ember/60 hover:text-parchment disabled:opacity-40"
-                  :disabled="!newFileStem.trim()"
-                  @click="submitNewFile"
+                  class="min-w-0 flex-1 text-left px-2 py-1 rounded text-xs font-mono truncate transition-colors"
+                  :class="
+                    game.editor.current === f.relPath
+                      ? 'bg-ember/15 text-glow'
+                      : 'text-parchment/70 hover:bg-ash/40 hover:text-parchment'
+                  "
+                  :title="t('editor.rowTitle')"
+                  @click="game.openEditorFile(f.relPath)"
+                  @dblclick.prevent="f.relPath !== 'package.yaml' && startRename(f.relPath)"
                 >
-                  {{ t("editor.newFileCreate") }}
+                  {{ f.relPath.split("/").pop()
+                  }}<span
+                    v-if="game.editor.current === f.relPath && game.editorDirty"
+                    class="text-ember ml-1"
+                    >●</span
+                  >
                 </button>
-              </div>
+                <!-- 削除 (2026-08-27 に v1 昇格)。package.yaml は土台なので出さない
+                     (backend も拒否する = 二層)。hover で現れる小さな ×。 -->
+                <button
+                  v-if="f.relPath !== 'package.yaml'"
+                  class="shrink-0 px-1.5 py-1 text-xs text-parchment/25 opacity-0 group-hover/file:opacity-100 hover:text-red-400 transition-opacity"
+                  :title="t('editor.deleteTitle', { file: f.relPath })"
+                  @click="game.deleteEditorFile(f.relPath)"
+                >
+                  ✕
+                </button>
+              </template>
+            </li>
+            <!-- 作成中の行 (VS Code と同じく**一覧の末尾にその場で生まれる**)。 -->
+            <li v-if="creating === g.category" class="flex items-center">
+              <input
+                ref="draftInput"
+                v-model="draft"
+                class="min-w-0 flex-1 rounded border border-ember/60 bg-ash/40 px-2 py-1 text-xs font-mono outline-none"
+                :placeholder="t('editor.newFilePlaceholder')"
+                :title="t(`editor.newTitle_${g.category}`)"
+                @keydown.enter.prevent="commitDraft"
+                @keydown.esc.prevent="cancelDraft"
+                @blur="commitDraft"
+              />
             </li>
           </ul>
         </div>

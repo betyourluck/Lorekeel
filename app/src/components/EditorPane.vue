@@ -39,9 +39,22 @@ async function lintProvider(text: string): Promise<EditorLintIssue[]> {
 // ファイル切替にソースを作り直さず追従する。
 const completionSource = makeCompletionSource(() => game.editor.vocab, currentKind);
 
-// Ctrl+S = 保存。ブラウザ既定 (ページ保存ダイアログ) は常に無効化し、
+/** 開いているファイルの改名 (F2 / ヘッダのダブルクリック)。VS Code と同じ契機。
+ *  一覧の行内編集と違いここはプロンプトを持たないので、簡易に window.prompt は使わず
+ *  ファイル一覧側へ委ねる — 名前を打つ場所は一箇所に保つ (二つあると流儀が割れる)。 */
+function renameCurrent() {
+  if (!game.editor.current) return;
+  game.editorRenameRequest = game.editor.current; // StatePanel が拾って行内編集を開く
+}
+
+// Ctrl+S = 保存 / F2 = 改名。ブラウザ既定 (ページ保存ダイアログ) は常に無効化し、
 // ファイルを開いている時だけ保存を飛ばす。
 function onKeydown(e: KeyboardEvent) {
+  if (e.key === "F2") {
+    e.preventDefault();
+    renameCurrent();
+    return;
+  }
   if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "s") return;
   e.preventDefault();
   void game.saveEditorFile();
@@ -54,7 +67,13 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
   <div class="flex-1 flex flex-col min-h-0 bg-ink">
     <!-- ヘッダ行: 開いているファイル + ● (未保存) + 保存。 -->
     <div class="flex items-center gap-2 px-3 py-1.5 border-b border-ash text-xs">
-      <span v-if="game.editor.current" class="font-mono text-parchment/80 truncate min-w-0">
+      <!-- 開いているファイル名。ダブルクリックで改名 (ファイル一覧の行と同じ流儀)。 -->
+      <span
+        v-if="game.editor.current"
+        class="font-mono text-parchment/80 truncate min-w-0 cursor-text"
+        :title="t('editor.headerTitle')"
+        @dblclick="renameCurrent"
+      >
         {{ game.editor.current }}<span v-if="game.editorDirty" class="text-ember ml-1" :title="t('editor.dirty')">●</span>
       </span>
       <span v-else class="text-parchment/40">{{ t("editor.noFile") }}</span>

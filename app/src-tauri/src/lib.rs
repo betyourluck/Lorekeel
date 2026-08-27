@@ -1629,6 +1629,43 @@ async fn delete_editor_file(
     Ok(EditorCreateView { rel_path, files: editor::list_files(base), forked, fork_warning })
 }
 
+/// ファイル名の変更 (spec 28 追補、2026-08-28 ユーザー要望)。同じフォルダの中だけ。
+/// **参照は追随しない** — 壊れることは層 2 の inspect が報告する (削除と同じ判断)。
+#[tauri::command]
+async fn rename_editor_file(
+    rel_path: String,
+    new_name: String,
+    fork: bool,
+    session: tauri::State<'_, SharedSession>,
+    editor_root: tauri::State<'_, EditorRoot>,
+) -> Result<EditorRenameView, String> {
+    if table_is_active(&session).await {
+        return Err("卓の最中は名前を変えられません".into());
+    }
+    let guard = editor_root.0.lock().await;
+    let Some(base) = guard.as_ref() else { return Err("編集モードではありません".into()) };
+    let rel_path = editor::rename_file(base, &rel_path, &new_name)?;
+    let (forked, fork_warning) = editor::fork_meta(base, fork, update::SOURCE_META_FILE);
+    Ok(EditorRenameView {
+        rel_path,
+        files: editor::list_files(base),
+        media: editor::list_media(base),
+        forked,
+        fork_warning,
+    })
+}
+
+/// リネームの返り。**files と media を両方**返す (対象がどちらかは呼び出し側が知っている
+/// が、返りを分けると frontend に分岐が増える — 1 往復で両方揃える)。
+#[derive(Serialize)]
+struct EditorRenameView {
+    rel_path: String,
+    files: Vec<editor::EditorFileEntry>,
+    media: Vec<editor::EditorFileEntry>,
+    forked: bool,
+    fork_warning: Option<String>,
+}
+
 /// メディアの投入 (spec 28 追補、2026-08-28)。**raw body** で受ける
 /// (`put_reference_bytes` と同じ流儀 — JSON の number[] は数 MB で数百万要素になる)。
 /// 名前は `x-name` ヘッダ (落とされた元のファイル名。charset へ潰すのは editor 層)。
@@ -4688,6 +4725,7 @@ pub fn run() {
             editor_vocabulary,
             create_editor_file,
             delete_editor_file,
+            rename_editor_file,
             put_editor_media,
             replace_editor_media,
             delete_autosave,

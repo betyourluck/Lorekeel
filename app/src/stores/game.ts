@@ -590,6 +590,10 @@ interface GameState {
   logDir: string;
   // ログ保存/フォルダ操作の一時トースト (App.vue が数秒表示して消す)。
   logToast: string;
+  /** 改名の要求 (エディタヘッダの F2 / ダブルクリック → StatePanel が行内編集を開く)。
+   *  **名前を打つ場所は一覧の行だけ**に保つための橋渡し — 入力欄が二箇所にあると
+   *  確定/取り消しの流儀が割れる。処理したら null に戻す。 */
+  editorRenameRequest: string | null;
   // --- 編集モード (spec 28 Phase A) ---
   editor: EditorState;
   // 使用中の AI モデル名 (TitleBar バッジ + OS ウィンドウタイトル)。get_llm_config から取得。
@@ -701,6 +705,7 @@ export const useGameStore = defineStore("game", {
       updatingPath: null,
       logDir: loadLogDir(),
       logToast: "",
+      editorRenameRequest: null,
       editor: freshEditorState(),
       llmModel: "",
       updateAvailable: false,
@@ -1101,6 +1106,38 @@ export const useGameStore = defineStore("game", {
         ed.text = raw.replace(/\r\n/g, "\n");
         ed.savedText = ed.text;
         // 新ファイルは診断・語彙の対象 (cast に足せば entities にも載る)。
+        void this.refreshEditorIssues();
+        void this.refreshEditorVocab();
+      } catch (e) {
+        this.logToast = String(e);
+      }
+    },
+
+    /**
+     * ファイル名の変更 (2026-08-28)。同じフォルダの中だけ。
+     * **参照は追随しない** — シナリオを改名すれば entry/modules が、キャラなら cast/present が
+     * 指す先を失う。壊れることは層 2 の inspect が報告する (削除と同じ判断) ので、
+     * ここでは確認を挟まず即実行する (VS Code の流儀。取り消しは名前を戻せばよい)。
+     */
+    async renameEditorFile(relPath: string, newName: string) {
+      const ed = this.editor;
+      if (!ed.on || !newName.trim()) return;
+      const fork = ed.fromSite;
+      if (fork && !(await this.askConfirm(t("editor.forkConfirm"), t("editor.forkOk")))) return;
+      try {
+        const res = await invoke<{
+          rel_path: string;
+          files: { rel_path: string; category: string }[];
+          media: { rel_path: string; category: string }[];
+          forked: boolean;
+          fork_warning: string | null;
+        }>("rename_editor_file", { relPath, newName: newName.trim(), fork });
+        ed.files = res.files.map((f) => ({ relPath: f.rel_path, category: f.category }));
+        ed.media = res.media.map((f) => ({ relPath: f.rel_path, category: f.category }));
+        if (res.forked) ed.fromSite = false;
+        if (res.fork_warning) this.logToast = res.fork_warning;
+        // 開いていたファイルの名前が変わったら追随する (中身は同じ = dirty は保つ)。
+        if (ed.current === relPath) ed.current = res.rel_path;
         void this.refreshEditorIssues();
         void this.refreshEditorVocab();
       } catch (e) {

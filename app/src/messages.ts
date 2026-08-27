@@ -733,13 +733,17 @@ export const messages = {
       new_scenario: "新しいシナリオ…",
       new_memoria: "新しい伏線…",
       new_campaign: "campaign.yaml を作成 (複数シナリオを束ねる)",
-      newFilePlaceholder: "ファイル名 (英数字)",
+      newFilePlaceholder: "ファイル名 (例: chapter2.yaml)",
+      rowTitle: "クリックで開く / ダブルクリックで名前を変える",
+      headerTitle: "ダブルクリック (または F2) で名前を変える",
+      assetRowTitle: "クリックで ID をコピー / ダブルクリックで名前を変える",
+      assetRenameTitle:
+        "名前を変えても YAML の image / bgm / sound / icon 欄は追随しません — 参照している側も直してください",
       newTitle_character:
         "ファイル名がそのままキャラクターの id になります (英数字と _ -)。盤面に出すには scenario の cast / present への追加が必要です (ジオラマの cast: [\"*\"] なら自動)",
       newTitle_scenario:
         "package.yaml の entry や campaign の modules から参照する名前です (英数字と _ -)",
       newTitle_memoria: "ファイル名がそのまま伏線の id になります (英数字と _ -)",
-      newFileCreate: "作成",
       deleteTitle: "{file} を削除",
       deleteConfirm: "{file} を削除しますか？ 元に戻せません。",
       deleteOk: "削除する",
@@ -1470,13 +1474,17 @@ export const messages = {
       new_scenario: "New scenario…",
       new_memoria: "New foreshadowing…",
       new_campaign: "Create campaign.yaml (bundle multiple scenarios)",
-      newFilePlaceholder: "file name (alphanumeric)",
+      newFilePlaceholder: "file name (e.g. chapter2.yaml)",
+      rowTitle: "Click to open / double-click to rename",
+      headerTitle: "Double-click (or F2) to rename",
+      assetRowTitle: "Click to copy the id / double-click to rename",
+      assetRenameTitle:
+        "Renaming does not update YAML image / bgm / sound / icon fields — fix the references too",
       newTitle_character:
         "The file name becomes the character's id (alphanumeric, _ -). Add it to the scenario's cast / present to bring it on stage (automatic with cast: [\"*\"])",
       newTitle_scenario:
         "The name referenced by package.yaml's entry or a campaign's modules (alphanumeric, _ -)",
       newTitle_memoria: "The file name becomes the fragment's id (alphanumeric, _ -)",
-      newFileCreate: "Create",
       deleteTitle: "Delete {file}",
       deleteConfirm: "Delete {file}? This cannot be undone.",
       deleteOk: "Delete",

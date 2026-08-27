@@ -309,7 +309,7 @@ fn validate_new_stem(stem: &str, id_note: &str) -> Result<(), String> {
 }
 
 /// fork のメタ削除 (書き込み/削除の**成功後**に呼ぶ。順序と冪等則は spec 28 A.6)。
-fn fork_meta(root: &Path, fork: bool, meta_file: &str) -> (bool, Option<String>) {
+pub fn fork_meta(root: &Path, fork: bool, meta_file: &str) -> (bool, Option<String>) {
     if !fork {
         return (false, None);
     }
@@ -340,6 +340,9 @@ pub fn create_file(
     fork: bool,
     meta_file: &str,
 ) -> Result<(String, bool, Option<String>), String> {
+    // **拡張子つきで打っても通す** (2026-08-28: VS Code の流儀に寄せた — あちらは
+    // フルネームを打つので、`chapter2.yaml` と打った人を弾かない)。内部は stem で扱う。
+    let stem = stem.strip_suffix(".yaml").or_else(|| stem.strip_suffix(".yml")).unwrap_or(stem);
     let (rel, template) = match category {
         "character" => {
             validate_new_stem(stem, "ファイル名がそのままキャラクターの id になります")?;
@@ -391,6 +394,76 @@ pub fn create_file(
     atomic_write(&path, &template)?;
     let (forked, warning) = fork_meta(root, fork, meta_file);
     Ok((rel, forked, warning))
+}
+
+/// ファイル名の変更 (spec 28 追補、2026-08-28 ユーザー要望)。**同じフォルダの中だけ** —
+/// 移動 (カテゴリ跨ぎ) は別の意味を持つ (シナリオをキャラにはできない) ので許さない。
+///
+/// **参照は追随しない**。シナリオを改名すれば `package.yaml` の `entry` や campaign の
+/// `modules` が、キャラなら `cast`/`present` が、アセットなら `image`/`bgm` 欄が指す先を
+/// 失う。自動で書き換えないのは削除と同じ判断 — **壊れることは層 2 の inspect が
+/// 報告する**ので、作者の再構成の途中経過を機械が先回りで禁止しない。
+/// ただしアセットだけは lint の射程外 (不透明 ID に宣言が無い) なので、
+/// 提示層が「参照は追随しません」と言う責務を負う。
+///
+/// `package.yaml` は改名できない (削除と同じ — パッケージの土台)。
+pub fn rename_file(root: &Path, rel: &str, new_name: &str) -> Result<String, String> {
+    if rel == "package.yaml" {
+        return Err("package.yaml は名前を変えられません (パッケージの土台です)".to_string());
+    }
+    if new_name.contains('/') || new_name.contains('\\') {
+        return Err("ファイル名にフォルダは含められません".to_string());
+    }
+    let (dir, old_name) = match rel.split_once('/') {
+        Some((d, n)) => (Some(d), n),
+        None => (None, rel), // 直下 (campaign.yaml)
+    };
+    let is_media = dir.is_some_and(|d| MEDIA_DIRS.iter().any(|(m, _)| *m == d));
+
+    if is_media {
+        if !harness::is_valid_asset_id(new_name) {
+            return Err(format!(
+                "アセット名に使えるのは英数字と . _ - だけです (1〜64 文字): {new_name}"
+            ));
+        }
+        // **拡張子は変えさせない** — 中身は変わらないので、変えると名前が中身について嘘をつく
+        // (嗅ぎ分けで置き場を決めている以上、拡張子と中身の一致は保つ)。
+        let ext = |n: &str| n.rsplit('.').next().map(|e| e.to_ascii_lowercase());
+        if ext(new_name) != ext(old_name) {
+            return Err("拡張子は変えられません (中身と食い違います)".to_string());
+        }
+    } else {
+        let stem = new_name.strip_suffix(".yaml").or_else(|| new_name.strip_suffix(".yml"));
+        let Some(stem) = stem else {
+            return Err("ファイル名は .yaml で終わる必要があります".to_string());
+        };
+        validate_new_stem(stem, "参照している側 (entry / modules / cast) は追随しません")?;
+        if dir == Some("characters")
+            && (stem == gm_core::PLAYER || stem == gm_core::PARTY || stem == gm_core::WILDCARD)
+        {
+            return Err(format!("「{stem}」は予約された id です (主人公/パーティ用)"));
+        }
+    }
+
+    let from = match dir {
+        Some(d) => root.join(d).join(old_name),
+        None => root.join(old_name),
+    };
+    if !from.is_file() {
+        return Err(format!("{rel} が見つかりません"));
+    }
+    let to = from.with_file_name(new_name);
+    if to == from {
+        return Ok(rel.to_string()); // 変わらないなら何もしない (no-op)
+    }
+    if to.exists() {
+        return Err(format!("{new_name} は既にあります"));
+    }
+    std::fs::rename(&from, &to).map_err(|e| format!("名前を変えられません: {e}"))?;
+    Ok(match dir {
+        Some(d) => format!("{d}/{new_name}"),
+        None => new_name.to_string(),
+    })
 }
 
 /// ファイルの削除 (2026-08-27 に v1 へ昇格 = ユーザーFB。リネームは v2 のまま)。
@@ -533,7 +606,9 @@ mod tests {
         assert_eq!(def.name, "beryl");
 
         // scenario: 雛形が parse でき **validate も通る** (作った瞬間に壊れていない)。
-        let (rel, ..) = create_file(&dir, "scenario", "chapter2", false, ".meta").unwrap();
+        // 拡張子つきで打っても同じ結果 (VS Code 流儀・2026-08-28)。
+        let (rel, ..) = create_file(&dir, "scenario", "chapter2.yaml", false, ".meta").unwrap();
+        assert_eq!(rel, "scenarios/chapter2.yaml");
         let sc: gm_core::Scenario =
             serde_yaml::from_str(&std::fs::read_to_string(dir.join(&rel)).unwrap()).unwrap();
         assert!(sc.validate().is_empty(), "{:?}", sc.validate());
@@ -612,6 +687,54 @@ mod tests {
         assert!(!dir.join("audios/chime.ogg").exists());
         assert!(delete_file(&dir, "images/../package.yaml", false, ".meta").is_err());
         assert!(delete_file(&dir, "images/missing.png", false, ".meta").is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// リネーム (2026-08-28): 同じフォルダの中だけ・拡張子の規律 (テキストは .yaml 必須 /
+    /// メディアは変更不可)・衝突と土台と予約 id は拒否・no-op は成功。
+    #[test]
+    fn rename_stays_in_the_folder_and_keeps_the_extension_honest() {
+        let dir = std::env::temp_dir().join(format!("kataribe_editor_ren_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("scenarios")).unwrap();
+        std::fs::create_dir_all(dir.join("characters")).unwrap();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::write(dir.join("package.yaml"), "title: t\n").unwrap();
+        std::fs::write(dir.join("scenarios/main.yaml"), "x: 1\n").unwrap();
+        std::fs::write(dir.join("scenarios/taken.yaml"), "x: 1\n").unwrap();
+        std::fs::write(dir.join("characters/alice.yaml"), "name: a\n").unwrap();
+        std::fs::write(dir.join("images/gate.webp"), "x").unwrap();
+
+        // テキスト: 拡張子つきで受ける・中身は保つ。
+        assert_eq!(
+            rename_file(&dir, "scenarios/main.yaml", "chapter1.yaml").unwrap(),
+            "scenarios/chapter1.yaml"
+        );
+        assert_eq!(std::fs::read_to_string(dir.join("scenarios/chapter1.yaml")).unwrap(), "x: 1\n");
+        assert!(!dir.join("scenarios/main.yaml").exists());
+
+        // 拡張子なし・衝突・フォルダ跨ぎ・土台・予約 id は拒否。
+        assert!(rename_file(&dir, "scenarios/chapter1.yaml", "chapter1").is_err());
+        assert!(rename_file(&dir, "scenarios/chapter1.yaml", "taken.yaml").is_err());
+        assert!(rename_file(&dir, "scenarios/chapter1.yaml", "../x.yaml").is_err());
+        assert!(rename_file(&dir, "scenarios/chapter1.yaml", "sub/x.yaml").is_err());
+        assert!(rename_file(&dir, "package.yaml", "manifest.yaml").is_err());
+        assert!(rename_file(&dir, "characters/alice.yaml", "player.yaml").is_err(), "予約 id");
+        // 予約 id の縛りは characters だけ (シナリオ名は自由)。
+        assert!(rename_file(&dir, "scenarios/chapter1.yaml", "player.yaml").is_ok());
+
+        // メディア: 拡張子は変えられない (中身について嘘をつかない)。
+        assert!(rename_file(&dir, "images/gate.webp", "gate.png").is_err());
+        assert_eq!(
+            rename_file(&dir, "images/gate.webp", "shrine_gate.webp").unwrap(),
+            "images/shrine_gate.webp"
+        );
+        // 同名への改名は no-op で成功 (入力を確定しただけ = 失敗にしない)。
+        assert_eq!(
+            rename_file(&dir, "images/shrine_gate.webp", "shrine_gate.webp").unwrap(),
+            "images/shrine_gate.webp"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
