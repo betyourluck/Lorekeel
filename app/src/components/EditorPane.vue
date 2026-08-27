@@ -9,8 +9,9 @@ import { onBeforeUnmount, onMounted } from "vue";
 
 import { makeCompletionSource } from "../editorCompletion";
 import { t } from "../i18n";
-import { useGameStore } from "../stores/game";
+import { EDITOR_FONT_SIZES, useGameStore } from "../stores/game";
 import CodeEditor, { type EditorLintIssue } from "./CodeEditor.vue";
+import Icon from "./Icon.vue";
 
 const game = useGameStore();
 
@@ -86,13 +87,30 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
       >
         {{ t("editor.fromSiteBadge") }}
       </span>
+      <!-- 文字サイズ (3 段: 小/中/大)。既定は中 — 従来の 13px は「小」に相当する。 -->
+      <label class="flex items-center gap-1.5 text-parchment/40" :title="t('editor.fontSizeTitle')">
+        <span class="text-[10px]">A</span>
+        <input
+          type="range"
+          min="0"
+          max="2"
+          step="1"
+          class="w-16 accent-ember"
+          :value="game.editorFontStep"
+          @input="game.setEditorFontStep(Number(($event.target as HTMLInputElement).value))"
+        />
+        <span class="text-sm leading-none">A</span>
+      </label>
+      <!-- 保存: フロッピー (ユーザーFB 2026-08-28 — 文字ボタンからアイコンへ)。
+           処理中は spinner に差し替えて、押せない理由を形で見せる。 -->
       <button
-        class="px-2 py-0.5 rounded border border-ash text-parchment/70 hover:text-parchment hover:border-ember/60 disabled:opacity-40"
+        class="grid h-6 w-6 place-items-center rounded text-parchment/60 hover:bg-ash/60 hover:text-parchment disabled:opacity-30"
         :disabled="!game.editor.current || !game.editorDirty || game.editor.saving"
         :title="t('editor.saveTitle')"
+        :aria-label="t('editor.save')"
         @click="game.saveEditorFile()"
       >
-        {{ game.editor.saving ? t("editor.saving") : t("editor.save") }}
+        <Icon :name="game.editor.saving ? 'spinner' : 'floppy'" :size="15" />
       </button>
     </div>
 
@@ -109,6 +127,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         class="h-full"
         :lint-provider="lintProvider"
         :completion-source="completionSource"
+        :font-size="EDITOR_FONT_SIZES[game.editorFontStep]"
       />
     </div>
     <div v-else class="flex-1 flex items-center justify-center text-parchment/40 px-6 text-center text-sm">

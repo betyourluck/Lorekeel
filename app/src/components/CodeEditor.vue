@@ -61,6 +61,8 @@ const props = withDefaults(
     lintProvider?: (text: string) => Promise<EditorLintIssue[]>;
     /** 補完の供給源 (spec 28 Phase C)。与えると既定の補完を差し替える (override)。 */
     completionSource?: CompletionSource;
+    /** 本文の文字サイズ (px)。既定 13 = 従来のダイアログ用途の値 (無指定で挙動不変)。 */
+    fontSize?: number;
   }>(),
   {
     language: "text",
@@ -69,6 +71,7 @@ const props = withDefaults(
     height: "16rem",
     lintProvider: undefined,
     completionSource: undefined,
+    fontSize: 13,
   },
 );
 
@@ -92,14 +95,14 @@ function readOnlyExtension(readonly: boolean) {
   return [EditorState.readOnly.of(readonly), EditorView.editable.of(!readonly)];
 }
 
-function editorTheme(dark: boolean, height: string) {
+function editorTheme(dark: boolean, height: string, fontSize: number) {
   return EditorView.theme(
     {
       "&": {
         height,
         backgroundColor: "rgb(var(--ash) / 0.4)",
         color: "rgb(var(--parchment))",
-        fontSize: "13px",
+        fontSize: `${fontSize}px`,
         borderRadius: "0.25rem",
       },
       "&.cm-focused": { outline: "1px solid rgb(var(--ember) / 0.6)" },
@@ -189,7 +192,7 @@ onMounted(() => {
         languageCompartment.of(languageExtension(props.language)),
         readOnlyCompartment.of(readOnlyExtension(props.readonly)),
         placeholderCompartment.of(placeholder(props.placeholder)),
-        themeCompartment.of(editorTheme(theme.value === "dark", props.height)),
+        themeCompartment.of(editorTheme(theme.value === "dark", props.height, props.fontSize)),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             const value = update.state.doc.toString();
@@ -220,8 +223,10 @@ watch(
   () => props.placeholder,
   (p) => editor?.dispatch({ effects: placeholderCompartment.reconfigure(placeholder(p)) }),
 );
-watch([theme, () => props.height], ([t, h]) =>
-  editor?.dispatch({ effects: themeCompartment.reconfigure(editorTheme(t === "dark", h)) }),
+watch([theme, () => props.height, () => props.fontSize], ([t, h, fs]) =>
+  editor?.dispatch({
+    effects: themeCompartment.reconfigure(editorTheme(t === "dark", h as string, fs as number)),
+  }),
 );
 
 onBeforeUnmount(() => {

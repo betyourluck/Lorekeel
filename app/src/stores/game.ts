@@ -305,6 +305,14 @@ function loadDiceReveal(): boolean {
 }
 // --- 本文テキスト設定 (GM の語りの見た目。提示層のみ・localStorage 永続) ---
 const MSG_FONT_KEY = "kataribe.msgFont";
+// spec 28: エディタ本文の文字サイズ (3 段: 0=小 1=中 2=大)。**既定は中** (ユーザーFB
+// 2026-08-28 — 従来の 13px は「小」に相当し、既定としては小さすぎた)。
+const EDITOR_FONT_KEY = "kataribe.editorFontStep";
+export const EDITOR_FONT_SIZES = [13, 15, 18] as const;
+function loadEditorFontStep(): number {
+  const v = Number(localStorage.getItem(EDITOR_FONT_KEY));
+  return Number.isInteger(v) && v >= 0 && v <= 2 ? v : 1; // 既定 = 中
+}
 const MSG_COLOR_KEY = "kataribe.msgColor";
 const MSG_SHADOW_KEY = "kataribe.msgShadow";
 const AUTHORED_COLOR_KEY = "kataribe.authoredColor";
@@ -590,6 +598,8 @@ interface GameState {
   logDir: string;
   // ログ保存/フォルダ操作の一時トースト (App.vue が数秒表示して消す)。
   logToast: string;
+  /** エディタ本文の文字サイズ段 (0=小 1=中 2=大)。localStorage 永続・既定は中。 */
+  editorFontStep: number;
   /** 改名の要求 (エディタヘッダの F2 / ダブルクリック → StatePanel が行内編集を開く)。
    *  **名前を打つ場所は一覧の行だけ**に保つための橋渡し — 入力欄が二箇所にあると
    *  確定/取り消しの流儀が割れる。処理したら null に戻す。 */
@@ -705,6 +715,7 @@ export const useGameStore = defineStore("game", {
       updatingPath: null,
       logDir: loadLogDir(),
       logToast: "",
+      editorFontStep: loadEditorFontStep(),
       editorRenameRequest: null,
       editor: freshEditorState(),
       llmModel: "",
@@ -1232,6 +1243,12 @@ export const useGameStore = defineStore("game", {
         this.logToast = String(e);
         return false;
       }
+    },
+
+    /** エディタの文字サイズ段を変える (即座に永続 — 表示設定と同じ流儀)。 */
+    setEditorFontStep(step: number) {
+      this.editorFontStep = Math.min(2, Math.max(0, Math.round(step)));
+      localStorage.setItem(EDITOR_FONT_KEY, String(this.editorFontStep));
     },
 
     /** 補完語彙の更新 (spec 28 Phase C)。失敗は沈黙 (補完が出ないだけ — 編集は止めない)。 */

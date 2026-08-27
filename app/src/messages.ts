@@ -687,6 +687,7 @@ export const messages = {
       save: "保存",
       saving: "保存中…",
       saveTitle: "保存 (Ctrl+S)",
+      fontSizeTitle: "本文の文字サイズ (小 / 中 / 大)",
       saved: "{file} を保存しました",
       savedWhilePlaying:
         "保存しました — 次の「新しいゲーム」またはロードから反映されます。現在のセッションには影響しません",
@@ -1426,6 +1427,7 @@ export const messages = {
       save: "Save",
       saving: "Saving…",
       saveTitle: "Save (Ctrl+S)",
+      fontSizeTitle: "Editor font size (small / medium / large)",
       saved: "Saved {file}",
       savedWhilePlaying:
         "Saved — takes effect from the next New Game or load. The current session is unaffected",

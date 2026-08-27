@@ -2,7 +2,7 @@
 // UI chrome のモノカラー線アイコン (Feather/Lucide 風)。stroke=currentColor ゆえ
 // 親のテキスト色に追従する = テーマ一貫のモノクロ。パッケージ同梱画像とは別物 (UI 装飾)。
 defineProps<{
-  name: "location" | "bag" | "flag" | "turn" | "gauge" | "sparkle" | "target" | "load" | "new" | "plus" | "trash" | "folder" | "book" | "save" | "play" | "map" | "pencil" | "speaker" | "speaker-off" | "skip" | "image" | "eye" | "eye-off" | "text" | "spinner";
+  name: "location" | "bag" | "flag" | "turn" | "gauge" | "sparkle" | "target" | "load" | "new" | "plus" | "trash" | "folder" | "book" | "save" | "floppy" | "play" | "map" | "pencil" | "speaker" | "speaker-off" | "skip" | "image" | "eye" | "eye-off" | "text" | "spinner";
   size?: number;
 }>();
 </script>
@@ -93,6 +93,12 @@ defineProps<{
       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
       <path d="M7 10l5 5 5-5" />
       <path d="M12 15V3" />
+    </template>
+    <!-- 保存: フロッピーディスク (spec 28 のエディタ。`save` は下向き矢印 = 書き出しで別物) -->
+    <template v-else-if="name === 'floppy'">
+      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+      <path d="M17 21v-8H7v8" />
+      <path d="M7 3v5h8" />
     </template>
     <!-- 続きから: 再生 (▶) -->
     <template v-else-if="name === 'play'">
