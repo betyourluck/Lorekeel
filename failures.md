@@ -2050,3 +2050,28 @@ Tauri の `manage()` は **TypeId をキー**に state を引く — エイリ�
 **接地の限界**: panic はユーザーの実機報告で、私は再現ビルドを起動していない (headless)。
 ただし機序は Tauri の manage が TypeId キーである既知仕様 + エイリアスの言語仕様で閉じて
 おり、newtype で TypeId が分かれることも言語仕様。修正後の起動確認はユーザーの再実行待ち。
+
+### 90. リスナーの追加が API の実行経路を変え、既存の許可の射程から外す — Tauri の close → destroy
+
+**症状**: spec 28 の「アプリ終了時の未保存確認」(`onCloseRequested`) を入れた後、
+タイトルバーの閉じるボタンが**無反応**になった。編集モードと無関係に、常に。
+
+**機序**: Tauri v2 で JS の `onCloseRequested` リスナーが**一つでも居ると**、`close()` は
+窓を閉じずイベントを発火するだけになり、閉じる実行は JS wrapper の
+`handler を await → preventDefault されていなければ destroy() を invoke` に移る。
+capabilities には `core:window:allow-close` はあったが **`allow-destroy` が無く**、
+destroy がプラグイン層で拒否 → 拒否はイベントリスナー内の Promise で握り潰され、
+画面には何も出ない。**リスナーを足しただけで、閉じる操作の実行主体が
+「Rust の close (許可済)」から「JS の destroy (未許可)」へ移った**。
+
+**処置**: `core:window:allow-destroy` を capabilities に追加。
+
+**一般化**: **フックを登録すると、既存操作の実行経路が変わることがある** — 操作の名前
+(close) は同じでも、実際に走る API (destroy) が別物になり、allowlist・権限・CSP の
+射程から静かに外れる。#73 (CSP は明示した時点で default-src に落ちない) と同族の
+「許可リストは書いた当時の実行経路にしか効かない」問題で、こちらは dev でも踏む分
+発見は早い。フック追加の際は「このフックが無いとき誰が実行していたか・有るとき
+誰が実行するか」を一度問う。
+
+**接地の限界**: 拒否がコンソールにどう出ていたかは未確認 (ユーザー実機・私は headless)。
+wrapper の実装 (`onCloseRequested` → destroy) は node_modules の実物で確認済み。
