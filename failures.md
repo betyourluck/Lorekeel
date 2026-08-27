@@ -2020,3 +2020,33 @@ HTML5 ドラッグより先に口を押さえる。**Kataribe はネイティブ
 **接地の限界**: 「WebView2 の `IDropTarget` が横取りする」は機序の説明であって、私が実測した
 のは「未指定＝既定 true」「依存コードがゼロ」「false にしたら動いた」の 3 点。この 3 点だけでも
 処置は正しいが、機序の詳細は Tauri の実装を読んでいない。
+
+### 89. 型エイリアスは新しい型を作らない — Tauri `manage()` の TypeId 衝突
+
+**症状**: spec 28 Phase A〜D を全部積んだ後、実機の `tauri dev` が初回起動で panic —
+`state for type 'tokio::sync::mutex::Mutex<core::option::Option<std::path::PathBuf>>'
+is already being managed`。テストは workspace 362 / app 63 で全 green のまま。
+
+**真因**: 編集ルートを `type EditorRoot = Mutex<Option<PathBuf>>` の**型エイリアス**で
+作った。既存の `GuestAssetRoot` (spec 23) も同じ `Mutex<Option<PathBuf>>` のエイリアスで、
+Tauri の `manage()` は **TypeId をキー**に state を引く — エイリアスは TypeId を変えない
+ので、二つ目の `.manage()` が「同じ型を二度」になり起動時 panic。名前が違っても型は同じ。
+
+**なぜテストで捕まらないか**: unit テストは Tauri の builder を通らない (`manage` の登録は
+`run()` の準備でだけ起きる)。**コンパイルも通る・テストも緑・落ちるのは実機の起動だけ**、
+という検出の死角。GUI 目視の初手 (起動) で出たのは、目視が残っていたからで、偶然ではない。
+
+**処置**: newtype (`struct EditorRoot(Mutex<Option<PathBuf>>)`) へ。TypeId が分かれるので
+衝突は構造的に不可能になる。既存の `GuestAssetRoot` は触らない (動いているエイリアスを
+同時に直すと変更が二箇所になる — 衝突は片方が newtype なら消える)。
+
+**一般化**: 状態コンテナが**型で引く**仕組み (Tauri の manage / 依存性注入の類) に登録する
+ものは、**中身が汎用型ならエイリアスでなく newtype にする**。エイリアスで済むのは名前が
+ドキュメントの役割しか持たないときで、型がキーになる文脈では名前でなく TypeId が同一性
+そのもの。同型の state を後から足す人は最初の一つがエイリアスだったことを知らない —
+二つ目を足した瞬間に最初の一つごと落ちる (落とすのは後から来た方だが、原因は先にいた方の
+形にもある)。
+
+**接地の限界**: panic はユーザーの実機報告で、私は再現ビルドを起動していない (headless)。
+ただし機序は Tauri の manage が TypeId キーである既知仕様 + エイリアスの言語仕様で閉じて
+おり、newtype で TypeId が分かれることも言語仕様。修正後の起動確認はユーザーの再実行待ち。

@@ -756,7 +756,12 @@ type GuestAssetRoot = Mutex<Option<PathBuf>>;
 /// spec 28: 編集モードの編集ルート (`open_editor` が登録)。読み書き command は**相対パス
 /// だけ**を受けてここから解決する — 保存の瞬間に選択パッケージが替わっていた、という
 /// TOCTOU を構造的に消す (frontend がフルパスを毎回渡す形にしない)。
-type EditorRoot = Mutex<Option<PathBuf>>;
+///
+/// **newtype であること (型エイリアス不可)**: Tauri の `manage()` は TypeId をキーに
+/// state を引くので、`type X = Mutex<Option<PathBuf>>` だと同型の `GuestAssetRoot` と
+/// 衝突して**起動時 panic** ("state for type … is already being managed")。テストは
+/// builder を通らないので緑のまま、実機の初回起動だけが落ちる (failures #89)。
+struct EditorRoot(Mutex<Option<PathBuf>>);
 
 // =============================================================================
 // 多人数プレイ (spec 23 Phase B) — participants / 入力窓 / 開帳カウンタ
@@ -1467,14 +1472,14 @@ async fn open_editor(
     let canon = dir.canonicalize().map_err(|e| format!("フォルダを開けません: {e}"))?;
     let from_site = canon.join(update::SOURCE_META_FILE).is_file();
     let files = editor::list_files(&canon);
-    *editor_root.lock().await = Some(canon);
+    *editor_root.0.lock().await = Some(canon);
     Ok(EditorOpenView { files, from_site })
 }
 
 /// 編集モードを出る (登録解除)。
 #[tauri::command]
 async fn close_editor(editor_root: tauri::State<'_, EditorRoot>) -> Result<(), String> {
-    *editor_root.lock().await = None;
+    *editor_root.0.lock().await = None;
     Ok(())
 }
 
@@ -1484,7 +1489,7 @@ async fn read_editor_file(
     rel_path: String,
     editor_root: tauri::State<'_, EditorRoot>,
 ) -> Result<String, String> {
-    let guard = editor_root.lock().await;
+    let guard = editor_root.0.lock().await;
     let Some(base) = guard.as_ref() else { return Err("編集モードではありません".into()) };
     let path = editor::resolve_in_root(base, &rel_path)?;
     std::fs::read_to_string(&path).map_err(|e| format!("読み込みに失敗しました: {e}"))
@@ -1511,7 +1516,7 @@ async fn save_package_file(
     if table_is_active(&session).await {
         return Err("卓の最中は保存できません".into());
     }
-    let guard = editor_root.lock().await;
+    let guard = editor_root.0.lock().await;
     let Some(base) = guard.as_ref() else { return Err("編集モードではありません".into()) };
     let (forked, fork_warning) =
         editor::save_with_fork(base, &rel_path, &text, fork, update::SOURCE_META_FILE)?;
@@ -1535,7 +1540,7 @@ async fn inspect_editor_package(
     editor_root: tauri::State<'_, EditorRoot>,
 ) -> Result<Vec<editor_lint::EditorIssue>, String> {
     let root = {
-        let guard = editor_root.lock().await;
+        let guard = editor_root.0.lock().await;
         guard.clone().ok_or_else(|| "編集モードではありません".to_string())?
     };
     // 帰属の素材 (entry の相対パス / campaign の modules 地図)。読めなくても続行 —
@@ -1586,7 +1591,7 @@ async fn create_character_file(
     if table_is_active(&session).await {
         return Err("卓の最中は作成できません".into());
     }
-    let guard = editor_root.lock().await;
+    let guard = editor_root.0.lock().await;
     let Some(base) = guard.as_ref() else { return Err("編集モードではありません".into()) };
     let (rel_path, forked, fork_warning) =
         editor::create_character(base, &stem, fork, update::SOURCE_META_FILE)?;
@@ -1600,7 +1605,7 @@ async fn editor_vocabulary(
     editor_root: tauri::State<'_, EditorRoot>,
 ) -> Result<editor_vocab::EditorVocabulary, String> {
     let root = {
-        let guard = editor_root.lock().await;
+        let guard = editor_root.0.lock().await;
         guard.clone().ok_or_else(|| "編集モードではありません".to_string())?
     };
     Ok(editor_vocab::build_vocabulary(&root))
@@ -4526,7 +4531,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(SharedSession::new(None))
         .manage(GuestAssetRoot::new(None))
-        .manage(EditorRoot::new(None))
+        .manage(EditorRoot(Mutex::new(None)))
         .setup(|app| {
             // 前回 set_llm_config が保存した app_data_dir/.env を読み込む (無ければ何もしない)。
             // **override で読む**: dev では main.rs の dotenvy が repo .env を先に読んでおり、
