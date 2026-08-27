@@ -11,6 +11,7 @@
 
 mod editor;
 mod editor_lint;
+mod editor_vocab;
 mod image_gen;
 mod ref_stock;
 mod relay;
@@ -1561,6 +1562,19 @@ async fn inspect_editor_package(
     let mut out = to_issues("error", report.errors);
     out.extend(to_issues("warning", report.warnings));
     Ok(out)
+}
+
+/// 補完語彙 (spec 28 Phase C)。編集モード入場時と保存成功時に frontend が取り直す
+/// (id 語彙のソースはディスクの保存済み状態 — 未保存バッファの id は次の保存まで出ない)。
+#[tauri::command]
+async fn editor_vocabulary(
+    editor_root: tauri::State<'_, EditorRoot>,
+) -> Result<editor_vocab::EditorVocabulary, String> {
+    let root = {
+        let guard = editor_root.lock().await;
+        guard.clone().ok_or_else(|| "編集モードではありません".to_string())?
+    };
+    Ok(editor_vocab::build_vocabulary(&root))
 }
 
 /// フォルダを OS 標準のファイルマネージャで開く (プラットフォーム別)。
@@ -4544,6 +4558,7 @@ pub fn run() {
             save_package_file,
             lint_editor_text,
             inspect_editor_package,
+            editor_vocabulary,
             delete_autosave,
             facts_add,
             facts_edit,

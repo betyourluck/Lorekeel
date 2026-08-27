@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { tableHooks, transport } from "../transport";
 import { t } from "../i18n";
+import type { EditorVocabulary } from "../editorCompletion";
 import * as tts from "../tts";
 import {
   currentSlot,
@@ -234,6 +235,9 @@ export interface EditorState {
   /** 層 2 診断 (spec 28 Phase B): パッケージ全体の inspect 結果。編集モード入場時と
    *  保存成功時に更新。file が引けた行はクリックでそのファイルへ。 */
   issues: { file: string | null; severity: string; message: string }[];
+  /** 補完語彙 (spec 28 Phase C)。ソースはディスクの保存済み状態 — 入場時と保存成功時に
+   *  取り直す (未保存バッファの id は次の保存まで補完に出ない = spec の明記事項)。 */
+  vocab: EditorVocabulary | null;
 }
 
 export function freshEditorState(): EditorState {
@@ -247,6 +251,7 @@ export function freshEditorState(): EditorState {
     savedText: "",
     saving: false,
     issues: [],
+    vocab: null,
   };
 }
 
@@ -1026,6 +1031,7 @@ export const useGameStore = defineStore("game", {
         // 入場時にも層 2 を一度走らせる (開幕 ⚠ の内容を直しに来る動線 — 保存する前に
         // 何が悪いかが見えていないと、直す対象を別画面で覚えてくる羽目になる)。
         void this.refreshEditorIssues();
+        void this.refreshEditorVocab();
       } catch (e) {
         this.logToast = String(e);
       }
@@ -1036,6 +1042,16 @@ export const useGameStore = defineStore("game", {
       if (!this.editor.on) return;
       try {
         this.editor.issues = await invoke<EditorState["issues"]>("inspect_editor_package");
+      } catch {
+        /* 沈黙 */
+      }
+    },
+
+    /** 補完語彙の更新 (spec 28 Phase C)。失敗は沈黙 (補完が出ないだけ — 編集は止めない)。 */
+    async refreshEditorVocab() {
+      if (!this.editor.on) return;
+      try {
+        this.editor.vocab = await invoke<EditorVocabulary>("editor_vocabulary");
       } catch {
         /* 沈黙 */
       }
@@ -1096,8 +1112,10 @@ export const useGameStore = defineStore("game", {
         } else {
           this.logToast = t("editor.saved", { file: ed.current });
         }
-        // 保存のたびに層 2 を更新 (ファイル横断の破れ — 幻フラグ・死んだ参照 — はここでしか出ない)。
+        // 保存のたびに層 2 と語彙を更新 (ファイル横断の破れはここでしか出ない /
+        // 保存で宣言した id が次の打鍵から補完に出る)。
         void this.refreshEditorIssues();
+        void this.refreshEditorVocab();
       } catch (e) {
         this.logToast = String(e);
       } finally {

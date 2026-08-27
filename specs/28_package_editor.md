@@ -18,7 +18,21 @@ Phase B の小追補 2 つ: ①層 2 は**編集モード入場時にも**一度
 lint が落ちていた）。塞いだ結果 friday_lemmon から**真陽性 15 件**（flag_hints 全部が
 トリガー専権フラグ宛て = どこにも表示されない死に荷物）が出て、ブロックごと撤去
 （挙動変化ゼロ）。
-残 = Phase C（補完）/ D（characters/ 新規作成）+ GUI 目視
+**Phase C も同日実装済**。語彙は backend `editor_vocab::build_vocabulary` — キー名は
+型から導出（`struct_keys` + `gate_variant_keys`/`op_variant_keys` を gm_core で pub 化 =
+lint と同じ表）、id はディスクの保存済みパッケージから（単発 = entry / campaign =
+**全モジュールの和**。読めなければ id 補完が減るだけでキー補完は常に効く）。
+**配線（どの親キーの下がどの型か）だけは手書きの表**で、lint.rs `walk` の構造知識の
+写し — v1 のドリフトは許容（ずれても補完が古いだけで lint は正しい。統合は walk の
+データ駆動化 = v2）。文脈推定は D 節の簡易案から一段強化: **行内タグ（`op:`/`kind:`）
+最優先**（実 content は flow style が多くインデント遡りが行内で効かない）→ 親キー →
+祖父（`map_child_keys` — locations 等の名前つき map 容器）→ 全キー。値補完は
+フィールド名 → id カテゴリ写像（`to:`/`key:`/`from:` の多義は行内タグと doc kind で
+解決、絞れなければ候補カテゴリ併記 = 黙らない）。`harness::Campaign` に Serialize を
+derive（`struct_keys` の要件）。PoC: app `editor_vocab` 3 本（型導出の表明 / 同梱
+パッケージからの id 収集と壊れ耐性 / campaign 全モジュール和）。app backend 62 green・
+workspace 362 green。
+残 = Phase D（characters/ 新規作成）+ GUI 目視
 
 ## 動機
 

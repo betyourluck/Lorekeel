@@ -7,6 +7,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { onBeforeUnmount, onMounted } from "vue";
 
+import { makeCompletionSource } from "../editorCompletion";
 import { t } from "../i18n";
 import { useGameStore } from "../stores/game";
 import CodeEditor, { type EditorLintIssue } from "./CodeEditor.vue";
@@ -22,18 +23,21 @@ const KIND: Record<string, string> = {
   character: "character",
   memoria: "memoria",
 };
-async function lintProvider(text: string): Promise<EditorLintIssue[]> {
+function currentKind(): string {
   const f = game.editor.files.find((x) => x.relPath === game.editor.current);
-  if (!f) return [];
+  return f ? (KIND[f.category] ?? "scenario") : "scenario";
+}
+async function lintProvider(text: string): Promise<EditorLintIssue[]> {
+  if (!game.editor.current) return [];
   try {
-    return await invoke<EditorLintIssue[]>("lint_editor_text", {
-      kind: KIND[f.category] ?? "scenario",
-      text,
-    });
+    return await invoke<EditorLintIssue[]>("lint_editor_text", { kind: currentKind(), text });
   } catch {
     return [];
   }
 }
+// 補完 (spec 28 Phase C)。vocab と kind は getter で渡す — 保存後の語彙更新・
+// ファイル切替にソースを作り直さず追従する。
+const completionSource = makeCompletionSource(() => game.editor.vocab, currentKind);
 
 // Ctrl+S = 保存。ブラウザ既定 (ページ保存ダイアログ) は常に無効化し、
 // ファイルを開いている時だけ保存を飛ばす。
@@ -75,7 +79,13 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 
     <!-- 本文。ファイル未選択なら案内 (選ぶ場所は右ペインのファイルタブ)。 -->
     <div v-if="game.editor.current" class="flex-1 min-h-0 p-2">
-      <CodeEditor v-model="game.editor.text" language="yaml" height="100%" :lint-provider="lintProvider" />
+      <CodeEditor
+        v-model="game.editor.text"
+        language="yaml"
+        height="100%"
+        :lint-provider="lintProvider"
+        :completion-source="completionSource"
+      />
     </div>
     <div v-else class="flex-1 flex items-center justify-center text-parchment/40 px-6 text-center text-sm">
       {{ t("editor.pickHint") }}

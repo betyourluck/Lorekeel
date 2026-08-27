@@ -23,12 +23,14 @@ pub use engine::{
     FiredTrigger, RollOutcome, StatRollOutcome, Verdict,
 };
 pub use reason::{Lang, RejectReason};
-pub use lint::{struct_keys, unknown_key_lints, unknown_keys};
+pub use lint::{gate_variant_keys, op_variant_keys, struct_keys, unknown_key_lints, unknown_keys};
 pub use expr::{parse_expr, Expr};
 pub use spine::{
-    ChallengeDef, CharacterDef, CheckStyle, ContestDef, Exit, Gate, GoalDef, ImageHold, ImageMode, Location,
-    LocationItem, FactsPolicy, Natural, Protagonist, Resolution, RoleAssignment, RollRef, RollSpec,
-    Scenario, ScenarioError, StatDecl, StatInit, TakeMode, TierDef, Trigger, IMAGE_STYLE_MAX_CHARS,
+    ChallengeDef, ChallengeMod, ChallengeOutcome, CharacterDef, CheckStyle, ContestDef, Exit, Gate,
+    GoalDef, ImageHold, ImageMode, Location,
+    LocationItem, FactsPolicy, Natural, Protagonist, PushCost, Resolution, RoleAssignment, RollRef,
+    RollSpec, Scenario, ScenarioError, SpendRules, StatDecl, StatInit, TakeMode, TierDef, Trigger,
+    VoteRule, IMAGE_STYLE_MAX_CHARS,
 };
 pub use state::{
     default_entity, AttrKey, ChallengeId, EntityId, FlagKey, GameState, GoalId, ItemId, LocationId,

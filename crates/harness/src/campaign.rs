@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use gm_core::{GameState, GoalId, Scenario};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::HarnessError;
 use crate::loader::inject_cast;
@@ -23,7 +23,8 @@ use crate::package::{inject_package, PackageManifest};
 pub type ModuleId = String;
 
 /// campaigns/\*.yaml の凍結スキーマ: authored なモジュール接続トポロジ。
-#[derive(Debug, Clone, Deserialize)]
+// Serialize は spec 28 Phase C (エディタ補完) の `struct_keys` 用 — 型からキーを導出する規律。
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Campaign {
     /// 表示用 (任意)。
     #[serde(default)]
@@ -38,7 +39,7 @@ pub struct Campaign {
 }
 
 /// 「現モジュールであるエンディングに着いたら次モジュールへ」の一本の辺。
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CampaignEdge {
     /// 現モジュール。
     pub from: ModuleId,

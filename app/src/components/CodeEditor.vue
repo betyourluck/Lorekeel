@@ -9,7 +9,13 @@
  * 補完候補の選択色・プレースホルダ・特殊文字) を選ぶ。`var()` で書けない値がライブラリの中に
  * あるので、フラグを差し替える経路 (Compartment) を持つ。
  */
-import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
+import {
+  autocompletion,
+  closeBrackets,
+  closeBracketsKeymap,
+  completionKeymap,
+  type CompletionSource,
+} from "@codemirror/autocomplete";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { json, jsonParseLinter } from "@codemirror/lang-json";
 import { yaml } from "@codemirror/lang-yaml";
@@ -53,8 +59,17 @@ const props = withDefaults(
     /** 外部診断の供給源 (spec 28 Phase B)。与えると linter (デバウンス 500ms) + ガターが付く。
      *  検査そのものは backend の既存 lint — ここは位置を範囲へ写すだけ。 */
     lintProvider?: (text: string) => Promise<EditorLintIssue[]>;
+    /** 補完の供給源 (spec 28 Phase C)。与えると既定の補完を差し替える (override)。 */
+    completionSource?: CompletionSource;
   }>(),
-  { language: "text", placeholder: "", readonly: false, height: "16rem", lintProvider: undefined },
+  {
+    language: "text",
+    placeholder: "",
+    readonly: false,
+    height: "16rem",
+    lintProvider: undefined,
+    completionSource: undefined,
+  },
 );
 
 const emit = defineEmits<{ (e: "update:modelValue", value: string): void }>();
@@ -157,7 +172,7 @@ onMounted(() => {
         highlightActiveLine(),
         search({ top: true }),
         highlightSelectionMatches(),
-        autocompletion(),
+        autocompletion(props.completionSource ? { override: [props.completionSource] } : {}),
         closeBrackets(),
         keymap.of([
           // **リロードを飲む。** WebView の Ctrl+R は画面を作り直すので、編集中の本文が確認を

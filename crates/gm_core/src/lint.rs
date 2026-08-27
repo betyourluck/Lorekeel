@@ -177,6 +177,18 @@ fn variant_keys<T: Serialize>(samples: &[T], tag: &str) -> BTreeMap<String, BTre
     table
 }
 
+/// Gate のバリアント表 (`kind` の値 → そのバリアントのキー集合)。spec 28 Phase C:
+/// エディタ補完が **lint と同じ表** を見るための pub 面 (補完に出るのに lint に叱られる、
+/// という乖離を構造的に作らない)。値は型から導出 (手書きしない規律は不変)。
+pub fn gate_variant_keys() -> BTreeMap<String, BTreeSet<String>> {
+    variant_keys(&gate_samples(), "kind")
+}
+
+/// StateOp のバリアント表 (`op` の値 → キー集合)。[`gate_variant_keys`] の op 版。
+pub fn op_variant_keys() -> BTreeMap<String, BTreeSet<String>> {
+    variant_keys(&op_samples(), "op")
+}
+
 /// Gate の全バリアント標本。**バリアントを追加したら [`_gate_exhaustive_guard`] がコンパイルエラーに
 /// なるので、ここへ標本を足すこと** (足し忘れると新バリアントのフィールドが偽陽性警告になる)。
 fn gate_samples() -> Vec<Gate> {
