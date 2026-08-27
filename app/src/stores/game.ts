@@ -238,6 +238,10 @@ export interface EditorState {
   /** 補完語彙 (spec 28 Phase C)。ソースはディスクの保存済み状態 — 入場時と保存成功時に
    *  取り直す (未保存バッファの id は次の保存まで補完に出ない = spec の明記事項)。 */
   vocab: EditorVocabulary | null;
+  /** 開いているファイルの元の改行コード。**CodeMirror は内部を常に LF に正規化する**ので、
+   *  CRLF のまま比較すると「開いただけで ●」になる (実機で発覚)。読み込みで覚えて LF 化し、
+   *  保存で戻す — ディスクの改行を変えない (変えると tree_hash と diff が荒れる)。 */
+  eol: "\n" | "\r\n";
 }
 
 export function freshEditorState(): EditorState {
@@ -252,6 +256,7 @@ export function freshEditorState(): EditorState {
     saving: false,
     issues: [],
     vocab: null,
+    eol: "\n",
   };
 }
 
@@ -1069,10 +1074,13 @@ export const useGameStore = defineStore("game", {
         if (res.forked) ed.fromSite = false;
         if (res.fork_warning) this.logToast = res.fork_warning;
         // 作った雛形をそのまま開く (dirty は上で確認済みなので素通り)。
-        const text = await invoke<string>("read_editor_file", { relPath: res.rel_path });
+        // 改行の正規化は openEditorFile と同じ (雛形は LF だが、前のファイルの eol を
+        // 引きずると保存で改行コードが化ける)。
+        const raw = await invoke<string>("read_editor_file", { relPath: res.rel_path });
+        ed.eol = raw.includes("\r\n") ? "\r\n" : "\n";
         ed.current = res.rel_path;
-        ed.text = text;
-        ed.savedText = text;
+        ed.text = raw.replace(/\r\n/g, "\n");
+        ed.savedText = ed.text;
         // 新ファイルは診断・語彙の対象 (cast に足せば entities にも載る)。
         void this.refreshEditorIssues();
         void this.refreshEditorVocab();
@@ -1144,7 +1152,10 @@ export const useGameStore = defineStore("game", {
         if (!(await this.askConfirm(t("editor.discardConfirm"), t("editor.discardOk")))) return;
       }
       try {
-        const text = await invoke<string>("read_editor_file", { relPath });
+        const raw = await invoke<string>("read_editor_file", { relPath });
+        // 元の改行を覚えて LF へ正規化 (CodeMirror の内部表現に合わせる — EditorState 参照)。
+        this.editor.eol = raw.includes("\r\n") ? "\r\n" : "\n";
+        const text = raw.replace(/\r\n/g, "\n");
         this.editor.current = relPath;
         this.editor.text = text;
         this.editor.savedText = text;
@@ -1161,9 +1172,11 @@ export const useGameStore = defineStore("game", {
       if (fork && !(await this.askConfirm(t("editor.forkConfirm"), t("editor.forkOk")))) return;
       ed.saving = true;
       try {
+        // 元の改行へ戻して書く (エディタ内部は LF — ディスクの改行コードを黙って変えない)。
+        const out = ed.eol === "\r\n" ? ed.text.replace(/\n/g, "\r\n") : ed.text;
         const res = await invoke<{ forked: boolean; fork_warning: string | null }>("save_package_file", {
           relPath: ed.current,
-          text: ed.text,
+          text: out,
           fork,
         });
         ed.savedText = ed.text;
