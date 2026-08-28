@@ -125,22 +125,38 @@ pub fn migrate(new_dir: &Path) -> RenameNotice {
 /// 条件は「新側にまだ Local Storage が無い」— 一度でも起動していれば触らない
 /// (そのプロファイルには既にその人の設定が入っている)。
 ///
-/// **Windows のみ**。macOS / Linux は WebView の実装が違い保存場所を実機で確認できて
-/// いないので、何もしない (確認できない経路で人のプロファイルを触らない)。
+/// **保存場所は OS ごとに違う**ので、実機で確認できた OS だけを扱う (確認できない経路で
+/// 人のプロファイルを触らない):
+/// - Windows: `%LOCALAPPDATA%/{id}/EBWebView/Default/Local Storage` (2026-08-28 実測)
+/// - macOS: `~/Library/WebKit/{id}` — **コンテナごと**運ぶ。内部構造 (WebsiteData の
+///   割り方) は実機で確認していないので、当てにいかず丸ごとコピーする (2026-08-28 実測で
+///   場所だけ確定)。
+/// - Linux: 未確認 = 何もしない。
 pub fn migrate_webview_storage() {
-    if !cfg!(target_os = "windows") {
-        return;
-    }
-    let Ok(local) = std::env::var("LOCALAPPDATA") else { return };
-    let rel = Path::new("EBWebView").join("Default").join("Local Storage");
-    let src = Path::new(&local).join(OLD_IDENTIFIER).join(&rel);
-    let dst = Path::new(&local).join(NEW_IDENTIFIER).join(&rel);
+    let Some((src, dst)) = webview_storage_pair() else { return };
+    // 新側が既に在る = 一度でも起動している (そのプロファイルにその人の設定が入っている)。
     if !src.is_dir() || dst.exists() {
         return;
     }
     if let Err(e) = copy_dir(&src, &dst) {
         // 失敗しても起動は止めない (設定が初期値に戻るだけで、遊べなくはならない)。
         eprintln!("[rename] WebView の設定を引き継げませんでした: {e}");
+    }
+}
+
+/// 引き継ぎ元と引き継ぎ先。未確認の OS では `None` (= 何もしない)。
+fn webview_storage_pair() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    if cfg!(target_os = "windows") {
+        let local = std::env::var("LOCALAPPDATA").ok()?;
+        let rel = Path::new("EBWebView").join("Default").join("Local Storage");
+        let base = Path::new(&local);
+        Some((base.join(OLD_IDENTIFIER).join(&rel), base.join(NEW_IDENTIFIER).join(&rel)))
+    } else if cfg!(target_os = "macos") {
+        let home = std::env::var("HOME").ok()?;
+        let base = Path::new(&home).join("Library").join("WebKit");
+        Some((base.join(OLD_IDENTIFIER), base.join(NEW_IDENTIFIER)))
+    } else {
+        None
     }
 }
 
