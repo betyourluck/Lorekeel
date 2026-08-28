@@ -16,6 +16,7 @@ mod editor_vocab;
 mod image_gen;
 mod ref_stock;
 mod rename;
+pub use rename::migrate_webview_storage;
 mod relay;
 mod site;
 mod update;
