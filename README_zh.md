@@ -1,14 +1,14 @@
 [English](README.md) | [日本語](README_jp.md) 
 
-# <img src="images/kataribe.png" alt="Kataribe" width="32"> Outcasts Kataribe（語り部）— 永不遗忘、永不矛盾的GM
+# <img src="images/lorekeel.png" alt="Lorekeel" width="32"> Outcasts Lorekeel（語り部）— 永不遗忘、永不矛盾的GM
 
 以云端LLM为旁白、以**确定性的Rust引擎作为游戏状态的唯一真源**的TRPG游戏主持人。
 
-AI Dungeon 这类 LLM-GM 一定会崩溃的死因，不是文笔，而是**遗忘与矛盾**（带什么、谁死了、在哪、上回合决定了什么）。Kataribe 从结构上斩断这个故障模式：LLM 从不持有状态。它的卖点不是「无限自由」，而是**一致性**。
+AI Dungeon 这类 LLM-GM 一定会崩溃的死因，不是文笔，而是**遗忘与矛盾**（带什么、谁死了、在哪、上回合决定了什么）。Lorekeel 从结构上斩断这个故障模式：LLM 从不持有状态。它的卖点不是「无限自由」，而是**一致性**。
 
-这个架构的副作用：因为引擎保证了正确性，Kataribe 在**便宜、免费或完全本地**的模型上也能很好地运行。引擎会兜住小模型的错误，所以不需要前沿模型也能获得连贯的游戏——差别只在于文采的丰富程度。
+这个架构的副作用：因为引擎保证了正确性，Lorekeel 在**便宜、免费或完全本地**的模型上也能很好地运行。引擎会兜住小模型的错误，所以不需要前沿模型也能获得连贯的游戏——差别只在于文采的丰富程度。
 
-![Kataribe in play](images/kataribe_ui.png)
+![Lorekeel in play](images/lorekeel_ui.png)
 
 *运行中的剧本包——GM 在场景背景上的旁白，右侧是当下目标与在场角色。一切都由底下的确定性引擎驱动。*
 
@@ -18,18 +18,18 @@ AI Dungeon 这类 LLM-GM 一定会崩溃的死因，不是文笔，而是**遗�
 
 | 操作系统 | 文件 | 状态 |
 |---|---|---|
-| **Windows** | `Kataribe_x.y.z_x64-setup.exe`（安装程序）/ `.msi` | ✅ 已验证可用 |
+| **Windows** | `Lorekeel_x.y.z_x64-setup.exe`（安装程序）/ `.msi` | ✅ 已验证可用 |
 | macOS（Apple Silicon） | `.dmg` / Homebrew | 自 v0.5.16 起已签名并公证；应用本身未验证 |
 | Linux | `.deb` / `.AppImage` / `.rpm` | 仅 CI 构建，未验证 |
 
 macOS 也可以通过 Homebrew 安装：
 
 ```sh
-brew install --cask betyourluck/tap/kataribe
+brew install --cask betyourluck/tap/lorekeel
 ```
 
 **完整限定名不可省略** —— 仅执行 tap 并不会让 Homebrew 获得加载该仓库代码的许可。
-仅支持 Apple Silicon，没有 Intel 版本。`brew uninstall --cask kataribe` 会保留存档、
+仅支持 Apple Silicon，没有 Intel 版本。`brew uninstall --cask lorekeel` 会保留存档、
 剧本包和 API 密钥（加上 `--zap` 则会一并删除）。
 
 启动后，前往 **设置 → AI 模型**，为 OpenAI 兼容端点（云端 LLM，或本地的 OpenAI 兼容服务器）设置 `base_url` / `model` / `api_key`。通过添加文件夹或从分发站点获取，即可游玩剧本包。
@@ -67,7 +67,7 @@ LLM 提出一个 `StateDelta`（结构化输出：`narration` + `ops`）。引�
 
 ## 创作与分发
 
-剧本以自包含的**包（Package）**形式发布——这是一个包含 `package.yaml` 加上角色与剧本（+ 可选的战役、图片、音频）的文件夹。压缩它、解压它，即可运行。配套的分发网站（*Kataribe 书庫*）允许作者分享软件包，供玩家直接在应用内安装。你甚至可以通过将格式规范和剧情大纲交给大模型来构建软件包；参见创作指南。
+剧本以自包含的**包（Package）**形式发布——这是一个包含 `package.yaml` 加上角色与剧本（+ 可选的战役、图片、音频）的文件夹。压缩它、解压它，即可运行。配套的分发网站（*Lorekeel 书庫*）允许作者分享软件包，供玩家直接在应用内安装。你甚至可以通过将格式规范和剧情大纲交给大模型来构建软件包；参见创作指南。
 
 ## 构建与测试
 
@@ -85,7 +85,7 @@ cd app && npm install && npm run tauri dev  # Windows 上需要 WebView2
 ## 目录结构
 
 ```text
-Kataribe/
+Lorekeel/
 ├── data_contract.yaml   # ★ 已冻结的名词（GameState / StateDelta / Gate / Scenario 契约）
 ├── crates/
 │   ├── gm_core/         # 唯一真相源：状态、场景主线、adjudicate/apply 引擎

@@ -42,18 +42,18 @@ const DEFAULT_SCENARIO: &str =
 /// 1 ターンあたりの再生成上限。
 const MAX_ATTEMPTS: u32 = 4;
 
-/// 却下理由の表示言語。`KATARIBE_LANG=en` で英語、既定は日本語。
+/// 却下理由の表示言語。`LOREKEEL_LANG=en` (旧 `KATARIBE_LANG` も可) で英語、既定は日本語。
 fn lang_from_env() -> Lang {
-    match std::env::var("KATARIBE_LANG").as_deref() {
-        Ok("en") | Ok("En") | Ok("EN") => Lang::En,
+    match harness::env_var("LANG").as_deref() {
+        Some("en") | Some("En") | Some("EN") => Lang::En,
         _ => Lang::Ja,
     }
 }
 /// 初期 RNG seed を決める。既定は**毎ゲーム変える** (時刻由来) — 固定 seed だと配役
 /// (role_assignment) も出目列も毎回同一になる (実プレイ発見: 主人公が常に占い師)。
-/// 再現したい時は `KATARIBE_SEED=42` で固定 (seed は RngState に保存されセーブにも残る)。
+/// 再現したい時は `LOREKEEL_SEED=42` で固定 (seed は RngState に保存されセーブにも残る)。
 fn resolve_seed() -> u64 {
-    if let Ok(v) = std::env::var("KATARIBE_SEED") {
+    if let Some(v) = harness::env_var("SEED") {
         if let Ok(n) = v.trim().parse::<u64>() {
             return n;
         }
@@ -245,7 +245,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
 
     // `--seed <N>` で新規開始の seed を固定 (テスト/再現用)。台本テストが env より明示的に書ける。
-    // 優先順位: --seed 引数 > KATARIBE_SEED env > 時刻エントロピー (resolve_seed)。
+    // 優先順位: --seed 引数 > LOREKEEL_SEED env > 時刻エントロピー (resolve_seed)。
     let seed_arg: Option<u64> = match args.iter().position(|a| a == "--seed") {
         Some(i) if i + 1 < args.len() => {
             let v = args.remove(i + 1);

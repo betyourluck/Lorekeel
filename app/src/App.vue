@@ -168,6 +168,7 @@ onMounted(async () => {
 
 onMounted(() => {
   game.refreshPackages();
+  game.announceRename(); // 改名の一度きりの告知 (旧インストールが在るときだけ)
   game.refreshLlmModel(); // TitleBar のモデル名バッジ + OS ウィンドウタイトル
   game.checkAppUpdate(); // 配布サイトに新しいアプリがあれば TitleBar に「最新版があります」
   const px = Number(localStorage.getItem("kataribe.fontScale")) || 18; // 既定 = 標準 18px

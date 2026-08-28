@@ -14,7 +14,7 @@ export const messages = {
     titlebar: {
       table: "多人数プレイ (卓)",
       brandPrefix: "Outcasts",
-      brand: "Kataribe",
+      brand: "Lorekeel",
       toLight: "ライトモードに切替",
       toDark: "ダークモードに切替",
       themeToggle: "テーマ切替",
@@ -67,6 +67,23 @@ export const messages = {
     confirm: {
       ok: "OK",
       cancel: "キャンセル",
+    },
+    // 改名 (Kataribe → Lorekeel、2026-08-28) の一度きりの告知。旧インストールが在るときだけ出る。
+    rename: {
+      body:
+        "このアプリの名前が「Kataribe」から「Lorekeel」に変わりました。\n" +
+        "同じ TRPG・創作の分野に「語り部 (kataribe.jp)」という無関係の先行サービスがあり、" +
+        "取り違えを避けるためです。中身と使い方は変わりません。",
+      migrated:
+        "これまでのセーブ・API キー・参照画像・保存した挿絵は、新しい保存先へ引き継ぎました。\n" +
+        "以前のフォルダもそのまま残してあります: {dir}",
+      alreadyThere:
+        "新しい保存先には既にデータがあったので、そのまま使います。\n" +
+        "以前のフォルダはここに残っています: {dir}",
+      failed:
+        "データの引き継ぎに失敗しました ({error})。\n" +
+        "以前のフォルダから手でコピーしてください: {dir}",
+      ok: "わかりました",
     },
     map: {
       empty: "まだ地図がありません（プレイを始めると現在地と行ける先が出ます）",
@@ -642,8 +659,8 @@ export const messages = {
     },
     store: {
       brandFallback: "Outcasts Kataribe",
-      windowTitle: "Outcasts Kataribe",
-      windowTitleModel: "Outcasts Kataribe ({model})",
+      windowTitle: "Outcasts Lorekeel",
+      windowTitleModel: "Outcasts Lorekeel ({model})",
       openSiteFailed: "サイトを開けませんでした: {error}",
       folderPickFailed: "フォルダの選択に失敗しました: {error}",
       deleteSaveConfirm:
@@ -763,7 +780,7 @@ export const messages = {
     titlebar: {
       table: "Multiplayer (table)",
       brandPrefix: "Outcasts",
-      brand: "Kataribe",
+      brand: "Lorekeel",
       toLight: "Switch to light mode",
       toDark: "Switch to dark mode",
       themeToggle: "Toggle theme",
@@ -816,6 +833,22 @@ export const messages = {
     confirm: {
       ok: "OK",
       cancel: "Cancel",
+    },
+    rename: {
+      body:
+        "This app has been renamed from “Kataribe” to “Lorekeel”.\n" +
+        "An unrelated TRPG/creative-writing service already goes by 語り部 (kataribe.jp), " +
+        "so the name was changed to avoid confusion. Nothing else has changed.",
+      migrated:
+        "Your saves, API keys, reference images and saved illustrations were copied to the new location.\n" +
+        "The old folder is still there: {dir}",
+      alreadyThere:
+        "The new location already had data, so it is used as-is.\n" +
+        "The old folder is still there: {dir}",
+      failed:
+        "Could not copy your data ({error}).\n" +
+        "Please copy it by hand from: {dir}",
+      ok: "Got it",
     },
     map: {
       empty: "No map yet (your location and reachable exits appear once you start playing).",
@@ -1389,8 +1422,8 @@ export const messages = {
     },
     store: {
       brandFallback: "Outcasts Kataribe",
-      windowTitle: "Outcasts Kataribe",
-      windowTitleModel: "Outcasts Kataribe ({model})",
+      windowTitle: "Outcasts Lorekeel",
+      windowTitleModel: "Outcasts Lorekeel ({model})",
       openSiteFailed: "Couldn't open the site: {error}",
       folderPickFailed: "Folder selection failed: {error}",
       deleteSaveConfirm:

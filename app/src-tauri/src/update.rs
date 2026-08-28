@@ -8,13 +8,40 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-/// 出所メタのファイル名 (展開フォルダ直下)。
-pub const SOURCE_META_FILE: &str = ".kataribe_source.json";
+/// 出所メタのファイル名 (展開フォルダ直下)。**書くときは常にこちら**。
+pub const SOURCE_META_FILE: &str = ".lorekeel_source.json";
+
+/// 改名 (Kataribe → Lorekeel, 2026-08-28) 以前に書かれた出所メタ。**読むときだけ**見る。
+/// 消さないのは、既に配られた取得物がこの名前を持っているから — 認識をやめると
+/// 「更新あり」バッジが黙って出なくなる (spec 17 の機構がユーザーに気づかれず死ぬ)。
+pub const LEGACY_SOURCE_META_FILE: &str = ".kataribe_source.json";
+
+/// 出所メタの名前すべて (新 + 旧)。**フォークで消すときは両方**消す —
+/// 片方だけ残すと「フォークしたのに書庫版として扱われる」半端が生まれる。
+pub const SOURCE_META_FILES: &[&str] = &[SOURCE_META_FILE, LEGACY_SOURCE_META_FILE];
+
+/// 出所メタの実体 (新 → 旧の順)。無ければ None = 手動配置扱い。
+pub fn source_meta_path(dir: &Path) -> Option<PathBuf> {
+    for name in [SOURCE_META_FILE, LEGACY_SOURCE_META_FILE] {
+        let p = dir.join(name);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
 
 /// tree_hash が無視するファイル名 (basename 一致・どの階層でも)。
 /// OS が勝手に落とす付随ファイルで「編集あり」の偽陽性を作らない (rev2 B-6)。
-/// メタ自身も除外 (メタの書き込みが tree_hash を変えない)。
-const TREE_HASH_EXCLUDE: &[&str] = &[SOURCE_META_FILE, ".DS_Store", "Thumbs.db", "desktop.ini"];
+/// メタ自身も除外 (メタの書き込みが tree_hash を変えない)。**旧名も除外**したまま —
+/// 改名で既存の取得物が一斉に「編集されています」に化けるのを防ぐ。
+const TREE_HASH_EXCLUDE: &[&str] = &[
+    SOURCE_META_FILE,
+    LEGACY_SOURCE_META_FILE,
+    ".DS_Store",
+    "Thumbs.db",
+    "desktop.ini",
+];
 
 /// 書庫からの取得の出所メタ (spec 17 機構①)。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -38,7 +65,7 @@ pub struct SourceMeta {
 /// フォルダの出所メタを読む。無い/壊れているは None (= 手動配置扱い・更新対象外)。
 #[allow(dead_code)] // Phase C (check_package_updates / update_site_package) が使う読み口。
 pub fn read_source_meta(dir: &Path) -> Option<SourceMeta> {
-    let raw = std::fs::read_to_string(dir.join(SOURCE_META_FILE)).ok()?;
+    let raw = std::fs::read_to_string(source_meta_path(dir)?).ok()?;
     serde_json::from_str(&raw).ok()
 }
 
@@ -337,5 +364,44 @@ mod tests {
         assert!(root.join("pkg_b").exists(), "両在 → 新が生存");
         assert!(!root.join("pkg_b.bak").exists(), "両在 → bak 破棄");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 改名 (2026-08-28) 前に書かれた出所メタ `.kataribe_source.json` も読める。
+    /// **読めなくなると「更新あり」バッジが黙って出なくなる** — 既に配られた取得物が
+    /// 手動配置扱いへ落ちる形で、ユーザーには何も起きていないように見える故障。
+    /// 新旧が同居したら新を採り、tree_hash はどちらの名前も無視する (改名で既存の
+    /// 取得物が一斉に「編集されています」に化けない)。
+    #[test]
+    fn legacy_source_meta_is_still_recognized() {
+        let dir = std::env::temp_dir().join("lorekeel_legacy_meta");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("scenarios")).unwrap();
+        std::fs::write(dir.join("package.yaml"), "title: t
+").unwrap();
+        let before = tree_hash(&dir).unwrap();
+
+        let old = SourceMeta {
+            site_url: "https://example.test".into(),
+            id: "abc".into(),
+            version: Some("1".into()),
+            content_hash: "h".into(),
+            tree_hash: "t".into(),
+            installed_at_unix: 1,
+        };
+        std::fs::write(
+            dir.join(LEGACY_SOURCE_META_FILE),
+            serde_json::to_string(&old).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(read_source_meta(&dir), Some(old.clone()), "旧名のメタが読める");
+        assert_eq!(tree_hash(&dir).unwrap(), before, "旧名は tree_hash を動かさない");
+
+        let mut newer = old.clone();
+        newer.id = "new".into();
+        write_source_meta(&dir, &newer).unwrap();
+        assert!(dir.join(SOURCE_META_FILE).is_file(), "書くのは常に新しい名前");
+        assert_eq!(read_source_meta(&dir).unwrap().id, "new", "同居したら新を採る");
+        assert_eq!(tree_hash(&dir).unwrap(), before, "新名も tree_hash を動かさない");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

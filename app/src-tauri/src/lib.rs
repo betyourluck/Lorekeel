@@ -15,6 +15,7 @@ mod editor_docs;
 mod editor_vocab;
 mod image_gen;
 mod ref_stock;
+mod rename;
 mod relay;
 mod site;
 mod update;
@@ -39,9 +40,9 @@ use tokio::sync::Mutex;
 const MAX_ATTEMPTS: u32 = 4;
 /// 初期 RNG seed を決める。既定は**新しいゲームごとに変える** (時刻由来) — 固定 seed だと
 /// 配役 (role_assignment) も出目列も毎回同一になる (実プレイ発見: 主人公が常に占い師)。
-/// 再現したい時は `KATARIBE_SEED=42`。seed は RngState に保存されオートセーブにも残る。
+/// 再現したい時は `LOREKEEL_SEED=42`。seed は RngState に保存されオートセーブにも残る。
 fn resolve_seed() -> u64 {
-    if let Ok(v) = std::env::var("KATARIBE_SEED") {
+    if let Some(v) = harness::env_var("SEED") {
         if let Ok(n) = v.trim().parse::<u64>() {
             return n;
         }
@@ -925,6 +926,13 @@ fn config_env_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     app.path().app_data_dir().ok().map(|d| d.join(".env"))
 }
 
+/// 改名 (Kataribe → Lorekeel) の告知材料。**旧インストールが在ったときだけ** `old_dir` が
+/// 入る — frontend はそれを見て一度きりの告知を出す (新規ユーザーには何も出さない)。
+#[tauri::command]
+fn rename_notice(notice: tauri::State<'_, rename::RenameNotice>) -> rename::RenameNotice {
+    notice.inner().clone()
+}
+
 /// パスを字句的に正規化する (`.`/`..` を畳み、native 区切りに統一)。
 /// **Tauri asset protocol は `..` を含むパスを 403 で拒否する** (トラバーサル防止) ため、
 /// scope 許可・アセット解決の前に絶対パスを綺麗にしておく (repo_root が `../..` を残すのが原因)。
@@ -1477,7 +1485,7 @@ async fn open_editor(
         return Err(format!("package.yaml が見つかりません: {}", dir.display()));
     }
     let canon = dir.canonicalize().map_err(|e| format!("フォルダを開けません: {e}"))?;
-    let from_site = canon.join(update::SOURCE_META_FILE).is_file();
+    let from_site = update::source_meta_path(&canon).is_some();
     let files = editor::list_files(&canon);
     let media = editor::list_media(&canon);
     // メディア一覧のサムネイルを asset:// で描くための許可 (new_game と同経路)。
@@ -1531,7 +1539,7 @@ async fn save_package_file(
     let guard = editor_root.0.lock().await;
     let Some(base) = guard.as_ref() else { return Err("編集モードではありません".into()) };
     let (forked, fork_warning) =
-        editor::save_with_fork(base, &rel_path, &text, fork, update::SOURCE_META_FILE)?;
+        editor::save_with_fork(base, &rel_path, &text, fork, update::SOURCE_META_FILES)?;
     Ok(EditorSaveView { forked, fork_warning })
 }
 
@@ -1607,7 +1615,7 @@ async fn create_editor_file(
     let guard = editor_root.0.lock().await;
     let Some(base) = guard.as_ref() else { return Err("編集モードではありません".into()) };
     let (rel_path, forked, fork_warning) =
-        editor::create_file(base, &category, &stem, fork, update::SOURCE_META_FILE)?;
+        editor::create_file(base, &category, &stem, fork, update::SOURCE_META_FILES)?;
     Ok(EditorCreateView { rel_path, files: editor::list_files(base), forked, fork_warning })
 }
 
@@ -1626,7 +1634,7 @@ async fn delete_editor_file(
     let guard = editor_root.0.lock().await;
     let Some(base) = guard.as_ref() else { return Err("編集モードではありません".into()) };
     let (forked, fork_warning) =
-        editor::delete_file(base, &rel_path, fork, update::SOURCE_META_FILE)?;
+        editor::delete_file(base, &rel_path, fork, update::SOURCE_META_FILES)?;
     Ok(EditorCreateView { rel_path, files: editor::list_files(base), forked, fork_warning })
 }
 
@@ -1646,7 +1654,7 @@ async fn rename_editor_file(
     let guard = editor_root.0.lock().await;
     let Some(base) = guard.as_ref() else { return Err("編集モードではありません".into()) };
     let rel_path = editor::rename_file(base, &rel_path, &new_name)?;
-    let (forked, fork_warning) = editor::fork_meta(base, fork, update::SOURCE_META_FILE);
+    let (forked, fork_warning) = editor::fork_meta(base, fork, update::SOURCE_META_FILES);
     Ok(EditorRenameView {
         rel_path,
         files: editor::list_files(base),
@@ -1886,10 +1894,10 @@ fn slot_view(app: &tauri::AppHandle, pkg_dir: &Path, slot: u8) -> SlotView {
     }
 }
 
-/// 却下理由の表示言語。`KATARIBE_LANG=en` で英語、既定は日本語 (CLI と同値)。
+/// 却下理由の表示言語。`LOREKEEL_LANG=en` (旧 `KATARIBE_LANG` も可) で英語、既定は日本語 (CLI と同値)。
 fn lang_from_env() -> Lang {
-    match std::env::var("KATARIBE_LANG").as_deref() {
-        Ok("en") | Ok("En") | Ok("EN") => Lang::En,
+    match harness::env_var("LANG").as_deref() {
+        Some("en") | Some("En") | Some("EN") => Lang::En,
         _ => Lang::Ja,
     }
 }
@@ -2282,11 +2290,11 @@ fn env_is_truthy(v: &str) -> bool {
     matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
 }
 
-/// 開発者モード (KATARIBE_DEV_MODE) が有効か。設定「開発者」タブの初期値。
+/// 開発者モード (LOREKEEL_DEV_MODE) が有効か。設定「開発者」タブの初期値。
 /// 有効時は run_turn が GM に「テストプレイ中・`<meta: ...>` でメタ質問を受ける」旨を刷り込む。
 #[tauri::command]
 fn get_dev_mode() -> bool {
-    std::env::var("KATARIBE_DEV_MODE").ok().map(|v| env_is_truthy(&v)).unwrap_or(false)
+    harness::env_var("DEV_MODE").map(|v| env_is_truthy(&v)).unwrap_or(false)
 }
 
 /// 開発者モードを切り替える: プロセス env を即時差し替え (次の play_turn の run_turn が拾う) +
@@ -2294,12 +2302,12 @@ fn get_dev_mode() -> bool {
 #[tauri::command]
 fn set_dev_mode(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     let v = if enabled { "true" } else { "false" };
-    std::env::set_var("KATARIBE_DEV_MODE", v);
+    std::env::set_var(harness::env_name("DEV_MODE"), v);
     let path = config_env_path(&app).ok_or_else(|| "app_data_dir を解決できない".to_string())?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("設定フォルダの作成に失敗: {e}"))?;
     }
-    upsert_env(&path, &[("KATARIBE_DEV_MODE".to_string(), v.to_string())])
+    upsert_env(&path, &[(harness::env_name("DEV_MODE"), v.to_string())])
         .map_err(|e| format!(".env の保存に失敗: {e}"))
 }
 
@@ -2996,7 +3004,7 @@ async fn new_game(
     client.set_excluded_ops(harness::excluded_check_ops(&scenario));
 
     let seed = resolve_seed();
-    eprintln!("[seed] {seed} (再現するには KATARIBE_SEED={seed})");
+    eprintln!("[seed] {seed} (再現するには LOREKEEL_SEED={seed})");
     let state = scenario.initial_state(seed);
     let title = if manifest.title.is_empty() {
         scenario.title.clone()
@@ -4672,6 +4680,17 @@ pub fn run() {
             if let Some(p) = config_env_path(app.handle()) {
                 dotenvy::from_path_override(&p).ok();
             }
+            // 改名 (Kataribe → Lorekeel) の一度きりの移行。**.env を読む前ではなく後**に
+            // 見えると困るので順序に注意 — ここで運んでから読み直す (初回だけ二度読み)。
+            if let Ok(dir) = app.path().app_data_dir() {
+                let notice = rename::migrate(&dir);
+                if notice.migrated {
+                    if let Some(p) = config_env_path(app.handle()) {
+                        dotenvy::from_path_override(&p).ok();
+                    }
+                }
+                app.manage(notice);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -4692,6 +4711,7 @@ pub fn run() {
             set_summary_llm_config,
             get_dev_mode,
             set_dev_mode,
+            rename_notice,
             fetch_site_packages,
             install_site_package,
             check_package_updates,
@@ -5084,7 +5104,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "稼働中の書庫サーバ (localhost:4000) が要る"]
     async fn fetch_site_packages_deserializes_live_list() {
-        let base = std::env::var("KATARIBE_SITE_TEST_URL")
+        let base = std::env::var("LOREKEEL_SITE_TEST_URL")
             .unwrap_or_else(|_| "http://localhost:4000".to_string());
         let list = super::fetch_site_packages(base, Some(1), None, None, Some("popular".into()))
             .await
@@ -5098,14 +5118,14 @@ mod tests {
 
     /// 【統合・opt-in】書庫 (実 dev サーバ or モック) から DL→検証→展開→manifest 読みの
     /// 全経路が通る。実行:
-    ///   KATARIBE_SITE_TEST_URL=<base> KATARIBE_SITE_TEST_ID=<uuid> \
+    ///   LOREKEEL_SITE_TEST_URL=<base> LOREKEEL_SITE_TEST_ID=<uuid> \
     ///     cargo test --lib -- --ignored install_from_site
     #[tokio::test]
-    #[ignore = "稼働中の書庫サーバ (KATARIBE_SITE_TEST_URL) が要る"]
+    #[ignore = "稼働中の書庫サーバ (LOREKEEL_SITE_TEST_URL) が要る"]
     async fn install_from_site_end_to_end() {
-        let base = std::env::var("KATARIBE_SITE_TEST_URL")
+        let base = std::env::var("LOREKEEL_SITE_TEST_URL")
             .unwrap_or_else(|_| "http://localhost:4000".to_string());
-        let id = std::env::var("KATARIBE_SITE_TEST_ID").expect("KATARIBE_SITE_TEST_ID を設定");
+        let id = std::env::var("LOREKEEL_SITE_TEST_ID").expect("LOREKEEL_SITE_TEST_ID を設定");
         let data_dir = std::env::temp_dir().join(format!(
             "kataribe_site_e2e_{}",
             std::time::SystemTime::now()

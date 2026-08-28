@@ -1283,7 +1283,7 @@ Please retry in 13s.","status":"RESOURCE_EXHAUSTED"}}"#;
 
 /// live 実測 (spec 24 Phase D)。実キーが要るので ignore。
 /// `OPENAI_API_KEY` / `GEMINI_API_KEY` (または `IMAGE_API_KEY_*`) を読み、各 1 枚を最低コスト設定で
-/// 生成して `KATARIBE_IMAGE_OUT` のフォルダへ書く (目視用)。
+/// 生成して `LOREKEEL_IMAGE_OUT` のフォルダへ書く (目視用)。
 ///
 /// ```text
 /// cargo test image_gen::live -- --ignored --nocapture
@@ -1297,7 +1297,7 @@ mod live {
     }
 
     fn out_dir() -> std::path::PathBuf {
-        std::env::var("KATARIBE_IMAGE_OUT").map(Into::into).unwrap_or_else(|_| std::env::temp_dir())
+        std::env::var("LOREKEEL_IMAGE_OUT").map(Into::into).unwrap_or_else(|_| std::env::temp_dir())
     }
 
     async fn run(provider: Provider, key: &str) {
@@ -1341,10 +1341,10 @@ mod live {
         }
     }
 
-    /// 設定画集つき (spec 25 Phase C)。`KATARIBE_SHEET` に参照画像のパス。
+    /// 設定画集つき (spec 25 Phase C)。`LOREKEEL_SHEET` に参照画像のパス。
     async fn run_with_sheet(provider: Provider, key: &str) {
-        let Ok(sheet) = std::env::var("KATARIBE_SHEET") else {
-            eprintln!("skip: KATARIBE_SHEET 未設定");
+        let Ok(sheet) = std::env::var("LOREKEEL_SHEET") else {
+            eprintln!("skip: LOREKEEL_SHEET 未設定");
             return;
         };
         let bytes = std::fs::read(&sheet).expect("参照画像が読める");
@@ -1398,13 +1398,13 @@ mod live {
     /// ComfyUI 参照 live (spec 25 改訂 2026-08-22)。テスト用フィクスチャ `testdata/comfy_ref_workflow.json` (%ref_1..3%) を
     /// **Kataribe の実経路** (upload → 置換 → 剪定 → /prompt → ポーリング → /view) で通す。
     /// 1 枚 (LoadImage 2 つを剪定) と 0 枚 (3 つ全部剪定・エンコーダは画像なし) の両方が PNG を返すこと。
-    /// `COMFY_BASE_URL` (例 http://192.168.0.3:8188) と `KATARIBE_SHEET` が要る。
+    /// `COMFY_BASE_URL` (例 http://192.168.0.3:8188) と `LOREKEEL_SHEET` が要る。
     #[tokio::test]
     #[ignore = "実機 ComfyUI が要る live テスト"]
     async fn comfy_with_reference_sheet_prunes_unfilled_slots() {
         let Some(base) = key(&["COMFY_BASE_URL"]) else { return };
-        let Ok(sheet) = std::env::var("KATARIBE_SHEET") else {
-            eprintln!("skip: KATARIBE_SHEET 未設定");
+        let Ok(sheet) = std::env::var("LOREKEEL_SHEET") else {
+            eprintln!("skip: LOREKEEL_SHEET 未設定");
             return;
         };
         let bytes = std::fs::read(&sheet).expect("参照画像が読める");

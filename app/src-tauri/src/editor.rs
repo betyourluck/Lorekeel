@@ -276,21 +276,33 @@ pub fn save_with_fork(
     rel: &str,
     text: &str,
     fork: bool,
-    meta_file: &str,
+    meta_files: &[&str],
 ) -> Result<(bool, Option<String>), String> {
     let path = resolve_in_root(root, rel)?;
     atomic_write(&path, text)?;
     if !fork {
         return Ok((false, None));
     }
-    match std::fs::remove_file(root.join(meta_file)) {
-        Ok(()) => Ok((true, None)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((true, None)),
-        Err(e) => Ok((
-            false,
-            Some(format!("出所メタの削除に失敗しました (次の保存で再試行します): {e}")),
-        )),
+    let (ok, warning) = remove_meta(root, meta_files);
+    Ok((ok, warning))
+}
+
+/// 出所メタ (新・旧の両方) を消す。**どれか 1 つでも消せなければフォーク失敗**として扱う
+/// — 残ったメタは「書庫版のまま」を意味するので、成功を装うと更新で上書きされうる。
+fn remove_meta(root: &Path, meta_files: &[&str]) -> (bool, Option<String>) {
+    for name in meta_files {
+        match std::fs::remove_file(root.join(name)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return (
+                    false,
+                    Some(format!("出所メタの削除に失敗しました (次の保存で再試行します): {e}")),
+                )
+            }
+        }
     }
+    (true, None)
 }
 
 /// 新規ファイルの stem の検証 (spec 28 Phase D)。保守的に縛る (`resolve_asset` と同系):
@@ -309,18 +321,11 @@ fn validate_new_stem(stem: &str, id_note: &str) -> Result<(), String> {
 }
 
 /// fork のメタ削除 (書き込み/削除の**成功後**に呼ぶ。順序と冪等則は spec 28 A.6)。
-pub fn fork_meta(root: &Path, fork: bool, meta_file: &str) -> (bool, Option<String>) {
+pub fn fork_meta(root: &Path, fork: bool, meta_files: &[&str]) -> (bool, Option<String>) {
     if !fork {
         return (false, None);
     }
-    match std::fs::remove_file(root.join(meta_file)) {
-        Ok(()) => (true, None),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (true, None),
-        Err(e) => (
-            false,
-            Some(format!("出所メタの削除に失敗しました (次の保存で再試行します): {e}")),
-        ),
-    }
+    remove_meta(root, meta_files)
 }
 
 /// 新規ファイルの作成 (spec 28 Phase D、2026-08-27 に 4 カテゴリへ一般化 = ユーザーFB)。
@@ -338,7 +343,7 @@ pub fn create_file(
     category: &str,
     stem: &str,
     fork: bool,
-    meta_file: &str,
+    meta_files: &[&str],
 ) -> Result<(String, bool, Option<String>), String> {
     // **拡張子つきで打っても通す** (2026-08-28: VS Code の流儀に寄せた — あちらは
     // フルネームを打つので、`chapter2.yaml` と打った人を弾かない)。内部は stem で扱う。
@@ -392,7 +397,7 @@ pub fn create_file(
         std::fs::create_dir_all(dir).map_err(|e| format!("フォルダを作れません: {e}"))?;
     }
     atomic_write(&path, &template)?;
-    let (forked, warning) = fork_meta(root, fork, meta_file);
+    let (forked, warning) = fork_meta(root, fork, meta_files);
     Ok((rel, forked, warning))
 }
 
@@ -475,7 +480,7 @@ pub fn delete_file(
     root: &Path,
     rel: &str,
     fork: bool,
-    meta_file: &str,
+    meta_files: &[&str],
 ) -> Result<(bool, Option<String>), String> {
     if rel == "package.yaml" {
         return Err("package.yaml は削除できません (パッケージの土台です)".to_string());
@@ -499,7 +504,7 @@ pub fn delete_file(
         resolve_in_root(root, rel)?
     };
     std::fs::remove_file(&path).map_err(|e| format!("削除に失敗しました: {e}"))?;
-    Ok(fork_meta(root, fork, meta_file))
+    Ok(fork_meta(root, fork, meta_files))
 }
 
 #[cfg(test)]
@@ -588,17 +593,17 @@ mod tests {
         std::fs::write(dir.join("package.yaml"), "title: t\n").unwrap();
 
         for bad in ["", "アリス", "a.b", "a/b", "a b", &"x".repeat(65)] {
-            assert!(create_file(&dir, "character", bad, false, ".meta").is_err(), "{bad}");
-            assert!(create_file(&dir, "scenario", bad, false, ".meta").is_err(), "{bad}");
+            assert!(create_file(&dir, "character", bad, false, &[".meta"]).is_err(), "{bad}");
+            assert!(create_file(&dir, "scenario", bad, false, &[".meta"]).is_err(), "{bad}");
         }
         for reserved in ["player", "party", "*"] {
-            assert!(create_file(&dir, "character", reserved, false, ".meta").is_err(), "{reserved}");
+            assert!(create_file(&dir, "character", reserved, false, &[".meta"]).is_err(), "{reserved}");
         }
         // 予約 id は character だけの縛り (memoria の promise_of_player 等は自由)。
-        assert!(create_file(&dir, "memoria", "player", false, ".meta").is_ok());
+        assert!(create_file(&dir, "memoria", "player", false, &[".meta"]).is_ok());
 
         // character: 雛形が CharacterDef として parse でき、name に stem が入る。
-        let (rel, forked, warn) = create_file(&dir, "character", "beryl", false, ".meta").unwrap();
+        let (rel, forked, warn) = create_file(&dir, "character", "beryl", false, &[".meta"]).unwrap();
         assert_eq!(rel, "characters/beryl.yaml");
         assert!(!forked && warn.is_none());
         let def: gm_core::CharacterDef =
@@ -607,32 +612,32 @@ mod tests {
 
         // scenario: 雛形が parse でき **validate も通る** (作った瞬間に壊れていない)。
         // 拡張子つきで打っても同じ結果 (VS Code 流儀・2026-08-28)。
-        let (rel, ..) = create_file(&dir, "scenario", "chapter2.yaml", false, ".meta").unwrap();
+        let (rel, ..) = create_file(&dir, "scenario", "chapter2.yaml", false, &[".meta"]).unwrap();
         assert_eq!(rel, "scenarios/chapter2.yaml");
         let sc: gm_core::Scenario =
             serde_yaml::from_str(&std::fs::read_to_string(dir.join(&rel)).unwrap()).unwrap();
         assert!(sc.validate().is_empty(), "{:?}", sc.validate());
 
         // memoria: text 必須欄が入って parse できる。
-        let (rel, ..) = create_file(&dir, "memoria", "old_promise", false, ".meta").unwrap();
+        let (rel, ..) = create_file(&dir, "memoria", "old_promise", false, &[".meta"]).unwrap();
         let _: harness::MemoryFragment =
             serde_yaml::from_str(&std::fs::read_to_string(dir.join(&rel)).unwrap()).unwrap();
 
         // campaign: 固定名・stem 不要・二度目は拒否。parse できる。
-        let (rel, ..) = create_file(&dir, "campaign", "", false, ".meta").unwrap();
+        let (rel, ..) = create_file(&dir, "campaign", "", false, &[".meta"]).unwrap();
         assert_eq!(rel, "campaign.yaml");
         assert!(harness::Campaign::from_yaml(&std::fs::read_to_string(dir.join(&rel)).unwrap()).is_ok());
-        assert!(create_file(&dir, "campaign", "", false, ".meta").is_err());
+        assert!(create_file(&dir, "campaign", "", false, &[".meta"]).is_err());
 
         // 一覧に載る + 重複は明示エラー。
         let files = list_files(&dir);
         assert!(files.iter().any(|f| f.rel_path == "characters/beryl.yaml"));
         assert!(files.iter().any(|f| f.rel_path == "campaign.yaml"));
-        assert!(create_file(&dir, "character", "beryl", false, ".meta").is_err());
+        assert!(create_file(&dir, "character", "beryl", false, &[".meta"]).is_err());
 
         // fork の順序は保存と同じ: 作成成功でメタが消える。
         std::fs::write(dir.join(".meta"), "{}").unwrap();
-        let (_, forked, _) = create_file(&dir, "character", "coral", true, ".meta").unwrap();
+        let (_, forked, _) = create_file(&dir, "character", "coral", true, &[".meta"]).unwrap();
         assert!(forked && !dir.join(".meta").exists());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -683,10 +688,10 @@ mod tests {
 
         // 削除もメディアに効く (UI の ✕ は一本の経路 — テキストと別扱いにしない)。
         // トラバーサルは形で落ちる。
-        delete_file(&dir, "audios/chime.ogg", false, ".meta").unwrap();
+        delete_file(&dir, "audios/chime.ogg", false, &[".meta"]).unwrap();
         assert!(!dir.join("audios/chime.ogg").exists());
-        assert!(delete_file(&dir, "images/../package.yaml", false, ".meta").is_err());
-        assert!(delete_file(&dir, "images/missing.png", false, ".meta").is_err());
+        assert!(delete_file(&dir, "images/../package.yaml", false, &[".meta"]).is_err());
+        assert!(delete_file(&dir, "images/missing.png", false, &[".meta"]).is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -750,10 +755,10 @@ mod tests {
         std::fs::write(dir.join("scenarios/old.yaml"), "title: t\n").unwrap();
         std::fs::write(dir.join(".meta"), "{}").unwrap();
 
-        assert!(delete_file(&dir, "package.yaml", false, ".meta").is_err(), "土台は守る");
-        assert!(delete_file(&dir, "scenarios/missing.yaml", false, ".meta").is_err());
+        assert!(delete_file(&dir, "package.yaml", false, &[".meta"]).is_err(), "土台は守る");
+        assert!(delete_file(&dir, "scenarios/missing.yaml", false, &[".meta"]).is_err());
 
-        let (forked, warn) = delete_file(&dir, "scenarios/old.yaml", true, ".meta").unwrap();
+        let (forked, warn) = delete_file(&dir, "scenarios/old.yaml", true, &[".meta"]).unwrap();
         assert!(forked && warn.is_none());
         assert!(!dir.join("scenarios/old.yaml").exists());
         assert!(!dir.join(".meta").exists(), "fork は削除成功の後");
@@ -765,32 +770,33 @@ mod tests {
     /// メタが元々無ければ冪等に forked=true。
     #[test]
     fn fork_removes_meta_only_after_a_successful_write() {
-        const META: &str = ".kataribe_source.json";
+        const META_NAME: &str = ".lorekeel_source.json";
+        const META: &[&str] = &[META_NAME];
         let dir = std::env::temp_dir().join(format!("kataribe_editor_fork_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("package.yaml"), "title: t\n").unwrap();
-        std::fs::write(dir.join(META), "{}").unwrap();
+        std::fs::write(dir.join(META_NAME), "{}").unwrap();
 
         // 書き込み失敗 (実在しないファイル = v1 は編集のみ) → メタは無傷。
         let err = save_with_fork(&dir, "scenarios/missing.yaml", "x", true, META);
         assert!(err.is_err());
-        assert!(dir.join(META).is_file(), "保存が失敗したのにメタが消えた");
+        assert!(dir.join(META_NAME).is_file(), "保存が失敗したのにメタが消えた");
 
         // 書き込み成功 → 中身が替わり、メタが消え、forked=true。
         let (forked, warn) = save_with_fork(&dir, "package.yaml", "title: mine\n", true, META).unwrap();
         assert!(forked && warn.is_none());
         assert_eq!(std::fs::read_to_string(dir.join("package.yaml")).unwrap(), "title: mine\n");
-        assert!(!dir.join(META).exists(), "フォークしたのにメタが残っている");
+        assert!(!dir.join(META_NAME).exists(), "フォークしたのにメタが残っている");
 
         // メタが既に無い → 冪等に成功 (手動配置と同じ状態への収束)。
         let (forked, warn) = save_with_fork(&dir, "package.yaml", "title: mine2\n", true, META).unwrap();
         assert!(forked && warn.is_none());
 
         // fork を頼まない保存はメタに触れない (手動配置の通常保存)。
-        std::fs::write(dir.join(META), "{}").unwrap();
+        std::fs::write(dir.join(META_NAME), "{}").unwrap();
         let (forked, _) = save_with_fork(&dir, "package.yaml", "title: mine3\n", false, META).unwrap();
-        assert!(!forked && dir.join(META).is_file());
+        assert!(!forked && dir.join(META_NAME).is_file());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -120,7 +120,7 @@ narration と ops を必ず構造化出力として提出すること (ツール
 **ops は要素が 1 つでも必ず配列**)。";
 
 /// 【開発者モード】シナリオ作者のテストプレイであることを LLM に伝え、`<meta: ...>` 形式の
-/// メタ質問への応答規律を刷り込む先頭ブロック。`KATARIBE_DEV_MODE` が truthy な時だけ system
+/// メタ質問への応答規律を刷り込む先頭ブロック。`LOREKEEL_DEV_MODE` が truthy な時だけ system
 /// プロンプトの**先頭**に注入される (通常プレイには一切出ない)。
 ///
 /// 狙い: プレイ中に「なぜ GM がそう振る舞ったか」を作者が直接問い、接地の破れ (居ないキャラの
@@ -155,10 +155,10 @@ pub fn gm_system_prompt(scenario: &Scenario, dev: bool) -> String {
     }
 }
 
-/// `KATARIBE_DEV_MODE` が truthy なら開発者モード。env 直読み (`LLM_DEBUG` と同流儀 —
+/// `LOREKEEL_DEV_MODE` が truthy なら開発者モード。env 直読み (`LLM_DEBUG` と同流儀 —
 /// app/CLI/run_turn の signature を変えずに効かせる)。未設定・空・偽値は false。
 pub fn dev_mode_enabled() -> bool {
-    std::env::var("KATARIBE_DEV_MODE").as_deref().map(is_truthy).unwrap_or(false)
+    crate::env_var("DEV_MODE").as_deref().map(is_truthy).unwrap_or(false)
 }
 
 /// env フラグの truthy 判定 (純粋)。`1` / `true` / `yes` / `on` (大小無視・前後空白無視) を真とする。

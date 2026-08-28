@@ -49,7 +49,10 @@ function onKey(e: KeyboardEvent) {
         {{ game.confirmDialog.message }}
       </p>
       <div class="flex justify-end gap-2 px-5 pb-4">
+        <!-- 告知 (noCancel) では「キャンセル」を出さない — 断る対象が無い操作に
+             二択を出すと、押さなかった方に意味があるように見える。 -->
         <button
+          v-if="!game.confirmDialog.noCancel"
           class="rounded px-3 py-1.5 text-sm text-parchment/70 hover:bg-ash/60 hover:text-parchment"
           @click="game.resolveConfirm(false)"
         >

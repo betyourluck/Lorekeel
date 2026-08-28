@@ -28,6 +28,7 @@ const MAX_UNCOMPRESSED_TOTAL: u64 = 500 * 1024 * 1024;
 /// 残りは OS が撒くゴミ。
 const EXCLUDE_NAMES: &[&str] = &[
     crate::update::SOURCE_META_FILE,
+    crate::update::LEGACY_SOURCE_META_FILE,
     ".DS_Store",
     "Thumbs.db",
     "desktop.ini",

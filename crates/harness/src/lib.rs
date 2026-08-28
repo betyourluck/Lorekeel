@@ -18,6 +18,21 @@ mod facts;
 mod image_prompt;
 mod memoria;
 mod package;
+/// 環境変数を新しい接頭辞 `LOREKEEL_` で読み、無ければ旧 `KATARIBE_` を見る
+/// (改名 2026-08-28)。**旧名を読み続ける**のは、受領者の手元の `.env` と app_data の
+/// `.env` に旧名が書かれているから — 認識をやめると、設定してあるのに効かない状態に
+/// 静かに落ちる。書くときは常に新しい名前 (`env_name`)。
+pub fn env_var(suffix: &str) -> Option<String> {
+    std::env::var(env_name(suffix))
+        .or_else(|_| std::env::var(format!("KATARIBE_{suffix}")))
+        .ok()
+}
+
+/// 書き込み・設定用の正式名。
+pub fn env_name(suffix: &str) -> String {
+    format!("LOREKEEL_{suffix}")
+}
+
 pub mod prompt;
 mod proposer;
 mod save;
@@ -1597,7 +1612,7 @@ mod tests {
         assert!(sb.contains("cell"), "現在地が含まれる");
     }
 
-    /// 【開発者モード】KATARIBE_DEV_MODE 相当の dev フラグが立つと system の先頭に DEV_META が
+    /// 【開発者モード】LOREKEEL_DEV_MODE 相当の dev フラグが立つと system の先頭に DEV_META が
     /// 注入され、メタ質問の応答規律 (物語を進めず ops を空に) を刷り込む。通常時は一切漏れない。
     #[test]
     fn dev_mode_injects_meta_block_only_when_enabled() {

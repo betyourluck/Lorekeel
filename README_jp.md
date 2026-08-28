@@ -1,14 +1,14 @@
 [English](README.md) | **日本語**
 
-# <img src="images/kataribe.png" alt="Kataribe" width="32"> Outcasts Kataribe (語り部) — 忘れない・矛盾しない GM
+# <img src="images/lorekeel.png" alt="Lorekeel" width="32"> Outcasts Lorekeel — 忘れない・矛盾しない GM
 
 クラウド LLM をナレーターに、**Rust の決定論エンジンをゲーム状態の正本（唯一の真実）**に据えた TRPG ゲームマスター。
 
-AI Dungeon 系の LLM-GM が必ず崩れる死因は、文章力ではなく**忘却と矛盾**（持ち物・誰が死んだ・どこにいる・前回何を決めたか）。Kataribe はその故障モードを、LLM に状態を持たせないアーキテクチャで構造的に断つ。売りは「無限の自由」ではなく **一貫性**。
+AI Dungeon 系の LLM-GM が必ず崩れる死因は、文章力ではなく**忘却と矛盾**（持ち物・誰が死んだ・どこにいる・前回何を決めたか）。Lorekeel はその故障モードを、LLM に状態を持たせないアーキテクチャで構造的に断つ。売りは「無限の自由」ではなく **一貫性**。
 
-その副産物: エンジンが正しさを保証するので、Kataribe は**安い・無料・完全ローカルのモデルでもよく動く**。小モデルの間違いをエンジンが裏で裁くため、一貫したゲームに最先端モデルは要らない（差が出るのは文章の華やかさだけ）。
+その副産物: エンジンが正しさを保証するので、Lorekeel は**安い・無料・完全ローカルのモデルでもよく動く**。小モデルの間違いをエンジンが裏で裁くため、一貫したゲームに最先端モデルは要らない（差が出るのは文章の華やかさだけ）。
 
-![プレイ中の Kataribe](images/kataribe_ui.png)
+![プレイ中の Lorekeel](images/lorekeel_ui.png)
 
 *プレイ中のシナリオパッケージ — 情景背景の上に GM の語り、右にリアルタイムの目標とこの場にいる人物。すべて背後の決定論エンジンが駆動している。*
 
@@ -18,19 +18,19 @@ AI Dungeon 系の LLM-GM が必ず崩れる死因は、文章力ではなく**�
 
 | OS | ファイル | 状態 |
 |---|---|---|
-| **Windows** | `Kataribe_x.y.z_x64-setup.exe`（インストーラ）/ `.msi` | ✅ 動作確認済み |
+| **Windows** | `Lorekeel_x.y.z_x64-setup.exe`（インストーラ）/ `.msi` | ✅ 動作確認済み |
 | macOS (Apple Silicon) | `.dmg` / Homebrew | v0.5.16 から署名・公証あり。アプリ自体は未検証 |
 | Linux | `.deb` / `.AppImage` / `.rpm` | CI ビルドのみ・未検証 |
 
 macOS は Homebrew でも入れられる:
 
 ```sh
-brew install --cask betyourluck/tap/kataribe
+brew install --cask betyourluck/tap/lorekeel
 ```
 
 **完全修飾名は省略できない** — tap しただけでは、Homebrew はそのリポジトリのコードを
 読み込む許可を得ないため。Apple Silicon 専用で、Intel 版は無い。
-`brew uninstall --cask kataribe` はセーブデータ・パッケージ・API キーを残す
+`brew uninstall --cask lorekeel` はセーブデータ・パッケージ・API キーを残す
 （`--zap` を付けるとそれらも消える）。
 
 起動後、**設定 → AIモデル** で OpenAI 互換エンドポイントの `base_url` / `model` / `api_key` を設定する（クラウド LLM またはローカルの OpenAI 互換サーバ）。シナリオパッケージはフォルダ追加または配布サイトから取得して遊ぶ。
@@ -68,7 +68,7 @@ LLM は `StateDelta`（structured output: `narration` + `ops`）を提案する�
 
 ## 制作 & 配布
 
-シナリオは自己完結した**パッケージ**として配布する — `package.yaml` + characters + scenarios（+ 任意で campaign / 画像 / 音声）を収めたフォルダ。zip して、解凍して、そのまま動く。配布サイト（*Kataribe 書庫*）で作者はパッケージを共有し、プレイヤーはアプリ内から取得できる。LLM に形式仕様とあらすじを渡してパッケージを作ることもできる（制作ガイド参照）。
+シナリオは自己完結した**パッケージ**として配布する — `package.yaml` + characters + scenarios（+ 任意で campaign / 画像 / 音声）を収めたフォルダ。zip して、解凍して、そのまま動く。配布サイト（*書庫*）で作者はパッケージを共有し、プレイヤーはアプリ内から取得できる。LLM に形式仕様とあらすじを渡してパッケージを作ることもできる（制作ガイド参照）。
 
 ## ビルド & テスト
 
@@ -86,7 +86,7 @@ cd app && npm install && npm run tauri dev  # Windows は WebView2 が必要
 ## 構成
 
 ```text
-Kataribe/
+Lorekeel/
 ├── data_contract.yaml   # ★名詞の凍結（GameState / StateDelta / Gate / Scenario の契約）
 ├── crates/
 │   ├── gm_core/         # 正本: state・シナリオ脊椎・adjudicate/apply エンジン

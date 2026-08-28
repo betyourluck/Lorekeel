@@ -161,7 +161,10 @@ fn extract_impl(zip_path: &Path, dest_spec: Dest<'_>) -> Result<PathBuf, String>
             }
             // spec 17: 出所メタの混入は展開しない (作者が更新済みフォルダを再 zip して
             // 納本した場合の対策 — メタは常に受領側クライアントが書いた値だけが存在する)。
-            if rel.as_os_str() == crate::update::SOURCE_META_FILE {
+            if crate::update::SOURCE_META_FILES
+                .iter()
+                .any(|n| rel.as_os_str() == *n)
+            {
                 continue;
             }
             let out_path = dest.join(&rel);

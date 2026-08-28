@@ -662,7 +662,7 @@ interface GameState {
   map: MapView;
   // 自前の確認ダイアログ (WebView2 の window.confirm は tauri://localhost の URL を出すため自作)。
   // null なら非表示。askConfirm() がこれをセットし、ConfirmDialog が OK/キャンセルで解決する。
-  confirmDialog: { message: string; confirmLabel: string } | null;
+  confirmDialog: { message: string; confirmLabel: string; noCancel?: boolean } | null;
 }
 
 // 確認ダイアログの解決子 (Pinia state に関数を持たせず、モジュールローカルで保持)。
@@ -1031,12 +1031,38 @@ export const useGameStore = defineStore("game", {
     // 自前の確認ダイアログを開き、ユーザーの選択 (OK=true / キャンセル=false) を Promise で返す。
     // WebView2 の window.confirm は本文に tauri://localhost を混ぜてしまうので、これで置き換える。
     // 二重呼び出し (前の確認が未解決) は前をキャンセル扱いで畳んでから開く。
-    askConfirm(message: string, confirmLabel?: string): Promise<boolean> {
+    /**
+     * 改名 (Kataribe → Lorekeel) の一度きりの告知。**旧インストールの痕跡が在るときだけ**出す
+     * — 通知済みフラグの有無だけで判定すると、新規ユーザーにも「改名しました」が出て、
+     * 知らない旧名を知らせることになる。フラグは localStorage (プレフィックスは据え置き:
+     * ここを替えると packagePaths などユーザーの設定が全部初期値に戻る)。
+     */
+    async announceRename(): Promise<void> {
+      if (localStorage.getItem("kataribe.renameNoticed")) return;
+      let notice: { old_dir?: string | null; migrated?: boolean; error?: string | null };
+      try {
+        notice = await invoke("rename_notice");
+      } catch {
+        return; // Tauri 外では何もしない
+      }
+      if (!notice.old_dir) return; // 新規インストール
+      const body = notice.error
+        ? t("rename.failed", { dir: notice.old_dir, error: notice.error })
+        : notice.migrated
+          ? t("rename.migrated", { dir: notice.old_dir })
+          : t("rename.alreadyThere", { dir: notice.old_dir });
+      localStorage.setItem("kataribe.renameNoticed", "1");
+      await this.askConfirm(`${t("rename.body")}
+
+${body}`, t("rename.ok"), true);
+    },
+
+    askConfirm(message: string, confirmLabel?: string, noCancel = false): Promise<boolean> {
       if (confirmResolver) {
         confirmResolver(false);
         confirmResolver = null;
       }
-      this.confirmDialog = { message, confirmLabel: confirmLabel ?? t("confirm.ok") };
+      this.confirmDialog = { message, confirmLabel: confirmLabel ?? t("confirm.ok"), noCancel };
       return new Promise<boolean>((resolve) => {
         confirmResolver = resolve;
       });

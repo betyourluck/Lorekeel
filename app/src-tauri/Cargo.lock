@@ -1786,26 +1786,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kataribe-desktop"
-version = "0.1.0"
-dependencies = [
- "dotenvy",
- "gm_core",
- "harness",
- "llm_client",
- "reqwest 0.12.28",
- "rfd",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "tauri",
- "tauri-build",
- "tokio",
- "zip",
-]
-
-[[package]]
 name = "keyboard-types"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1913,6 +1893,26 @@ name = "log"
 version = "0.4.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
+
+[[package]]
+name = "lorekeel-desktop"
+version = "0.1.0"
+dependencies = [
+ "dotenvy",
+ "gm_core",
+ "harness",
+ "llm_client",
+ "reqwest 0.12.28",
+ "rfd",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "tokio",
+ "zip",
+]
 
 [[package]]
 name = "lru-slab"

@@ -343,7 +343,7 @@ pub async fn run_turn<P: DeltaProposer>(
         system.push_str(&party_block);
     }
     let mut messages = vec![
-        // dev モード (KATARIBE_DEV_MODE) なら DEV_META を先頭に足す (env 直読み、signature 不変)。
+        // dev モード (LOREKEEL_DEV_MODE) なら DEV_META を先頭に足す (env 直読み、signature 不変)。
         ChatMessage::system(system),
     ];
     // spec 14 Phase B: append-only あらすじ (spec 10) は可変 user に混ぜず、独立した

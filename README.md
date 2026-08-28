@@ -1,14 +1,14 @@
 **English** | [日本語](README_jp.md)
 
-# <img src="images/kataribe.png" alt="Kataribe" width="32"> Outcasts Kataribe (語り部) — a GM that never forgets or contradicts
+# <img src="images/lorekeel.png" alt="Lorekeel" width="32"> Outcasts Lorekeel — a GM that never forgets or contradicts
 
 A TRPG game master with a cloud LLM as narrator and a **deterministic Rust engine as the source of truth** for game state.
 
-The failure mode that always breaks AI Dungeon–style LLM GMs isn't weak prose — it's **forgetting and contradiction** (what you carry, who died, where you are, what was decided last turn). Kataribe cuts that off structurally: the LLM never holds the state. What it sells is not "infinite freedom" but **consistency**.
+The failure mode that always breaks AI Dungeon–style LLM GMs isn't weak prose — it's **forgetting and contradiction** (what you carry, who died, where you are, what was decided last turn). Lorekeel cuts that off structurally: the LLM never holds the state. What it sells is not "infinite freedom" but **consistency**.
 
-A side effect of that architecture: because the engine guarantees correctness, Kataribe runs well on **cheap, free, or fully local models**. The engine backs up a small model's mistakes, so you don't need a frontier model to get a coherent game — only richer prose.
+A side effect of that architecture: because the engine guarantees correctness, Lorekeel runs well on **cheap, free, or fully local models**. The engine backs up a small model's mistakes, so you don't need a frontier model to get a coherent game — only richer prose.
 
-![Kataribe in play](images/kataribe_ui.png)
+![Lorekeel in play](images/lorekeel_ui.png)
 
 *A scenario package in play — the GM's narration over a scene background, with live goals and the characters present in the scene on the right. Everything is driven by the deterministic engine underneath.*
 
@@ -18,19 +18,19 @@ Get the installer for your OS from the [**latest release**](https://github.com/b
 
 | OS | File | Status |
 |---|---|---|
-| **Windows** | `Kataribe_x.y.z_x64-setup.exe` (installer) / `.msi` | ✅ Verified working |
+| **Windows** | `Lorekeel_x.y.z_x64-setup.exe` (installer) / `.msi` | ✅ Verified working |
 | macOS (Apple Silicon) | `.dmg` / Homebrew | Signed & notarized from v0.5.16; app itself unverified |
 | Linux | `.deb` / `.AppImage` / `.rpm` | CI build only, unverified |
 
 On macOS you can install it with Homebrew instead:
 
 ```sh
-brew install --cask betyourluck/tap/kataribe
+brew install --cask betyourluck/tap/lorekeel
 ```
 
 The fully qualified name is not optional — tapping a repository does not grant Homebrew
 permission to load code from it. Apple Silicon only; there is no Intel build.
-`brew uninstall --cask kataribe` leaves your saves, packages and API keys in place
+`brew uninstall --cask lorekeel` leaves your saves, packages and API keys in place
 (`--zap` deletes those too).
 
 After launching, go to **Settings → AI Model** and set the `base_url` / `model` / `api_key` for an OpenAI-compatible endpoint (a cloud LLM, or a local OpenAI-compatible server). Play scenario packages by adding a folder or fetching them from the distribution site.
@@ -68,7 +68,7 @@ The signature demonstration: tell the GM you use a "prophecy skill you never had
 
 ## Authoring & distribution
 
-Scenarios ship as self-contained **packages** — a folder with `package.yaml` + characters + scenarios (+ optional campaign, images, audio). Zip it, unzip it, it runs. A companion distribution site (the *Kataribe 書庫*) lets authors share packages and players install them from inside the app. You can even build a package by handing an LLM the format spec and a synopsis; see the authoring guide.
+Scenarios ship as self-contained **packages** — a folder with `package.yaml` + characters + scenarios (+ optional campaign, images, audio). Zip it, unzip it, it runs. A companion distribution site (the *書庫*) lets authors share packages and players install them from inside the app. You can even build a package by handing an LLM the format spec and a synopsis; see the authoring guide.
 
 ## Build & test
 
@@ -86,7 +86,7 @@ cd app && npm install && npm run tauri dev  # requires WebView2 on Windows
 ## Layout
 
 ```text
-Kataribe/
+Lorekeel/
 ├── data_contract.yaml   # ★ Frozen nouns (the GameState / StateDelta / Gate / Scenario contract)
 ├── crates/
 │   ├── gm_core/         # Source of truth: state, scenario spine, adjudicate/apply engine
