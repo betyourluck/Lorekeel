@@ -547,7 +547,7 @@ export const messages = {
       search: "検索",
       loading: "読み込み中…",
       notFound: "パッケージが見つかりません。",
-      kataribeVersionTitle: "作者が申告した対応 Kataribe バージョン",
+      kataribeVersionTitle: "作者が申告した対応バージョン (書庫の kataribe_version 欄。欄名は改名前のまま = サーバとの共有ワイヤ)",
       matureTitle:
         "性・流血描写などの自己申告。倫理制約の強い LLM ではプレイできない可能性があります",
       rating: "★{rating} ({count}件)",
@@ -1311,7 +1311,7 @@ export const messages = {
       search: "Search",
       loading: "Loading…",
       notFound: "No packages found.",
-      kataribeVersionTitle: "Kataribe version declared by the author",
+      kataribeVersionTitle: "Supported version declared by the author (the archive's kataribe_version field, kept under its pre-rename name)",
       matureTitle:
         "Self-declared sexual/graphic content. May be unplayable on LLMs with strong ethical constraints.",
       rating: "★{rating} ({count})",

@@ -268,7 +268,7 @@ function totalPages(): number {
                     class="shrink-0 rounded bg-ash/50 px-1.5 text-xs text-parchment/60"
                     :title="t('packages.kataribeVersionTitle')"
                   >
-                    Kataribe {{ p.kataribe_version }}
+                    Lorekeel {{ p.kataribe_version }}
                   </span>
                   <span
                     v-if="p.is_mature"

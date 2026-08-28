@@ -5270,3 +5270,4 @@ mod tests {
         assert!(!got.to_string_lossy().contains(".."), "結果に '..' が残らない");
     }
 }
+
