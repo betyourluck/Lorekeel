@@ -1,6 +1,6 @@
 **English** | [日本語](README_jp.md)
 
-# <img src="images/kataribe.png" alt="Kataribe" width="32"> Kataribe (語り部) — a GM that never forgets or contradicts
+# <img src="images/kataribe.png" alt="Kataribe" width="32"> Outcasts Kataribe (語り部) — a GM that never forgets or contradicts
 
 A TRPG game master with a cloud LLM as narrator and a **deterministic Rust engine as the source of truth** for game state.
 

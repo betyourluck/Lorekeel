@@ -306,9 +306,7 @@ onUnmounted(() => {
           :aria-label="t('editor.toggleAria')"
           @click="game.toggleEditor()"
         >
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M17 3a2.8 2.8 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5z" />
-          </svg>
+          <Icon name="code" :size="17" />
         </button>
       </div>
     </header>

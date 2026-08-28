@@ -2,7 +2,7 @@
 // UI chrome のモノカラー線アイコン (Feather/Lucide 風)。stroke=currentColor ゆえ
 // 親のテキスト色に追従する = テーマ一貫のモノクロ。パッケージ同梱画像とは別物 (UI 装飾)。
 defineProps<{
-  name: "location" | "bag" | "flag" | "turn" | "gauge" | "sparkle" | "target" | "load" | "new" | "plus" | "trash" | "folder" | "book" | "save" | "floppy" | "scissors" | "play" | "map" | "pencil" | "speaker" | "speaker-off" | "skip" | "image" | "eye" | "eye-off" | "text" | "spinner";
+  name: "location" | "bag" | "flag" | "turn" | "gauge" | "sparkle" | "target" | "load" | "new" | "plus" | "trash" | "folder" | "book" | "save" | "floppy" | "scissors" | "code" | "play" | "map" | "pencil" | "speaker" | "speaker-off" | "skip" | "image" | "eye" | "eye-off" | "text" | "spinner";
   size?: number;
 }>();
 </script>
@@ -99,6 +99,15 @@ defineProps<{
       <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
       <path d="M17 21v-8H7v8" />
       <path d="M7 3v5h8" />
+    </template>
+    <!-- 編集モード (spec 28): コードウィンドウ (< / > と斜線)。鉛筆は既成事実タブが
+         使っているので別の絵にする (ユーザー指定, 2026-08-28)。 -->
+    <template v-else-if="name === 'code'">
+      <rect x="2" y="3" width="20" height="18" rx="2" />
+      <line x1="2" y1="6" x2="22" y2="6" />
+      <polyline points="8.5 17 4 14 8.5 11" />
+      <polyline points="15.5 17 20 14 15.5 11" />
+      <line x1="11" y1="17.5" x2="13" y2="10.5" />
     </template>
     <!-- 切り抜き: ハサミ -->
     <template v-else-if="name === 'scissors'">

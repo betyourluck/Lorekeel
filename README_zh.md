@@ -1,6 +1,6 @@
-[English](README.md) | [日本語](README_jp.md)
+[English](README.md) | [日本語](README_jp.md) 
 
-# <img src="images/kataribe.png" alt="Kataribe" width="32"> Kataribe（語り部）— 永不遗忘、永不矛盾的GM
+# <img src="images/kataribe.png" alt="Kataribe" width="32"> Outcasts Kataribe（語り部）— 永不遗忘、永不矛盾的GM
 
 以云端LLM为旁白、以**确定性的Rust引擎作为游戏状态的唯一真源**的TRPG游戏主持人。
 

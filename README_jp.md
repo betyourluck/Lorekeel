@@ -1,6 +1,6 @@
 [English](README.md) | **日本語**
 
-# <img src="images/kataribe.png" alt="Kataribe" width="32"> Kataribe (語り部) — 忘れない・矛盾しない GM
+# <img src="images/kataribe.png" alt="Kataribe" width="32"> Outcasts Kataribe (語り部) — 忘れない・矛盾しない GM
 
 クラウド LLM をナレーターに、**Rust の決定論エンジンをゲーム状態の正本（唯一の真実）**に据えた TRPG ゲームマスター。
 
