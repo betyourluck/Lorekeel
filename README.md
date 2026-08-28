@@ -14,7 +14,7 @@ A side effect of that architecture: because the engine guarantees correctness, L
 
 ## Download
 
-Get the installer for your OS from the [**latest release**](https://github.com/betyourluck/Kataribe/releases/latest).
+Get the installer for your OS from the [**latest release**](https://github.com/betyourluck/Lorekeel/releases/latest).
 
 | OS | File | Status |
 |---|---|---|

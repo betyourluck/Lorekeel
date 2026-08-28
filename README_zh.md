@@ -14,7 +14,7 @@ AI Dungeon 这类 LLM-GM 一定会崩溃的死因，不是文笔，而是**遗�
 
 ## 下载
 
-从[**最新发布**](https://github.com/betyourluck/Kataribe/releases/latest)获取适用于你操作系统的安装程序。
+从[**最新发布**](https://github.com/betyourluck/Lorekeel/releases/latest)获取适用于你操作系统的安装程序。
 
 | 操作系统 | 文件 | 状态 |
 |---|---|---|

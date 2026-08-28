@@ -14,7 +14,7 @@ AI Dungeon 系の LLM-GM が必ず崩れる死因は、文章力ではなく**�
 
 ## ダウンロード
 
-[**最新リリース**](https://github.com/betyourluck/Kataribe/releases/latest) から各 OS のインストーラを入手できる。
+[**最新リリース**](https://github.com/betyourluck/Lorekeel/releases/latest) から各 OS のインストーラを入手できる。
 
 | OS | ファイル | 状態 |
 |---|---|---|
