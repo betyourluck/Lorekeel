@@ -134,6 +134,13 @@ function onDrop(e: DragEvent) {
   if (files.length) void game.putEditorMedia(files);
 }
 
+// カテゴリの折り畳み (2026-08-28 ユーザーFB)。見出しクリックで開閉。**揮発** —
+// 編集モードは出入りする面なので、閉じたまま次のセッションに持ち越さない。
+const collapsed = ref<Record<string, boolean>>({});
+function toggleGroup(category: string) {
+  collapsed.value = { ...collapsed.value, [category]: !collapsed.value[category] };
+}
+
 // --- 行内編集 (2026-08-28 ユーザーFB: VS Code の流儀へ) ---
 // 「+ ボタン → 別の入力欄」ではなく、**一覧の中にその場で行が生まれて入力する**。
 // Enter で確定 / Esc で取り消し / blur も確定 (VS Code と同じ — 打った名前を捨てない)。
@@ -170,6 +177,8 @@ function startCreate(category: string) {
     return;
   }
   renaming.value = null;
+  // 畳んだカテゴリで新規を押したら開く (入力欄が見えないまま開くことになる)。
+  if (collapsed.value[category]) toggleGroup(category);
   creating.value = category;
   draft.value = "";
   settled = false;
@@ -424,10 +433,21 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
             {{ t("editor.mediaDropHint") }}
           </div>
           <div v-for="g in mediaGroups" :key="g.category" class="mb-3">
-            <div class="text-parchment/40 mb-1.5 flex items-center gap-1.5 text-xs">
-              <Icon name="folder" :size="12" />{{ t(`editor.cat_${g.category}`) }}
-            </div>
-            <ul class="space-y-0.5">
+            <button
+              class="text-parchment/40 mb-1.5 flex w-full items-center gap-1.5 text-xs hover:text-parchment transition-colors"
+              :title="t('editor.toggleGroup')"
+              @click="toggleGroup(g.category)"
+            >
+              <Icon
+                name="chevron"
+                :size="11"
+                class="transition-transform"
+                :class="collapsed[g.category] ? '' : 'rotate-90'"
+              />
+              <Icon name="folder" :size="12" />
+              <span class="truncate">{{ t(`editor.cat_${g.category}`) }}</span>
+            </button>
+            <ul v-show="!collapsed[g.category]" class="space-y-0.5">
               <li v-for="f in g.files" :key="f.relPath" class="group/media flex items-center gap-1">
                 <img
                   v-if="g.category === 'image'"
@@ -491,18 +511,30 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
         <div v-for="g in editorGroups" :key="g.category" class="group/cat mb-3">
           <!-- カテゴリ見出し (VS Code のエクスプローラ節と同じ形): hover で新規アイコン。 -->
           <div class="text-parchment/40 mb-1.5 flex items-center gap-1.5 text-xs">
-            <Icon name="folder" :size="12" />{{ t(`editor.cat_${g.category}`) }}
-            <span class="flex-1"></span>
+            <button
+              class="flex min-w-0 flex-1 items-center gap-1.5 text-left hover:text-parchment transition-colors"
+              :title="t('editor.toggleGroup')"
+              @click="toggleGroup(g.category)"
+            >
+              <Icon
+                name="chevron"
+                :size="11"
+                class="transition-transform"
+                :class="collapsed[g.category] ? '' : 'rotate-90'"
+              />
+              <Icon name="folder" :size="12" />
+              <span class="truncate">{{ t(`editor.cat_${g.category}`) }}</span>
+            </button>
             <button
               v-if="g.creatable"
               class="px-1 text-parchment/30 opacity-0 group-hover/cat:opacity-100 hover:text-ember transition-opacity"
               :title="t(`editor.new_${g.category}`)"
-              @click="startCreate(g.category)"
+              @click.stop="startCreate(g.category)"
             >
               <Icon name="plus" :size="12" />
             </button>
           </div>
-          <ul class="space-y-0.5">
+          <ul v-show="!collapsed[g.category]" class="space-y-0.5">
             <li v-for="f in g.files" :key="f.relPath" class="group/file flex items-center">
               <!-- 改名中はその行が入力欄に化ける (VS Code と同じ — 別の場所へ飛ばない)。 -->
               <input
