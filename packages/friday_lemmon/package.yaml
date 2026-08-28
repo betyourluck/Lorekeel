@@ -1,6 +1,6 @@
 title: 金曜日のレモンパイ
 description: 海辺の喫茶店に毎週現れる謎の女性。亡き妻のレシピが鍵を握る日常ミステリ。普通の結末と隠された真実の二層構造。
-author: Kataribe Studio
+author: Lorekeel Studio
 version: "1.0"
 entry: scenarios/main.yaml
 # 読み上げを想定した盤面 (会話と観察で進む日常ミステリ)。会話ペインの右下に

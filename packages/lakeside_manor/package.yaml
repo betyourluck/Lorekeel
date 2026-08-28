@@ -3,7 +3,7 @@
 # stat_at_most goal (発狂エンド) を実 LLM プレイで踏むための盤面。
 title: 湖畔の洋館
 description: 消息を絶った蒐集家の洋館を訪ねる、ひと晩の探索譚。正気度が試される。覗いて知るか、封じて守るか。
-author: Kataribe
+author: Lorekeel
 version: "0.2"
 entry: scenarios/main.yaml
 world: |

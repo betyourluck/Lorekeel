@@ -8,7 +8,7 @@ description: >-
   開帳演出のテスト盤面。岩起こし (STR 1d20) と碑文の解読 (知識 d100) を制すると
   石の番人が目覚め、最後の試練=戦闘 (攻撃 1 回=challenge、成功で与ダメ/失敗で被ダメ) が
   始まる。「岩を持ち上げる」「碑文を読み解く」「番人に斬りかかる」で GM が挑戦を選ぶ。
-author: Kataribe
+author: Lorekeel
 version: "0.1"
 entry: scenarios/main.yaml
 world: |
