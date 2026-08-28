@@ -168,6 +168,17 @@ onBeforeUnmount(() => {
   window.removeEventListener("pointerup", onUp);
 });
 
+// 場所の画像を参照ストックの枠へドラッグできる (2026-08-28 ユーザー要望)。顔アイコン
+// (spec 27 追補) と**同じ経路**で、運ぶのはアセット ID だけ — bytes は backend が読む。
+// 渡すのは `selected.image` (生の ID) であって表示用の `asset://` URL (selectedImg) ではない。
+// frontier の詳細は visited のときしか画像を描かないので、未踏の場所の絵は掴めない。
+function onImageDragStart(e: DragEvent) {
+  const id = selected.value?.image;
+  if (!id || !e.dataTransfer) return;
+  e.dataTransfer.setData("application/x-kataribe-asset", id);
+  e.dataTransfer.effectAllowed = "copy";
+}
+
 // ノードのクリック (ドラッグでなければ選択トグル)。
 function onNodeClick(id: string) {
   if (moved) return;
@@ -233,7 +244,14 @@ function onNodeClick(id: string) {
         <template v-if="selected">
           <template v-if="selected.visited">
             <div class="text-xs font-bold text-parchment mb-1">{{ selected.title || selected.id }}</div>
-            <img v-if="selectedImg" :src="selectedImg" class="w-full rounded mb-1.5 border border-ash/50" />
+            <img
+              v-if="selectedImg"
+              :src="selectedImg"
+              class="w-full rounded mb-1.5 border border-ash/50 cursor-grab"
+              draggable="true"
+              :title="t('map.dragToRef')"
+              @dragstart="onImageDragStart"
+            />
             <p v-if="selected.description" class="text-[11px] leading-relaxed text-parchment/70 whitespace-pre-line">
               {{ selected.description }}
             </p>

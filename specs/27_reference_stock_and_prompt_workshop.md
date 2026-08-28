@@ -382,6 +382,16 @@ spec 25 の決定（entity 照合はしない）は不変。ユーザーの言: 
 store は `presentCharacters` に `iconId`（生の ID）を残す — `icon` は表示用に `asset://` URL へ
 潰れるのでドラッグの荷物にできない。
 
+**ドラッグ元は 2 つになった（2026-08-28 ユーザー要望）。** マップタブの詳細に出る場所の絵も
+同じ経路で枠へ落とせる。`MapNode.image` は顔アイコンと同じ**不透明なアセット ID**（spec 01
+Phase 0 の `images/` 配下）なので、`MapPanel` に `dragstart` を 1 本足して同じ
+`application/x-kataribe-asset` を積むだけで済み、**backend は無改修**（`put_reference_from_asset`
+は「同梱アセット」を受ける口であって顔アイコン専用ではない）。動機は「参照＝キャラの見た目」に
+限らないこと — 場所の絵を参照に入れれば背景や画風の指定になる。渡すのは `selected.image`（生の
+ID）で、表示用の `selectedImg`（`asset://` URL）ではない。未踏（frontier）の場所は backend が
+`title`/`description`/`image` を伏せる＝詳細に絵が出ないので、**霧の向こうの絵は掴めない**
+（ネタバレ衛生が呼び出し側の判断なしに保たれる）。
+
 **実装で最初に詰まった箇所は自分のコードではなかった** → `failures.md #88`
 （`dragDropEnabled` 既定 true が HTML5 ドラッグを横取り。2026-08-24 のファイルドロップも
 一度も動いていなかった）。

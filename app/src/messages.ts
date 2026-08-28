@@ -76,6 +76,7 @@ export const messages = {
       legendLocked: "今は行けない",
       undiscovered: "まだここには到達していません",
       selectHint: "丸をクリックすると、その場所の説明が出ます",
+      dragToRef: "参照画像の枠へドラッグすると、この場所の絵を参照にできます",
     },
     action: {
       placeholder: "行動を入力…（Enter で送信 / Shift+Enter で改行）",
@@ -375,7 +376,7 @@ export const messages = {
     refStock: {
       heading: "参照画像",
       intro:
-        "生成のたびに添付される参照画像です。番号の順に %ref_1% から送られ、空きがあれば前へ詰まります。パッケージ同梱の画像は最初に遊んだときここへ写し取られ、以後はここの現物だけが使われます。右ペインの顔アイコンを枠へドラッグすると、そのキャラの絵を参照にできます。",
+        "生成のたびに添付される参照画像です。番号の順に %ref_1% から送られ、空きがあれば前へ詰まります。パッケージ同梱の画像は最初に遊んだときここへ写し取られ、以後はここの現物だけが使われます。右ペインの顔アイコン、またはマップの場所の絵を枠へドラッグすると、それを参照にできます。",
       empty: "（空）",
       put: "この絵を入れる",
       replace: "この絵に差し替える",
@@ -824,6 +825,7 @@ export const messages = {
       legendLocked: "Locked for now",
       undiscovered: "You haven't reached this place yet.",
       selectHint: "Click a circle to see that place's details.",
+      dragToRef: "Drag into a reference slot to use this place's image as a reference.",
     },
     action: {
       placeholder: "Type an action…  (Enter to send / Shift+Enter for a newline)",
@@ -1124,7 +1126,7 @@ export const messages = {
     refStock: {
       heading: "Reference images",
       intro:
-        "Attached to every generation. Sent in slot order starting at %ref_1%; gaps close up. Images shipped with the package are copied here the first time you play it, and from then on only what is here is used. You can also drag a face icon from the right pane into a slot.",
+        "Attached to every generation. Sent in slot order starting at %ref_1%; gaps close up. Images shipped with the package are copied here the first time you play it, and from then on only what is here is used. You can also drag a face icon — or a place's image from the map — into a slot.",
       empty: "(empty)",
       put: "Put this image here",
       replace: "Replace with this image",
