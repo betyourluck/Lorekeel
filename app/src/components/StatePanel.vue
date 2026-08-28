@@ -141,13 +141,21 @@ function onDrop(e: DragEvent) {
 const creating = ref<string | null>(null); // 作成中のカテゴリ
 const renaming = ref<string | null>(null); // 改名中の relPath
 const draft = ref("");
-const draftInput = ref<HTMLInputElement | null>(null);
+// **関数 ref にする**: 入力欄は v-for の内側に置くので、文字列の ref だと Vue が
+// **配列**として集める。配列に .focus() は無いので例外になり、`void focusDraft(...)` が
+// それを握り潰して**フォーカスが一度も当たらない** → blur が発火せず入力欄が開きっぱなしに
+// なっていた (実機で発覚)。同時に開く入力欄は高々 1 つなので素の変数で受ければ足りる。
+let draftEl: HTMLInputElement | null = null;
+function bindDraft(el: unknown) {
+  // アンマウント時は null が来る。今ある要素だけを覚える (消えた行で上書きしない)。
+  if (el) draftEl = el as HTMLInputElement;
+}
 // blur の確定と Enter/Esc の二重発火を防ぐ (Enter は blur も呼ぶ)。
 let settled = false;
 
 async function focusDraft(selectStem: boolean) {
   await nextTick();
-  const el = draftInput.value;
+  const el = draftEl;
   if (!el) return;
   el.focus();
   // VS Code はリネームで**拡張子を除いた部分だけ**を選択する (拡張子は変えないことが多い)。
@@ -192,6 +200,7 @@ function cancelDraft() {
   settled = true;
   creating.value = null;
   renaming.value = null;
+  draftEl = null;
 }
 
 async function commitDraft() {
@@ -202,6 +211,7 @@ async function commitDraft() {
   const rel = renaming.value;
   creating.value = null;
   renaming.value = null;
+  draftEl = null;
   if (!name) return; // 空のまま抜けた = 取り消し
   if (cat) await game.createEditorFile(cat, name);
   else if (rel && name !== rel.split("/").pop()) await game.renameEditorFile(rel, name);
@@ -431,7 +441,7 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
                      image/bgm/sound/icon 欄も自分で直す必要がある (title で告げる)。 -->
                 <input
                   v-if="renaming === f.relPath"
-                  ref="draftInput"
+                  :ref="bindDraft"
                   v-model="draft"
                   class="min-w-0 flex-1 rounded border border-ember/60 bg-ash/40 px-1.5 py-1 text-xs font-mono outline-none"
                   :title="t('editor.assetRenameTitle')"
@@ -497,7 +507,7 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
               <!-- 改名中はその行が入力欄に化ける (VS Code と同じ — 別の場所へ飛ばない)。 -->
               <input
                 v-if="renaming === f.relPath"
-                ref="draftInput"
+                :ref="bindDraft"
                 v-model="draft"
                 class="min-w-0 flex-1 rounded border border-ember/60 bg-ash/40 px-2 py-1 text-xs font-mono outline-none"
                 @keydown.enter.prevent="commitDraft"
@@ -538,7 +548,7 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
             <!-- 作成中の行 (VS Code と同じく**一覧の末尾にその場で生まれる**)。 -->
             <li v-if="creating === g.category" class="flex items-center">
               <input
-                ref="draftInput"
+                :ref="bindDraft"
                 v-model="draft"
                 class="min-w-0 flex-1 rounded border border-ember/60 bg-ash/40 px-2 py-1 text-xs font-mono outline-none"
                 :placeholder="t('editor.newFilePlaceholder')"
