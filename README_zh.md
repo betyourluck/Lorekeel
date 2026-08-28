@@ -19,7 +19,7 @@ AI Dungeon 这类 LLM-GM 一定会崩溃的死因，不是文笔，而是**遗�
 | 操作系统 | 文件 | 状态 |
 |---|---|---|
 | **Windows** | `Lorekeel_x.y.z_x64-setup.exe`（安装程序）/ `.msi` | ✅ 已验证可用 |
-| macOS（Apple Silicon） | `.dmg` / Homebrew | 自 v0.5.16 起已签名并公证；应用本身未验证 |
+| macOS（Apple Silicon） | `.dmg` / Homebrew | ✅ 已签名并公证，且在真机 Mac 上确认可启动（v0.5.17） |
 | Linux | `.deb` / `.AppImage` / `.rpm` | 仅 CI 构建，未验证 |
 
 macOS 也可以通过 Homebrew 安装：

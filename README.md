@@ -19,7 +19,7 @@ Get the installer for your OS from the [**latest release**](https://github.com/b
 | OS | File | Status |
 |---|---|---|
 | **Windows** | `Lorekeel_x.y.z_x64-setup.exe` (installer) / `.msi` | ✅ Verified working |
-| macOS (Apple Silicon) | `.dmg` / Homebrew | Signed & notarized from v0.5.16; app itself unverified |
+| macOS (Apple Silicon) | `.dmg` / Homebrew | ✅ Signed, notarized, and launched on a real Mac (v0.5.17) |
 | Linux | `.deb` / `.AppImage` / `.rpm` | CI build only, unverified |
 
 On macOS you can install it with Homebrew instead:
