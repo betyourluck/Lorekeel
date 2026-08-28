@@ -11,6 +11,7 @@
 
 mod editor;
 mod editor_lint;
+mod editor_docs;
 mod editor_vocab;
 mod image_gen;
 mod ref_stock;

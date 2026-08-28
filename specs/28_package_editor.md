@@ -32,6 +32,42 @@ lint と同じ表）、id はディスクの保存済みパッケージから（
 derive（`struct_keys` の要件）。PoC: app `editor_vocab` 3 本（型導出の表明 / 同梱
 パッケージからの id 収集と壊れ耐性 / campaign 全モジュール和）。app backend 62 green・
 workspace 362 green。
+
+**Phase C-2 — 説明つき候補と、書きかけでも効く語彙（2026-08-28、ユーザー要望）。**
+「昔の Visual Studio 並の補完」を目標に、v1 の枠内（Lezer は v2 のまま）で 4 点。
+
+1. **候補が説明を持つ。** `VocabItem { name, doc? }` へ変え、`doc` は
+   `editor_docs` が **crates の doc comment から機械抽出**する（`include_str!` で型定義
+   ファイルをビルド時に焼き、行走査で `Scenario.world` / `StateOp::give_item` /
+   `StateOp::give_item.from` の 3 形へ）。**説明の表を手で持たない**のが核 — 持てば
+   コードの doc・data_contract・補完表の三箇所を揃える羽目になり、必ずどれかが古くなる
+   （掟の追従漏れの、説明版）。doc の無い欄は**説明なしのまま**出す（捏造しない）。
+   `syn` は足さない（自分たちのコードだけが対象で、書式が変われば PoC が落ちる）。
+   最も効くのは **`op:`/`kind:` の値**で、「この op が何をするか」がその場で読める。
+   id 候補の説明は**作者の付けた表示名**（`Location.title` / `CharacterDef.name` /
+   `flag_titles` / `GoalDef.title` / `ChallengeDef.description`）— id は機械用キーなので、
+   一覧だけでは何の場所・誰なのか分からない。
+2. **id 収集が `validate` を通らなくなった。** 旧実装は `load_package` の Ok だけを
+   見ており、`validate` は幻フラグ 1 つで Err を返す。つまり**書きかけの盤面 = 補完が
+   最も要る状態でだけ id 語彙が全滅していた**。今は parse できたものを全部足す:
+   `scenarios/*.yaml` の和、campaign のモジュール、**`characters/*.yaml` の直読**
+   （cast 宣言に依らない = まだ cast に載せていないキャラも候補になる）、package.yaml の
+   注入分（`globals.flags` / `player.*`。注入は load 時に起きるので entry を読むだけでは
+   落ちる）。整合性は診断（層 1/層 2）の仕事で、補完の仕事ではない。
+3. **アセット欄の写像を足した**（`image`/`icon` → images、`bgm`/`sound` → audios）。
+   語彙は Phase C で収集済みだったのに frontend 側の写像が無く、**一度も出ていなかった**
+   （収集した語彙が死んでいた）。アセット ID は宣言を持たず死んだ参照 lint の射程外なので、
+   ここは補完だけが予防になる。
+4. **編集中のバッファも id 源**（`bufferIds`）。backend の id は保存済みの現物なので、
+   いま打った場所名・フラグ名が出ない。容器の直下だけを見る素朴な行走査で拾って合流する
+   （同名は保存済みの説明を優先）。深い入れ子と flow style は拾わない — **v2 の Lezer
+   構文木で置き換わる暫定**で、拾えない分は保存後に backend 側が埋める。
+
+PoC: app `editor_docs` 2 本 + `editor_vocab` +2 本（説明が doc comment 由来で載る /
+整合性エラーのある盤面でも id が集まる）。frontend は使い捨て 12 assertion（`at:` →
+locations がバッファ込みで出る / `set_attribute` の `entity:` に表示名つきキャラ /
+`image`・`bgm`・`sound` → アセット名（**変更前は候補ゼロ = Red**）/ `op:` の値に説明 /
+キー候補の detail と info / doc の無いキーは説明なし / バッファのフラグが `key:` に出る）。
 **Phase D は同日実装後、ユーザーFB でスコープ改訂** — 「削除も欲しい。作成は
 キャラクターだけでなく伏線・シナリオ・キャンペーンも。+ は各カテゴリのグループ内へ」。
 確定 3（characters/ のみ・削除は v2）をユーザー決定で上書き:
