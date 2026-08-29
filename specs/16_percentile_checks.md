@@ -263,6 +263,40 @@ challenges:
 - 戦闘ラウンド制・DEX 順イニシアチブ（ターン概念の再設計が要る — 別 spec 級）。
 - ダメージボーナス（STR+SIZ 由来の db）: `roll_stat` を 2 発並べれば近似可能なので機構不要。
 
+### 狂気規則が要求する「比較の相手」（2026-08-29、外部実装の調査で立った課題）
+
+対抗・プッシュ・幸運消費は「振り方」の話なので上の列に並べたが、**狂気規則だけは
+別の欠落に当たる** — CoC7 の一時的狂気 / 不定の狂気は、どちらも
+**stat をリテラルでない何かと比べる**ことを要求する。
+
+1. **不定の狂気**（セッション中に開始 SAN の 1/5 を失う）→ `SAN < 開始SAN / 5`。
+   開始値は「動かさない stat」を宣言すれば持てるが、**`Gate::StatAtLeast` /
+   `StatAtMost` の比較相手は `value: i64` のリテラル**で、式も他の stat も置けない
+   （spec 19 の `expr` は `ChallengeDef` と `RollSpec` の 2 箇所にしか無い）。
+2. **一時的狂気**（1 回の判定で SAN を 5 以上失う）→ **その判定の減少量**が要る。
+   `RollStat` は変化量を `StatRollOutcome` に載せて提示層と次ターンの prompt には
+   出すが、**`GameState` のどこにも残らない**ので gate から問えない。
+   `RecordTurn` はターン番号を刻む op であって、stat の値を写す op は無い。
+
+取りうる形は 2 通りで、どちらを選ぶかは v2 の設計判断:
+
+- **(a) gate の比較相手を式へ広げる** — `StatAtLeast/AtMost` に `expr` を足す
+  （spec 19 の評価器がそのまま使える）。1 は解けるが 2 は解けない。
+- **(b) 変化量を state に残す** — `RollStat` の適用結果を帳簿 stat へ書く
+  （`internal_stats` が受け皿。「直前の減少量」を持てば 2 が解け、(a) と組めば 1 も解ける）。
+  ただし**帳簿が増える**方向なので、`hidden_*`/`internal_*` の整理と併せて考える。
+
+**外部実装の対照**: OpenCOCKeeper（Python・CoC7 の AI 守秘人）も**この規則は実装して
+いない** — `src/rules/checks.py` に SAN チェック自体が無く、SAN は「LLM が
+`san_sc_expression: "1d6/2d6"` を渡し、rules が振って引く数値」になっている
+（README のみでなく該当ファイルを読んで確認。ただし全文でなく要約読み）。
+同プロジェクトは目標値・難易度・SAN 減少式のいずれも LLM に渡す設計で、決定論側が
+持つのは d100・成功度・clamp・diff の算術だけ。**難所を機構で解くか LLM に渡すかの
+分岐点**がここに見える。なお同ファイルの大失敗の条件は
+`roll_value >= 96 and roll_value > skill_value` で、CoC7 RAW（100 は常に大失敗、
+技能 50 未満のときだけ 96–99 も大失敗）とは技能 50 以上で食い違う。本 spec の
+`percentile_degree` は RAW 側で実装済み。
+
 ## 参照
 
 - 既存判定: `crates/gm_core/src/engine.rs` の `total >= def.dc`（一箇所）/ `CheckOutcome` /
