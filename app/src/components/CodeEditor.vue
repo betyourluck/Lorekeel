@@ -21,6 +21,7 @@ import { json, jsonParseLinter } from "@codemirror/lang-json";
 import { yaml } from "@codemirror/lang-yaml";
 import { defaultHighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { linter, lintGutter, type Diagnostic } from "@codemirror/lint";
+import { rangeOfPath } from "../editorPath";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
 import { Compartment, EditorState } from "@codemirror/state";
 import {
@@ -41,9 +42,13 @@ import { theme } from "../theme";
  *  `yaml` = 構文色のみ (spec 28 — 診断は Phase B で backend の既存 lint を linter() に繋ぐ)。 */
 type EditorLanguage = "text" | "json" | "yaml";
 
-/** 外部診断 1 件 (spec 28 Phase B)。line は 1 始まり、null = 位置なし (先頭に出す)。 */
+/** 外部診断 1 件。位置は二形式のどちらか (両方無しなら先頭に出す):
+ *  `line` = parse エラーの行 (1 始まり・backend の serde_yaml Location) /
+ *  `path` = 未知キーの YAML パス。**構文木でノードの範囲まで**解く (spec 28 v2 —
+ *  v1 は backend が行を前方検索で近似しており、flow style では位置を諦めていた)。 */
 export interface EditorLintIssue {
   line: number | null;
+  path?: string | null;
   severity: string;
   message: string;
 }
@@ -137,14 +142,20 @@ function editorTheme(dark: boolean, height: string, fontSize: number) {
   );
 }
 
-/** 外部診断 → CodeMirror Diagnostic。行が document の範囲内ならその行全体、外/なしは先頭。 */
+/** 外部診断 → CodeMirror Diagnostic。YAML パスは木でキーそのものへ、行は行全体へ、
+ *  どちらも解けなければ先頭 (位置を偽らない)。 */
 function externalLinter(provider: (text: string) => Promise<EditorLintIssue[]>) {
   return linter(
     async (view) => {
-      const issues = await provider(view.state.doc.toString());
+      const text = view.state.doc.toString();
+      const issues = await provider(text);
       const doc = view.state.doc;
       return issues.map((i): Diagnostic => {
         const severity = i.severity === "error" ? "error" : "warning";
+        if (i.path) {
+          const r = rangeOfPath(text, i.path);
+          if (r) return { from: r.from, to: r.to, severity, message: i.message };
+        }
         if (i.line && i.line >= 1 && i.line <= doc.lines) {
           const ln = doc.line(i.line);
           return { from: ln.from, to: ln.to, severity, message: i.message };

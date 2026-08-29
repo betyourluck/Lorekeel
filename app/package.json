@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@aituber-onair/voice": "0.19.0",
@@ -32,6 +34,7 @@
     "tailwindcss": "^3.4",
     "typescript": "~5.6",
     "vite": "^6",
+    "vitest": "^4.1.11",
     "vue-tsc": "^2"
   }
 }

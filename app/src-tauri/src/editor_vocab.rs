@@ -48,13 +48,14 @@ fn short_type_name<T: ?Sized>() -> &'static str {
 /// 補完語彙一式。frontend の completion source がこれだけを見る。
 #[derive(Serialize, Clone, Debug, Default)]
 pub struct EditorVocabulary {
-    /// kind (manifest/scenario/character/campaign/memoria) → ルート直下のキー。
-    pub root_keys: BTreeMap<String, Vec<VocabItem>>,
-    /// 親キー → そのブロックのキー候補 (Vec 容器・単一 struct 欄・Gate/Op 欄)。
-    pub key_contexts: BTreeMap<String, Vec<VocabItem>>,
-    /// **名前つき map 容器** (locations 等) → 名前 1 段はさんだ子のキー候補。
-    /// 親キーが未知 (= 作者が付けた名前) のとき、frontend は祖父キーでここを引く。
-    pub map_child_keys: BTreeMap<String, Vec<VocabItem>>,
+    /// kind (manifest/scenario/character/campaign/memoria) → **ルート文脈名**。
+    pub roots: BTreeMap<String, String>,
+    /// 文脈名 → その mapping のキー候補 (doc 付き)。**gm_core の [`gm_core::context_keys`] が正**で、
+    /// ここが足すのは harness 側の型 (manifest / campaign / memoria) だけ。
+    pub contexts: BTreeMap<String, Vec<VocabItem>>,
+    /// 配線 (親文脈 + キー → 子文脈)。frontend は構文木で得たパスをこれで辿り、
+    /// カーソル位置の文脈を確定する。**gm_core の表そのもの** (写しを持たない)。
+    pub wiring: Vec<gm_core::WiringEntry>,
     /// `kind` の値 → その Gate バリアントのキー (lint と同じ表)。
     pub gate_variant_keys: BTreeMap<String, Vec<VocabItem>>,
     /// `op` の値 → その StateOp バリアントのキー。
@@ -80,37 +81,85 @@ fn keys_of<T: DeserializeOwned + Serialize>(sample: &str) -> Vec<VocabItem> {
         .collect()
 }
 
-/// 説明なしの候補列 (バリアント和集合のような「どの型のキーか決まらない」退避先)。
-fn bare_of(set: BTreeSet<String>) -> Vec<VocabItem> {
-    set.into_iter().map(VocabItem::bare).collect()
-}
+/// harness 側 (gm_core が知らない配布レイアウトの型) の文脈名。
+/// gm_core の文脈名 (`Scenario` 等) と衝突しないこと。
+const CTX_MANIFEST: &str = "Manifest";
+const CTX_PLAYER: &str = "PlayerDef";
+const CTX_GLOBALS: &str = "Globals";
+const CTX_CAMPAIGN: &str = "Campaign";
+const CTX_CAMPAIGN_EDGE: &str = "CampaignEdge";
+const CTX_MEMORIA: &str = "MemoryFragment";
 
 /// 型由来のキー語彙を組む (パッケージに依らない静的部分)。
+///
+/// **配線も語彙も gm_core が正** ([`gm_core::wiring`] / [`gm_core::context_keys`])。
+/// ここが手で持つのは harness 側の型の分だけ = 下の [`harness_wiring`] 4 本で、
+/// それらは `manifest_lints` / `Campaign` の構造そのままである。
 fn build_key_tables() -> EditorVocabulary {
-    use gm_core::{
-        CharacterDef, ChallengeDef, ChallengeMod, ChallengeOutcome, GoalDef, Location,
-        Protagonist, Scenario, StatDecl, TierDef, Trigger,
-    };
     let mut v = EditorVocabulary::default();
 
-    // ルート (kind 別)。最小 YAML は lint.rs Tables::build と同じものを使う。
-    v.root_keys
-        .insert("manifest".into(), keys_of::<harness::PackageManifest>("entry: x"));
-    v.root_keys
-        .insert("scenario".into(), keys_of::<Scenario>("start: room\nlocations: {}"));
-    v.root_keys.insert("character".into(), keys_of::<CharacterDef>("{}"));
-    v.root_keys.insert(
-        "campaign".into(),
-        keys_of::<harness::Campaign>("start: a\nmodules: { a: x.yaml }\nedges: []"),
-    );
-    v.root_keys
-        .insert("memoria".into(), keys_of::<harness::MemoryFragment>("text: x"));
+    // ルート文脈 (kind 別)。
+    for (kind, ctx) in [
+        ("manifest", CTX_MANIFEST),
+        ("scenario", gm_core::CTX_SCENARIO),
+        ("character", gm_core::CTX_CHARACTER),
+        ("campaign", CTX_CAMPAIGN),
+        ("memoria", CTX_MEMORIA),
+    ] {
+        v.roots.insert(kind.into(), ctx.into());
+    }
 
-    // バリアント表 + タグ値 + 退避先の和集合。
+    // gm_core の全文脈 (キーは型から / 説明は型名で doc を引く)。
+    for (name, info) in gm_core::context_keys() {
+        let ty = info.type_name.clone();
+        let items = info
+            .keys
+            .iter()
+            .map(|k| {
+                let doc = ty.as_deref().and_then(|t| editor_docs::field_doc(t, k));
+                VocabItem::with(k, doc)
+            })
+            .collect();
+        v.contexts.insert(name, items);
+    }
+    // Location.items 新形式 {when, take} は素の型を持たない (gm_core も手で並べている) ので、
+    // ここだけ短い説明を添える。
+    v.contexts.insert(
+        "LocationItem".into(),
+        vec![
+            VocabItem::with(
+                "take",
+                Some("取得様式: once=一度きり (既定) / infinite=何度でも / fixed=備え付けで取得不可"),
+            ),
+            VocabItem::with("when", Some("拾える条件 (Gate)")),
+        ],
+    );
+
+    // harness 側の文脈。
+    v.contexts.insert(CTX_MANIFEST.into(), keys_of::<harness::PackageManifest>("entry: x"));
+    v.contexts.insert(CTX_PLAYER.into(), keys_of::<harness::PlayerDef>("{}"));
+    v.contexts.insert(CTX_GLOBALS.into(), keys_of::<harness::Globals>("{}"));
+    v.contexts.insert(
+        CTX_CAMPAIGN.into(),
+        keys_of::<harness::Campaign>("start: a
+modules: { a: x.yaml }
+edges: []"),
+    );
+    v.contexts.insert(
+        CTX_CAMPAIGN_EDGE.into(),
+        keys_of::<harness::CampaignEdge>("from: a
+on_goal: g
+to: b"),
+    );
+    v.contexts.insert(CTX_MEMORIA.into(), keys_of::<harness::MemoryFragment>("text: x"));
+
+    // 配線 = gm_core の表 + harness 側の 4 本。
+    v.wiring = gm_core::wiring();
+    v.wiring.extend(harness_wiring());
+
+    // バリアント表 + タグ値。
     let gates = gm_core::gate_variant_keys();
     let ops = gm_core::op_variant_keys();
-    let gate_union: BTreeSet<String> = gates.values().flatten().cloned().collect();
-    let op_union: BTreeSet<String> = ops.values().flatten().cloned().collect();
     // 値の説明はバリアントの doc (「この op が何をするか」)。
     v.tag_values.insert(
         "kind".into(),
@@ -127,119 +176,45 @@ fn build_key_tables() -> EditorVocabulary {
     );
     // バリアント内のフィールドは、その欄自身に doc があるときだけ説明を付ける
     // (バリアントの doc へ落とすと、欄の説明として別のものを指す文が出てしまう)。
-    v.gate_variant_keys = gates
-        .into_iter()
-        .map(|(k, s)| {
-            let items = s
-                .into_iter()
-                .map(|f| {
-                    let d = editor_docs::variant_field_doc("Gate", &k, &f);
-                    VocabItem::with(f, d)
-                })
-                .collect();
-            (k, items)
-        })
-        .collect();
-    v.op_variant_keys = ops
-        .into_iter()
-        .map(|(k, s)| {
-            let items = s
-                .into_iter()
-                .map(|f| {
-                    let d = editor_docs::variant_field_doc("StateOp", &k, &f);
-                    VocabItem::with(f, d)
-                })
-                .collect();
-            (k, items)
-        })
-        .collect();
-
-    // 配線 (手書き — walk の Child 写像の写し)。値は型から。
-    let gate = bare_of(gate_union);
-    let op = bare_of(op_union);
-    let outcome = keys_of::<ChallengeOutcome>("{}");
-    for k in ["when", "gate", "goal", "requires", "not", "until"] {
-        v.key_contexts.insert(k.into(), gate.clone());
-    }
-    v.key_contexts.insert("of".into(), gate.clone()); // all/any の子列
-    v.key_contexts.insert("effects".into(), op.clone());
-    for k in [
-        "on_success", "on_failure", "on_critical", "on_extreme", "on_hard", "on_fumble",
-        "on_push_failure", "on_win", "on_lose", "on_tie",
-    ] {
-        v.key_contexts.insert(k.into(), outcome.clone());
-    }
-    v.key_contexts.insert("exits".into(), keys_of::<gm_core::Exit>("to: x"));
-    v.key_contexts.insert(
-        "triggers".into(),
-        keys_of::<Trigger>("id: t\nwhen: { kind: always }"),
-    );
-    v.key_contexts
-        .insert("goals".into(), keys_of::<GoalDef>("id: g\nwhen: { kind: always }"));
-    v.key_contexts.insert(
-        "modifiers".into(),
-        keys_of::<ChallengeMod>("when: { kind: always }\nbonus: 0"),
-    );
-    v.key_contexts
-        .insert("protagonist".into(), keys_of::<Protagonist>("{}"));
-    v.key_contexts.insert(
-        "role_assignment".into(),
-        keys_of::<gm_core::RoleAssignment>("key: k\npool: {}\namong: []"),
-    );
-    v.key_contexts
-        .insert("vote_rules".into(), keys_of::<gm_core::VoteRule>("{}"));
-    v.key_contexts
-        .insert("spend_rules".into(), keys_of::<gm_core::SpendRules>("from: x"));
-    v.key_contexts.insert(
-        "push_cost".into(),
-        keys_of::<gm_core::PushCost>("from: x\namount: 1"),
-    );
-    let roll = keys_of::<gm_core::RollSpec>("{}");
-    v.key_contexts.insert("player_roll".into(), roll.clone());
-    v.key_contexts.insert("opponent_roll".into(), roll);
-    // manifest 側。
-    v.key_contexts
-        .insert("player".into(), keys_of::<harness::PlayerDef>("{}"));
-    v.key_contexts
-        .insert("globals".into(), keys_of::<harness::Globals>("{}"));
-    // campaign 側 (edges の要素)。
-    v.key_contexts.insert(
-        "edges".into(),
-        keys_of::<harness::CampaignEdge>("from: a\non_goal: g\nto: b"),
-    );
-
-    // 名前つき map 容器 (親キー = 作者の名前 → 祖父で引く)。
-    v.map_child_keys.insert("locations".into(), keys_of::<Location>("{}"));
-    v.map_child_keys
-        .insert("characters".into(), keys_of::<CharacterDef>("{}"));
-    v.map_child_keys
-        .insert("challenges".into(), keys_of::<ChallengeDef>("sides: 1\ndc: 1"));
-    v.map_child_keys
-        .insert("tiers".into(), keys_of::<TierDef>("natural: min"));
-    v.map_child_keys
-        .insert("stats".into(), keys_of::<StatDecl>("initial: 0"));
-    v.map_child_keys
-        .insert("initial_stats".into(), keys_of::<StatDecl>("initial: 0"));
-    // Location.items 新形式 {when, take} (旧形式 Gate は kind: で行内タグから引ける)。
-    // ここだけ doc が型に無い (LocationItem の欄は素の型) ので短い説明を添える。
-    v.map_child_keys.insert(
-        "items".into(),
-        vec![
-            VocabItem::with(
-                "take",
-                Some("取得様式: once=一度きり (既定) / infinite=何度でも / fixed=備え付けで取得不可"),
-            ),
-            VocabItem::with("when", Some("拾える条件 (Gate)")),
-        ],
-    );
-    v.map_child_keys.insert("flag_rules".into(), gate.clone());
-    v.map_child_keys.insert("taboos".into(), gate);
-    // contests は map (id → ContestDef)。
-    v.map_child_keys.insert(
-        "contests".into(),
-        keys_of::<gm_core::ContestDef>("opponent: x\nplayer_roll: {}\nopponent_roll: {}"),
-    );
+    v.gate_variant_keys = variant_items(gates, "Gate");
+    v.op_variant_keys = variant_items(ops, "StateOp");
     v
+}
+
+/// harness 側の配線。**gm_core が知らない型の分だけ**で、内容は `manifest_lints` が
+/// 見ている入れ子 (`player` / `globals`) と `Campaign` の形そのもの。
+/// `player.stats` は `Scenario.initial_stats` と同じ StatInit 意味論 (mapping 値が StatDecl)。
+fn harness_wiring() -> Vec<gm_core::WiringEntry> {
+    let e = |parent: &str, key: &str, kind: &str, child: &str| gm_core::WiringEntry {
+        parent: parent.into(),
+        key: key.into(),
+        kind: kind.into(),
+        child: child.into(),
+        child_tagged: None,
+    };
+    vec![
+        e(CTX_MANIFEST, "player", "direct", CTX_PLAYER),
+        e(CTX_MANIFEST, "globals", "direct", CTX_GLOBALS),
+        e(CTX_PLAYER, "stats", "stat_map", "StatDecl"),
+        e(CTX_CAMPAIGN, "edges", "seq", CTX_CAMPAIGN_EDGE),
+    ]
+}
+
+/// バリアント表 (タグ値 → キー) を doc 付きの候補へ。
+fn variant_items(
+    table: BTreeMap<String, BTreeSet<String>>,
+    ty: &str,
+) -> BTreeMap<String, Vec<VocabItem>> {
+    table
+        .into_iter()
+        .map(|(k, fields)| {
+            let items = fields
+                .into_iter()
+                .map(|f| VocabItem::with(&f, editor_docs::variant_field_doc(ty, &k, &f)))
+                .collect();
+            (k, items)
+        })
+        .collect()
 }
 
 /// id 語彙の集積器: カテゴリ → (id → 表示名)。先に入った説明が勝つ (複数モジュールの和)。
@@ -462,27 +437,133 @@ mod tests {
     }
 
     /// キー語彙は型から導出されている (手書き表が無いことの表明)。
+    /// frontend と同じ辿り方 (パス → 配線 → 文脈) をテストからも行う。
+    /// 未知キー = 作者の付けた名前 (場所名など) は文脈を変えない。
+    fn ctx_at(v: &EditorVocabulary, kind: &str, path: &[&str]) -> String {
+        let mut ctx = v.roots[kind].clone();
+        for seg in path {
+            if *seg == "[]" {
+                continue;
+            }
+            if let Some(e) = v.wiring.iter().find(|e| e.parent == ctx && &e.key == seg) {
+                ctx = e.child.clone();
+            }
+        }
+        ctx
+    }
+
     /// 実在フィールドが載り、実在しないキーは載らない。
     #[test]
     fn key_tables_are_derived_from_types() {
         let v = build_key_tables();
         // ルート: scenario に image_style (spec 24 で足したフィールド) が自動で載る。
-        let sc = names(&v.root_keys["scenario"]);
+        let sc = names(&v.contexts[&v.roots["scenario"]]);
         assert!(sc.contains(&"image_style"), "{sc:?}");
         assert!(sc.contains(&"allowed_flags"));
         assert!(!sc.contains(&"entry"), "entry は manifest のキー");
-        assert!(names(&v.root_keys["manifest"]).contains(&"facts_policy"));
-        // 配線: triggers → Trigger のキー / effects → op 和集合。
-        assert!(names(&v.key_contexts["triggers"]).contains(&"repeatable"));
-        assert!(names(&v.key_contexts["effects"]).contains(&"op"));
+        assert!(names(&v.contexts[&v.roots["manifest"]]).contains(&"facts_policy"));
+        // 配線を辿った先の文脈: triggers → Trigger / effects → Op 和集合。
+        let trigger = ctx_at(&v, "scenario", &["triggers", "[]"]);
+        assert!(names(&v.contexts[&trigger]).contains(&"repeatable"));
+        let op = ctx_at(&v, "scenario", &["triggers", "[]", "effects", "[]"]);
+        assert!(names(&v.contexts[&op]).contains(&"op"));
         // バリアント表: move は to を持ち、entity を持たない (2026-07-27 の解像度)。
         let mv = names(&v.op_variant_keys["move"]);
         assert!(mv.contains(&"to") && !mv.contains(&"entity"), "{mv:?}");
         // タグ値: op に set_flag / kind に flag_is。
         assert!(names(&v.tag_values["op"]).contains(&"set_flag"));
         assert!(names(&v.tag_values["kind"]).contains(&"flag_is"));
-        // map 容器: locations の孫 = Location のキー。
-        assert!(names(&v.map_child_keys["locations"]).contains(&"description"));
+        // 名前つき map 容器: locations の値 = Location。
+        let loc = ctx_at(&v, "scenario", &["locations", "room"]);
+        assert_eq!(loc, "Location");
+        assert!(names(&v.contexts[&loc]).contains(&"description"));
+    }
+
+    /// 【spec 28 v2】**実語彙のフィクスチャ**を frontend のテストへ渡す。
+    ///
+    /// TS 側のテストは手で組んだ語彙で walk を測っており、**実データとの合成は
+    /// どちらのテストも見ていなかった** (バリアント名の綴り・文脈名の一致は継ぎ目の話)。
+    /// ここで実物を書き出し、古くなったらこのテストが落ちる (`UPDATE_VOCAB_FIXTURE=1`
+    /// で更新)。id はパッケージ依存なので静的部分 (`build_key_tables`) だけ。
+    #[test]
+    fn vocabulary_fixture_is_fresh() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/editorVocabulary.fixture.json");
+        let fresh = serde_json::to_string_pretty(&build_key_tables()).unwrap() + "
+";
+        if std::env::var("UPDATE_VOCAB_FIXTURE").is_ok() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let on_disk = std::fs::read_to_string(&path).unwrap_or_default();
+        assert_eq!(
+            on_disk.replace("\r\n", "\n").as_str(),
+            fresh,
+            "語彙のフィクスチャが古い。`UPDATE_VOCAB_FIXTURE=1 cargo test vocabulary_fixture` で更新し、frontend のテスト (npm test) も通ることを確かめること"
+        );
+    }
+
+    /// 【spec 28 v2】ワイヤの形を留める — frontend の `EditorVocabulary` interface と
+    /// 欄名がずれると、補完が黙って何も出さなくなる (型検査は継ぎ目を跨がない)。
+    #[test]
+    fn wire_shape_matches_the_frontend_interface() {
+        let v = serde_json::to_value(build_key_tables()).unwrap();
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "contexts",
+                "gate_variant_keys",
+                "ids",
+                "op_variant_keys",
+                "roots",
+                "tag_values",
+                "wiring",
+            ]
+        );
+        // 配線 1 本の形 (child_tagged は在るときだけ出る)。
+        let w = v["wiring"].as_array().unwrap();
+        let plain = w.iter().find(|e| e["kind"] == "seq").unwrap();
+        let mut wk: Vec<&str> = plain.as_object().unwrap().keys().map(String::as_str).collect();
+        wk.sort_unstable();
+        assert_eq!(wk, ["child", "key", "kind", "parent"]);
+        let tagged = w.iter().find(|e| e["kind"] == "item_map").unwrap();
+        assert_eq!(tagged["child_tagged"], "Gate");
+        // 候補 1 つの形 (doc は在るときだけ)。
+        let item = &v["contexts"]["Scenario"][0];
+        assert!(item["name"].is_string(), "{item:?}");
+    }
+
+    /// 【spec 28 v2】**配線の写しを持たない** — gm_core の表をそのまま運び、
+    /// ここが足すのは harness 側の型の分だけ。文脈が同じキーでも親で割れることを固定する
+    /// (`to:` は Exit なら場所、`give_item` ならエンティティ — v1 の平らな表では解けなかった)。
+    #[test]
+    fn wiring_comes_from_gm_core_and_only_harness_types_are_added_here() {
+        let v = build_key_tables();
+        let core = gm_core::wiring();
+        for e in &core {
+            assert!(v.wiring.contains(e), "gm_core の配線が欠けている: {e:?}");
+        }
+        assert_eq!(
+            v.wiring.len(),
+            core.len() + harness_wiring().len(),
+            "gm_core の表 + harness 4 本ちょうど (手書きの写しを足さない)"
+        );
+        // 参照の閉包: 全ての文脈名が contexts に在る。
+        for e in &v.wiring {
+            assert!(v.contexts.contains_key(&e.parent), "未知の親文脈: {e:?}");
+            assert!(v.contexts.contains_key(&e.child), "未知の子文脈: {e:?}");
+        }
+        for ctx in v.roots.values() {
+            assert!(v.contexts.contains_key(ctx), "ルート文脈 {ctx} の語彙が無い");
+        }
+        // 同じキーが親で別の文脈へ割れる (v1 の平らな表が潰していた解像度)。
+        assert_eq!(ctx_at(&v, "scenario", &["locations", "r", "exits", "[]", "gate"]), "Gate");
+        assert_eq!(ctx_at(&v, "campaign", &["edges", "[]"]), "CampaignEdge");
+        assert_eq!(ctx_at(&v, "manifest", &["player"]), "PlayerDef");
+        assert_eq!(ctx_at(&v, "manifest", &["player", "stats", "腕力"]), "StatDecl");
+        // character は gm_core の Character 文脈をそのまま使う (taboos → Gate まで辿れる)。
+        assert_eq!(ctx_at(&v, "character", &["taboos", "[]"]), "Gate");
     }
 
     /// 説明は doc comment 由来で候補に載る (2026-08-28)。手書き表を持たないので、
@@ -490,7 +571,7 @@ mod tests {
     #[test]
     fn candidates_carry_docs_from_doc_comments() {
         let v = build_key_tables();
-        let sc = &v.root_keys["scenario"];
+        let sc = &v.contexts[&v.roots["scenario"]];
         assert!(doc_of(sc, "world").unwrap().contains("世界観"));
         assert!(doc_of(sc, "global_flags").is_some());
         // op / kind の**値**にはバリアントの説明 (「この op が何をするか」)。
@@ -502,7 +583,7 @@ mod tests {
         );
         assert!(doc_of(&v.tag_values["kind"], "has_item").is_some());
         // map 容器の子。
-        assert!(doc_of(&v.map_child_keys["locations"], "present").is_some());
+        assert!(doc_of(&v.contexts["Location"], "present").is_some());
         // doc の無い欄は None のまま。
         assert!(doc_of(sc, "title").is_none());
     }
@@ -533,7 +614,7 @@ mod tests {
         let broken = std::env::temp_dir().join("kataribe_vocab_missing");
         let v2 = build_vocabulary(&broken);
         assert!(v2.ids.is_empty());
-        assert!(!v2.root_keys["scenario"].is_empty(), "キー補完は常に効く");
+        assert!(!v2.contexts["Scenario"].is_empty(), "キー補完は常に効く");
     }
 
     /// campaign パッケージでは全モジュールの和 + modules の id が集まる。

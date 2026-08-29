@@ -4,17 +4,25 @@
 //! (`manifest_lints` / `unknown_key_lints` / `character_lints`) を呼ぶだけ、
 //! 層 2 (パッケージ全体) は `harness::inspect_package` を呼ぶだけ。ここが持つのは
 //! **位置と帰属**: parse エラーの行 (serde_yaml `Location` = 正確) / 未知キー lint の
-//! 行近似 (パスの親キー列で範囲を絞る前方検索。絞れなければ**位置なし** = 行を偽らない) /
-//! 層 2 メッセージの接頭辞 → ファイルへの写し。
+//! **YAML パス** / 層 2 メッセージの接頭辞 → ファイルへの写し。
+//!
+//! **spec 28 v2: 行の近似をやめた** — v1 はパスの親キー列を前方検索して行を推し、
+//! 絞れなければ位置なしにしていた (flow style・引用キーで諦める / 同名キーで誤爆しうる)。
+//! いま返すのはパスそのもので、テキスト上の位置へ解くのは**構文木を持っている frontend**
+//! の仕事になった (Lezer の木でノード範囲まで確定できる = 行でなく下線)。
 
 use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-/// 層 1 の診断 1 件。`line` は 1 始まり (CodeMirror 側で範囲へ変換)、None = 位置なし。
+/// 層 1 の診断 1 件。位置は二形式のどちらか (両方 None なら位置なし = 行を偽らない):
+/// `line` = parse エラーの行 (1 始まり・serde_yaml の Location ゆえ正確) /
+/// `path` = 未知キーの YAML パス (`triggers[0].effects[1].entity`)。frontend が木で範囲へ解く。
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct EditorDiagnostic {
     pub line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     /// "error" (parse = 読めない) | "warning" (未知キー = 読めるが効かない)。
     pub severity: String,
     pub message: String,
@@ -50,7 +58,12 @@ fn parse_error(kind: &str, text: &str) -> Result<Option<(Option<u32>, String)>, 
 /// 続けても意味のある結果は出ない — 二重報告もしない)。
 pub fn lint_text(kind: &str, text: &str) -> Result<Vec<EditorDiagnostic>, String> {
     if let Some((line, message)) = parse_error(kind, text)? {
-        return Ok(vec![EditorDiagnostic { line, severity: "error".into(), message }]);
+        return Ok(vec![EditorDiagnostic {
+            line,
+            path: None,
+            severity: "error".into(),
+            message,
+        }]);
     }
     // kind 別の未知キー lint。campaign / memoria は parse のみ (spec 28 — 専用 lint は
     // 現存せず、v1 では新設しない。実害が観測されたら character_lints と同型で足す)。
@@ -63,55 +76,14 @@ pub fn lint_text(kind: &str, text: &str) -> Result<Vec<EditorDiagnostic>, String
     Ok(lints
         .into_iter()
         .map(|message| EditorDiagnostic {
-            line: lint_line(text, &message),
+            line: None,
+            // 文言の接頭 (最初の ": " まで) が YAML パス — 形式は自前の lint が組む
+            // `{path}: 不明なフィールド…` (`gm_core::unknown_keys` / `walk`)。
+            path: message.split(": ").next().map(str::to_string),
             severity: "warning".into(),
             message,
         })
         .collect())
-}
-
-/// lint 文言の接頭 (最初の ": " まで) を YAML パスとして行を近似する。
-/// 形式は自前の lint が組む `{path}: 不明なフィールド…` (`unknown_keys` / `walk`)。
-fn lint_line(text: &str, message: &str) -> Option<u32> {
-    let path = message.split(": ").next()?;
-    resolve_path_line(text, path)
-}
-
-/// パスの**親キー列を順に前方検索**して行を絞る (spec 28 C.1 — 終端キーの単純検索は
-/// `id`/`name` 級の頻出キーで別の行に赤線を引く誤爆になるので採らない)。
-///
-/// `triggers[0].effects[1].entity` → セグメント `triggers` → `effects` → `entity` を
-/// この順に、**前のヒット行より後**から探す (`[i]` は行に現れないので落とす。
-/// mapping 名セグメント `stats.腕力` は「腕力:」として現れるのでそのまま探せる)。
-/// どこかで見つからなければ None = 位置なし (flow style・引用キー等は諦めて行を偽らない)。
-pub fn resolve_path_line(text: &str, path: &str) -> Option<u32> {
-    let segs: Vec<&str> = path
-        .split('.')
-        .map(|s| s.split('[').next().unwrap_or(s))
-        .filter(|s| !s.is_empty())
-        .collect();
-    if segs.is_empty() {
-        return None;
-    }
-    let lines: Vec<&str> = text.lines().collect();
-    let mut from = 0usize;
-    let mut found = None;
-    for seg in segs {
-        let mut hit = None;
-        for (i, raw) in lines.iter().enumerate().skip(from) {
-            let t = raw.trim_start();
-            // 列挙要素の頭 (`- id: t1`) も拾う。
-            let t = t.strip_prefix("- ").unwrap_or(t);
-            if t.strip_prefix(seg).is_some_and(|rest| rest.starts_with(':')) {
-                hit = Some(i);
-                break;
-            }
-        }
-        let i = hit?;
-        found = Some(i);
-        from = i + 1;
-    }
-    found.map(|i| (i + 1) as u32)
 }
 
 /// 層 2 の帰属: `inspect_package` のメッセージ接頭辞を編集ルート相対ファイルへ写す。
@@ -155,11 +127,13 @@ mod tests {
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].severity, "error");
         assert_eq!(d[0].line, Some(3), "serde_yaml の Location が載る: {:?}", d[0]);
+        assert_eq!(d[0].path, None, "parse エラーに YAML パスは無い (読めていないので)");
     }
 
-    /// 未知キーは warning + 親キー列で絞った近似行。clean なら空。
+    /// 未知キーは warning + **YAML パス**。テキスト上の位置へ解くのは frontend (構文木) の
+    /// 仕事なので、ここが約束するのはパスが正しいことだけ (spec 28 v2 で行の近似を撤去)。
     #[test]
-    fn unknown_keys_are_warnings_with_narrowed_lines() {
+    fn unknown_keys_are_warnings_with_a_yaml_path() {
         let src = concat!(
             "title: t\n",              // 1
             "start: cell\n",           // 2
@@ -179,8 +153,9 @@ mod tests {
         let d = lint_text("scenario", src).unwrap();
         assert_eq!(d.len(), 1, "{d:?}");
         assert_eq!(d[0].severity, "warning");
-        // 誤爆しない: hall 側 (9 行目) の exits でなく cell 側の typo 行へ。
-        assert_eq!(d[0].line, Some(14), "{:?}", d[0]);
+        // 同名キー (hall 側にも exits が在る) を跨いで、typo のあるノードを一意に指す。
+        assert_eq!(d[0].path.as_deref(), Some("locations.cell.exits[0].gaet"), "{:?}", d[0]);
+        assert_eq!(d[0].line, None, "行は frontend が木で解く");
         assert!(d[0].message.contains("gaet"));
 
         // clean で空。
@@ -188,12 +163,11 @@ mod tests {
         assert!(lint_text("scenario", clean).unwrap().is_empty());
     }
 
-    /// 頻出キー名の誤爆をしない: 早い場所に同名キーが在っても親キー列で絞る。
-    /// 一意に絞れない (セグメントが見つからない) ときは位置なし = 行を偽らない。
+    /// パスは名前つき map (`stats.HP`) を段ごとに含む — frontend はこれを木で辿るので、
+    /// 早い場所の同名キーや、地の文に同じ語が出ることに影響されない。
     #[test]
-    fn narrowing_does_not_bite_earlier_same_named_keys() {
-        // characters kind: stats.HP の中の typo。上の profile にも「max」という語が
-        // 出てくるが、stats → HP → max の親キー列で下の行に絞られる。
+    fn paths_include_named_map_segments() {
+        // characters kind: stats.HP の中の typo。上の profile にも「max」という語が出る。
         let src = concat!(
             "name: アリス\n",              // 1
             "profile: max まで頑張る\n",   // 2
@@ -206,10 +180,14 @@ mod tests {
         );
         let d = lint_text("character", src).unwrap();
         assert_eq!(d.len(), 1, "{d:?}");
-        assert_eq!(d[0].line, Some(8), "{:?}", d[0]);
+        assert_eq!(d[0].path.as_deref(), Some("stats.HP.mox"), "{:?}", d[0]);
 
-        // flow style はセグメントが行として現れない → 位置なし (None) に落ちる。
-        assert_eq!(resolve_path_line("a: {b: {c: 1}}\n", "a.b.c"), None);
+        // flow style でもパスは同じ形で出る (v1 の行近似はここで諦めていた)。
+        let flow = "name: ア
+stats: { HP: { initial: 1, mox: 2 } }
+";
+        let d = lint_text("character", flow).unwrap();
+        assert_eq!(d[0].path.as_deref(), Some("stats.HP.mox"), "{:?}", d[0]);
     }
 
     /// manifest / campaign / memoria の kind 別: manifest は lint あり、

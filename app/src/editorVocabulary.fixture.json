@@ -1,0 +1,1640 @@
+{
+  "roots": {
+    "campaign": "Campaign",
+    "character": "Character",
+    "manifest": "Manifest",
+    "memoria": "MemoryFragment",
+    "scenario": "Scenario"
+  },
+  "contexts": {
+    "AttrRequirement": [
+      {
+        "name": "key"
+      },
+      {
+        "name": "value"
+      }
+    ],
+    "Campaign": [
+      {
+        "name": "edges",
+        "doc": "(from, on_goal) → to の分岐表。authored 順で最初に一致した辺を引く。"
+      },
+      {
+        "name": "modules",
+        "doc": "モジュール id → scenario file path (repo root 相対)。"
+      },
+      {
+        "name": "start",
+        "doc": "開始モジュール id。"
+      },
+      {
+        "name": "title",
+        "doc": "表示用 (任意)。"
+      }
+    ],
+    "CampaignEdge": [
+      {
+        "name": "from",
+        "doc": "現モジュール。"
+      },
+      {
+        "name": "on_goal",
+        "doc": "Scenario::reached が返したエンディング id。"
+      },
+      {
+        "name": "to",
+        "doc": "遷移先モジュール。"
+      }
+    ],
+    "Challenge": [
+      {
+        "name": "count",
+        "doc": "additive のダイス個数 (既定 1)。count: 3, sides: 20 で 3d20 の合計が出目になる。 tier (極) は素の合計で判定 (min=全部 1、max=全部最大、threshold は 1..=count×sides)。"
+      },
+      {
+        "name": "dc",
+        "doc": "additive の難易度。percentile では書かない (validate PercentileChallengeShape)。"
+      },
+      {
+        "name": "description",
+        "doc": "LLM への提示文 (どんな行動の判定か。scenario_brief に出して GM に選ばせる)。"
+      },
+      {
+        "name": "entity",
+        "doc": "判定主体の authored 固定 (任意)。Some なら op の entity を上書きして、 この entity の stat で振る (LLM が entity を省略/誤指定しても正しい主体で判定される — 実測: LLM は既定で player を主体にするため、NPC の stat を使う challenge が UnknownStat で毎回却下されていた)。「判定の素性 (stat/sides/dc/帰結) は authored」の 主体版 = 閉世界の一貫。None なら従来どおり op の entity (省略時 player)。"
+      },
+      {
+        "name": "expr",
+        "doc": "式修正 (spec 19)。stat の代わりに (CON + SIZ) / 2 のような整数式で 修正値 (additive) / 目標値 (percentile) を書く。判定のたびに現在値で評価される (CON が削られれば補正も落ちる = 生きた派生値)。参照 stat は判定主体の宣言済みキー必須、 stat との併記は不可 (validate ChallengeExprInvalid)。除算は切り捨て (CoC 準拠)。"
+      },
+      {
+        "name": "modifiers",
+        "doc": "条件付き修正 (有利/不利)。when が真の分だけ bonus を出目合計に加える (順不同・合算)。"
+      },
+      {
+        "name": "on_critical",
+        "doc": "degree=critical の帰結 (percentile 専用・任意)。フォールバック連鎖: critical は on_critical → on_extreme → on_hard → on_success の順で最初に在るものを使う。"
+      },
+      {
+        "name": "on_extreme",
+        "doc": "degree=extreme の帰結 (percentile 専用・任意。extreme は on_extreme → on_hard → on_success)。"
+      },
+      {
+        "name": "on_failure",
+        "doc": "通常失敗の帰結 (フラグ + 結末ナレーション、いずれも任意)。flag は allowed_flags 宣言必須。 percentile では fumble のフォールバックも兼ねる。"
+      },
+      {
+        "name": "on_fumble",
+        "doc": "degree=fumble の帰結 (percentile 専用・任意。fumble は on_fumble → on_failure)。"
+      },
+      {
+        "name": "on_hard",
+        "doc": "degree=hard の帰結 (percentile 専用・任意。hard は on_hard → on_success)。"
+      },
+      {
+        "name": "on_push_failure",
+        "doc": "プッシュして失敗した時の帰結 (任意)。解決連鎖: on_push_failure → (fumble なら on_fumble) → on_failure。「押した失敗はより悪い」を authored に書く場所 (CoC7 原典の 代償はここ — push_cost の stat 支払いは上乗せしたい時だけ)。"
+      },
+      {
+        "name": "on_success",
+        "doc": "通常成功の帰結 (フラグ + 結末ナレーション、いずれも任意)。flag は allowed_flags 宣言必須。 percentile では regular 以上の成功の受け皿 (degree 別スロットのフォールバック終点)。"
+      },
+      {
+        "name": "pushable",
+        "doc": "プッシュ可否 (spec 18 Phase B・opt-in)。true = 失敗した判定を 1 度だけ振り直す決断を プレイヤーに許す (CoC7 のプッシュロール)。既定 false — opt-in にする理由は二つ: ①既存 content の挙動 (帰結の即時適用・全帰結共通効果の射影 spec 09) を変えない ②SAN ロール等「一発勝負」が意図の challenge が黙って押せてしまう事故を作らない。"
+      },
+      {
+        "name": "requires",
+        "doc": "この挑戦に挑める前提条件 (Gate)。Some で偽なら attempt_challenge を却下 (挑戦の解禁/封鎖)。 「導師に会うまでは秘奥義に挑めない」等。None なら常に挑める。"
+      },
+      {
+        "name": "resolution",
+        "doc": "判定様式 (spec 16)。additive (既定) = 従来の 1d{sides}+stat >= dc / percentile = 1d100 を目標値 (stat 現在値 + modifiers) 以下で成功、成功度 (degree) をエンジンが計算。percentile では stat 必須・sides/dc は書かない (validate が形を保証)。フラットフィールド (tier の natural と同流儀)。"
+      },
+      {
+        "name": "sides",
+        "doc": "additive のダイス面数。serde default 0 (spec 16 で percentile が省略できるように) — additive で 0 は load 時 ChallengeShapeInvalid (従来の必須性を validate で保証)。"
+      },
+      {
+        "name": "spendable",
+        "doc": "差分買い可否 (spec 18 Phase B)。既定 true だが Scenario.spend_rules が無ければ そもそも買えない (scenario 側 opt-in が主・こちらは個別 challenge を締める弁)。"
+      },
+      {
+        "name": "stat",
+        "doc": "修正に使う stat (挑戦する entity が宣言済みであること)。省略可 — None なら能力に依らない純粋ダイス (修正値 0、運試し)。Some なら 1d{sides}+stat修正。"
+      },
+      {
+        "name": "tiers",
+        "doc": "極 (tier) の定義。キー = tier 名 (crit_fail 等)。自然出目の min/max で発火。 通常成否 (on_success/on_failure) と併存する。CheckOutcome.tier に surface する。 percentile とは併用不可 (TierWithPercentile — 二重クリティカルの曖昧さを load 時に弾く)。"
+      },
+      {
+        "name": "times",
+        "doc": "出目の乗数 (既定 1)。times: 5 で合計 ×5 (CoC 系の 3D6×5 等)。出目だけに掛かる (stat/modifiers の修正は乗算の後に加算)。percentile では書かない。"
+      }
+    ],
+    "ChallengeMod": [
+      {
+        "name": "bonus"
+      },
+      {
+        "name": "when"
+      }
+    ],
+    "Character": [
+      {
+        "name": "attributes",
+        "doc": "初期の文字列属性 (クラス/種族 等)。宣言したキーが閉世界の許可集合になり、トリガーの set_attribute はこのキーにしか書けない (未宣言キーは load 時 validate で弾く)。"
+      },
+      {
+        "name": "icon",
+        "doc": "顔アイコンのアセット ID (images/ 配下)。提示層が presence 表示に使う不透明 string。"
+      },
+      {
+        "name": "inventory",
+        "doc": "初期所持品 (閉世界)。Scenario::initial_state でこの entity に seed される。"
+      },
+      {
+        "name": "name"
+      },
+      {
+        "name": "profile",
+        "doc": "設定・背景・性格・性向 (検証しない語りの素材。可変世界状態は持たない)。"
+      },
+      {
+        "name": "rolls",
+        "doc": "このキャラの振り方テンプレート (spec 18 Phase C)。「このキャラが振るときはこれ」を 一度書き、contest の opponent_roll が名前で参照する (同じキャラを別シナリオで 別の contest から使い回せる)。キー = テンプレート名 (例「噛みつき」「回避」)。"
+      },
+      {
+        "name": "skills",
+        "doc": "宣言された閉じた能力集合 (催眠/予知 等)。初期スキル。未宣言の能力は存在しない (メアリー・スー遮断)。開花は authored トリガーの grant_skill 効果のみ。"
+      },
+      {
+        "name": "stats",
+        "doc": "このキャラが持つ stat の宣言。initial が Scenario::initial_state の初期値。 IndexMap で YAML の記述順を保持する (表示順を「書いた順」にする)。"
+      },
+      {
+        "name": "taboos",
+        "doc": "硬い禁忌: これが true になる delta を却下する (Phase B でエンジン強制)。"
+      }
+    ],
+    "Contest": [
+      {
+        "name": "description",
+        "doc": "GM への提示文 (どんな対決か。scenario_brief に出して GM に開かせる)。"
+      },
+      {
+        "name": "max_rounds",
+        "doc": "交換回数の上限 (バックストップ = 無限対決を構造的に断つ)。既定 1。 until を書く対決は 20〜30 程度を明示すること。"
+      },
+      {
+        "name": "on_lose"
+      },
+      {
+        "name": "on_tie",
+        "doc": "引き分けの帰結 (任意。percentile の同 degree は目標値の高い側が勝つ = CoC7 準拠なので、 真の引き分けは目標値まで同じ時だけ)。"
+      },
+      {
+        "name": "on_win",
+        "doc": "1 交換の帰結 (player 視点)。win = player 勝ち。flag/effects/narration/sound を毎交換適用。"
+      },
+      {
+        "name": "opponent",
+        "doc": "相手の entity (既知のキャラ必須)。"
+      },
+      {
+        "name": "opponent_roll",
+        "doc": "相手側の振り方 (インライン or 相手キャラの rolls テンプレート名)。"
+      },
+      {
+        "name": "player_roll",
+        "doc": "player 側の振り方 (通常はインライン)。"
+      },
+      {
+        "name": "requires",
+        "doc": "開始できる前提条件 (Gate)。偽なら attempt_contest を却下。"
+      },
+      {
+        "name": "resolution",
+        "doc": "判定様式。contest 単位で双方に適用 (様式跨ぎの対抗は構造的に存在しない)。"
+      },
+      {
+        "name": "until",
+        "doc": "決着条件 (毎交換後に評価)。None = 1 交換で終わる単発対抗ロール。"
+      }
+    ],
+    "Exit": [
+      {
+        "name": "gate"
+      },
+      {
+        "name": "to"
+      }
+    ],
+    "Gate": [
+      {
+        "name": "at"
+      },
+      {
+        "name": "entity"
+      },
+      {
+        "name": "item"
+      },
+      {
+        "name": "key"
+      },
+      {
+        "name": "kind"
+      },
+      {
+        "name": "of"
+      },
+      {
+        "name": "present"
+      },
+      {
+        "name": "skill"
+      },
+      {
+        "name": "turns"
+      },
+      {
+        "name": "value"
+      }
+    ],
+    "Globals": [
+      {
+        "name": "flags",
+        "doc": "世界フラグ宣言。load 時に各モジュールの allowed_flags(使える) と global_flags(跨いで生きる) の両方へ union される。"
+      }
+    ],
+    "Goal": [
+      {
+        "name": "epilogue_prompt",
+        "doc": "エピローグの生成指示 (authored、非検証の語り素材。spec 11)。engine は解釈しない。 到達がセッションの終端 (単発 goal / campaign の辺なし = 判定は呼び出し側) のとき、 harness/app がこの指示 + 旅路の記録 (synopsis/chronicle) で GM にエピローグを 1 回 書かせる。本文ではない (生成本文は提示層の TurnView.epilogue)。 None / 空白のみ = エピローグなし (従来どおり即結末)。narration はエピローグの土台 (生成失敗時のフォールバック + 結末の意味の接地素材) なので廃止しない — 指示だけ書いて結末文が無いと ScenarioError::EpilogueWithoutNarration が lint 警告する。"
+      },
+      {
+        "name": "hint",
+        "doc": "プレイヤー向けの道しるべ (authored、非検証の提示素材)。「この goal は何をすれば だいたい行けるか」を提示層 (目標一覧) が表示する。when の条件そのものは ネタバレゆえ出さない設計の、作者が意図的に開示するヒント。空なら表示なし。"
+      },
+      {
+        "name": "id"
+      },
+      {
+        "name": "narration",
+        "doc": "到達時に語りへ注入する結末ナレーション (authored、非検証の語り素材)。 複数 goal のどれに達したかを提示層が出すための文面。空なら結末の語りなし。"
+      },
+      {
+        "name": "title",
+        "doc": "目標一覧の表示名 (authored、非検証の提示素材)。id はスペース等を避ける機械用の 分岐セレクタゆえ、人間向けの文はこちらに書く。空なら提示層が id へフォールバック。"
+      },
+      {
+        "name": "visible",
+        "doc": "false なら隠しゴール — 到達するまで提示層が目標一覧に出さない (到達で開示)。 到達判定 reached は不変で効く = engine 非解釈の提示層宣言 (hidden_stats と同類)。 既定 true (既存 YAML は無改修で全 goal 表示)。"
+      },
+      {
+        "name": "when"
+      }
+    ],
+    "Location": [
+      {
+        "name": "bgm",
+        "doc": "ループ BGM のアセット ID (audios/ 配下のファイル名)。提示層がこの場所に居る間ループ再生する。 engine は解釈しない不透明 string (image と同じ語り素材カテゴリ、北極星)。"
+      },
+      {
+        "name": "description"
+      },
+      {
+        "name": "exits"
+      },
+      {
+        "name": "image",
+        "doc": "背景画像のアセット ID (images/ 配下のファイル名)。提示層が解決して背景にする。 engine は解釈しない不透明 string (description/narration と同じ語り素材カテゴリ、北極星)。"
+      },
+      {
+        "name": "items",
+        "doc": "場所にあるアイテム → 取得条件 + 取得様式 (旧形式 Gate 直書き / 新形式 {when, take})。"
+      },
+      {
+        "name": "present",
+        "doc": "この場所に「いる」NPC (presence)。提示層が顔アイコン行に出す。 空なら scenario.characters 全員にフォールバック (後方互換)。engine は使わない不透明データ。 この場に居る NPC (明示宣言)。空 (未宣言含む) なら誰もいない — NPC を出す場所には 必ず書く (旧「空なら全 characters」は廃止、2026-07-02)。実効 presence はこれ ± GameState.present_overrides (Scenario::present_at)。"
+      },
+      {
+        "name": "title",
+        "doc": "人間向け表示名 (id=機械用セレクタ / title=表示名 の三層思想、GoalDef の title と 同類)。提示層 (GUI の現在地) が使う非検証の提示素材。空なら提示層が id へフォールバック。"
+      }
+    ],
+    "LocationItem": [
+      {
+        "name": "take",
+        "doc": "取得様式: once=一度きり (既定) / infinite=何度でも / fixed=備え付けで取得不可"
+      },
+      {
+        "name": "when",
+        "doc": "拾える条件 (Gate)"
+      }
+    ],
+    "Manifest": [
+      {
+        "name": "author"
+      },
+      {
+        "name": "description"
+      },
+      {
+        "name": "engine",
+        "doc": "semver range (将来のマーケット互換チェック用)。今は不透明 string で保持、検証しない。"
+      },
+      {
+        "name": "entry",
+        "doc": "\"campaign.yaml\" or \"scenarios/xxx.yaml\" (フォルダ相対)。"
+      },
+      {
+        "name": "facts_policy",
+        "doc": "既成事実 (spec 20) のユーザー書き込み権限。セッション単位の性質なので (既成事実は campaign 遷移でも持ち越す) モジュールごとでなくパッケージが所有する。 宣言があれば全モジュールへ注入。省略時は各 scenario の宣言 (既定 locked)。"
+      },
+      {
+        "name": "globals",
+        "doc": "パッケージ横断の世界フラグ宣言。"
+      },
+      {
+        "name": "image_style",
+        "doc": "挿絵の画風指針 (spec 24)。宣言があれば全モジュールへ注入 (セッション単位 — 章の途中で 画風が変わると違和感になる)。省略時は各 scenario の宣言 (既定 空)。"
+      },
+      {
+        "name": "player",
+        "doc": "主人公を一度だけ宣言 → harness が各モジュールへ注入 (継承)。"
+      },
+      {
+        "name": "title"
+      },
+      {
+        "name": "use_tts",
+        "doc": "読み上げ (TTS) を作者が想定しているか。セッション単位の性質なので (再生設定が章の途中で変わると体験が割れる) モジュールごとでなくパッケージが所有する。 宣言があれば全モジュールへ注入。省略時は各 scenario の宣言 (既定 false)。"
+      },
+      {
+        "name": "version"
+      },
+      {
+        "name": "world",
+        "doc": "世界観 lore = 語りの素材 (非検証、prompt 供給)。可変状態は持てない (北極星)。"
+      }
+    ],
+    "MemoryFragment": [
+      {
+        "name": "id",
+        "doc": "recall の主キー。memoria/*.yaml のファイル名 (拡張子なし)。loader が充填する。"
+      },
+      {
+        "name": "tags",
+        "doc": "recall の別名キー (semantic surface)。cue がこのいずれかに一致すれば hit。"
+      },
+      {
+        "name": "text",
+        "doc": "語りに注入する伏線/性格の本文。"
+      }
+    ],
+    "Op": [
+      {
+        "name": "bonus"
+      },
+      {
+        "name": "challenge"
+      },
+      {
+        "name": "contest"
+      },
+      {
+        "name": "count"
+      },
+      {
+        "name": "dc"
+      },
+      {
+        "name": "delta"
+      },
+      {
+        "name": "den"
+      },
+      {
+        "name": "entity"
+      },
+      {
+        "name": "from"
+      },
+      {
+        "name": "item"
+      },
+      {
+        "name": "key"
+      },
+      {
+        "name": "negate"
+      },
+      {
+        "name": "num"
+      },
+      {
+        "name": "op"
+      },
+      {
+        "name": "present"
+      },
+      {
+        "name": "sides"
+      },
+      {
+        "name": "skill"
+      },
+      {
+        "name": "stat"
+      },
+      {
+        "name": "target"
+      },
+      {
+        "name": "to"
+      },
+      {
+        "name": "value"
+      },
+      {
+        "name": "volatile"
+      },
+      {
+        "name": "voter"
+      }
+    ],
+    "Outcome": [
+      {
+        "name": "effects",
+        "doc": "該当時に同一 apply 内で原子適用する機械効果 (authored 専権 — trigger effects と 同じ信頼モデル)。通常成否と極 (tier) の effects は併存する (フラグと同じ)。 attempt_challenge は無限再帰の芽なので validate が弾く。"
+      },
+      {
+        "name": "flag",
+        "doc": "engine が直書きする帰結フラグ (任意)。allowed_flags 宣言必須。"
+      },
+      {
+        "name": "narration",
+        "doc": "結末ナレーション (authored・任意)。失敗を必ず描きたい時に使う (LLM 任せにしない)。"
+      },
+      {
+        "name": "sound",
+        "doc": "結末効果音のアセット ID (audios/ 配下・任意)。CheckOutcome.sound に載り 毎回・同ターンに one-shot 再生される。engine 非解釈の不透明 string (narration と同列)。"
+      }
+    ],
+    "PlayerDef": [
+      {
+        "name": "attributes",
+        "doc": "初期の文字列属性 (クラス/職業/種族 等)。各モジュールの initial_attributes へ merge (package が勝つ)。宣言キーが player 属性の閉世界許可集合になる。 IndexMap = YAML 記述順を保持 (stats と同じく主人公の属性を宣言順で表示するため)。"
+      },
+      {
+        "name": "icon",
+        "doc": "主人公の顔アイコンのアセット ID (images/ 配下)。presence 表示用。"
+      },
+      {
+        "name": "items",
+        "doc": "初期所持品 (閉世界)。各モジュールの initial_inventory へ union → initial_state で seed。"
+      },
+      {
+        "name": "name"
+      },
+      {
+        "name": "profile",
+        "doc": "主人公の性向 = 語りの素材 (非検証、prompt 供給)。surfacing は後続。"
+      },
+      {
+        "name": "skills",
+        "doc": "初期スキル (閉世界)。各モジュールへ union。"
+      },
+      {
+        "name": "stats",
+        "doc": "初期数値。各モジュールへ merge する際 package が勝つ (モジュール跨ぎの分裂を防ぐ)。 IndexMap = YAML 記述順を保持 (CharacterDef::stats と対称) → inject_package が initial_stats へ宣言順で注入し、状態パネルが主人公も「書いた順」で並ぶ。 素の数値と境界つき宣言 ({ initial, min, max }) の両受け (StatInit・後方互換)。"
+      }
+    ],
+    "Protagonist": [
+      {
+        "name": "icon",
+        "doc": "主人公の顔アイコンのアセット ID (images/ 配下)。提示層が presence 表示に使う不透明 string。"
+      },
+      {
+        "name": "name"
+      },
+      {
+        "name": "profile"
+      }
+    ],
+    "PushCost": [
+      {
+        "name": "amount"
+      },
+      {
+        "name": "from",
+        "doc": "支払い元 stat (player の宣言済みキー必須 = PushCostStatUndeclared)。"
+      }
+    ],
+    "RoleAssignment": [
+      {
+        "name": "among",
+        "doc": "配布先 (player を含められる = グノーシア式)。人数は pool の合計と一致必須。"
+      },
+      {
+        "name": "key",
+        "doc": "書き込む属性キー (例: 役職)。"
+      },
+      {
+        "name": "pool",
+        "doc": "役職 → 人数。キー順 (BTreeMap) に展開してから shuffle するので決定論。"
+      }
+    ],
+    "RollSpec": [
+      {
+        "name": "bonus",
+        "doc": "常時修正 (additive: 出目に加算 / percentile: 目標値に加算)。"
+      },
+      {
+        "name": "count",
+        "doc": "ダイス個数 (既定 1)。count: 3, sides: 20 で 3d20 の合計。"
+      },
+      {
+        "name": "expr",
+        "doc": "式修正 (spec 19)。stat の代わりに (STR + SIZ) / 4 のような式で修正値/目標値を書く。 stat との併記は不可。判定のたびに現在値で評価される。"
+      },
+      {
+        "name": "sides",
+        "doc": "additive の面数。percentile では書かない (無視される)。"
+      },
+      {
+        "name": "stat",
+        "doc": "修正に使う stat (その entity が宣言済みであること)。省略 = 純粋な運試し (修正 0)。 percentile では必須 (目標値の素。expr でも可)。"
+      },
+      {
+        "name": "times",
+        "doc": "出目の乗数 (既定 1)。合計 ×times (修正 bonus/stat は乗算の後に加算)。"
+      }
+    ],
+    "Scenario": [
+      {
+        "name": "allowed_flags"
+      },
+      {
+        "name": "cast",
+        "doc": "このシナリオに登場する外部キャラの宣言 (characters/{id}.yaml から注入する entity)。 空なら外部注入しない — シナリオが宣言した登場人物だけが現れる (全シナリオ共有の混入を防ぐ)。 inline characters に在る entity はそちらが優先。"
+      },
+      {
+        "name": "challenges",
+        "doc": "authored challenge (技能判定の素性と帰結)。LLM は AttemptChallenge で選ぶだけ。"
+      },
+      {
+        "name": "characters",
+        "doc": "登場人物 (player 以外)。inline 宣言 + cast で指定した外部 characters/*.yaml の注入。"
+      },
+      {
+        "name": "check_style",
+        "doc": "盤面の判定様式 (spec 16、既定 additive)。percentile なら提示層が op 語彙を check → check_under に入れ替え、「## 判定様式」を接地する。詳細は CheckStyle。"
+      },
+      {
+        "name": "contests",
+        "doc": "authored contest (対決) の定義 (spec 18 Phase C)。キー = contest id。 決着まで LLM を介さない一括型 cadence — 雑魚戦・単発対抗ロール用。"
+      },
+      {
+        "name": "facts_policy",
+        "doc": "既成事実 (spec 20) のユーザー書き込み権限 (既定 locked = 非表示)。 package.yaml の facts_policy から注入もできる。詳細は FactsPolicy。"
+      },
+      {
+        "name": "flag_hints",
+        "doc": "知識フラグのヒント (flag → 立てる条件の説明文、spec 03)。提示層が prompt に surface し、 LLM が「会話で情報が伝わった瞬間」に set_flag を出せるようにする (弱モデル向けロバスト化)。 非検証の語り素材 (engine は値を解釈しない、world/profile と同類) だが、キーは allowed_flags 宣言必須 (幻フラグへのヒントを load 時に弾く)。flag_rules の gate と対で使う — ヒントが促し、gate が守る (早まった set_flag を却下するバックストップ)。"
+      },
+      {
+        "name": "flag_rules",
+        "doc": "フラグを true にするための gate。記載なければ Gate::Always。"
+      },
+      {
+        "name": "flag_titles",
+        "doc": "フラグの表示名 (エイリアス。authored・非検証の提示素材、goal の title と同じ三層思想: id=機械用キー / title=人間向け表示)。UI のフラグ一覧・語りの接地に使い、キーは allowed_flags 宣言必須 (Scenario::validate が幻フラグへの表示名を弾く)。"
+      },
+      {
+        "name": "global_flags",
+        "doc": "世界フラグ (campaign 横断で持ち越す)。allowed_flags の部分集合。 Scenario::transition はこれに挙げたフラグだけ次モジュールへ運び、残り (局所) は捨てる。"
+      },
+      {
+        "name": "goal",
+        "doc": "単一の達成条件 (名前無し・後方互換)。goals を使う時は省略可。"
+      },
+      {
+        "name": "goals",
+        "doc": "名前付き goal (エンディング) の authored 順リスト。分岐する結末を書ける。 非空ならこちらが優先され、最初に成立した GoalDef::id が Scenario::reached の戻り値。"
+      },
+      {
+        "name": "hidden_attributes",
+        "doc": "当人にも見えない属性キー (呪い・自覚のない正体等)。secret_attributes (本人分は見える = 人狼の自役職) より一段強い秘匿: プレイヤー UI = 本人分ごと落とす / GM = 全員分 (「本人未知」注記付き — 当人にすら明かさない語りの規律は prompt 層) / 登場人物どうし = 不可。engine は宣言を運ぶだけで gate/トリガー評価は不変。 キーの宣言必須は secret と同じ (initial_attributes / CharacterDef.attributes / role_assignment.key)。"
+      },
+      {
+        "name": "hidden_flags",
+        "doc": "プレイヤーには隠すが GM は見る秘密のフラグ (hidden_attributes のフラグ版、2026-07-19 命名整理)。裏で進む真相・隠し進行のようなプレイヤー UI に出したくないが GM は追うフラグ。 提示層の扱い: プレイヤー UI = 出さない / state_brief = 〔秘匿〕注記付きで GM に見せる / set_flag 語彙節 = 出さない (GM に casually 立てさせない)。GM_SYSTEM が「〔秘匿〕は明かすな」を 刷り込む。engine 非使用・非検証 — gate/トリガーの評価は不変。キーは allowed_flags 宣言必須。 (「GM にも見せない engine 帳簿」は Self::internal_flags。)"
+      },
+      {
+        "name": "hidden_stats",
+        "doc": "プレイヤーには隠すが GM は見る秘密の数値 (2026-07-19 命名整理)。隠し好感度・裏の腐敗値の ようなプレイヤー UI に出したくないが GM は追う数値。提示層の扱い: UI の状態パネル = 出さない / CLI = 出さない / prompt の state_brief = 〔秘匿〕注記付きで GM に見せる。GM_SYSTEM が 「〔秘匿〕は明かすな」を刷り込む。engine は使わない提示ヒント (非検証)。全 entity に効く。 (「GM にも見せない engine 帳簿」は Self::internal_stats。)"
+      },
+      {
+        "name": "image_style",
+        "doc": "挿絵の画風指針 (spec 24, 2026-08-20)。engine 非使用・非検証の提示層素材 (world / profile と同類)。プレイヤーが押す画像生成 (手動) のプロンプト書きに「作者の画風」として 渡る (例「水彩画・淡い色・キャラはデフォルメ」)。IMAGE_STYLE_MAX_CHARS を超えると lint 警告 (ScenarioError::ImageStyleTooLong) し、先頭だけが使われる。 use_tts のような ON/OFF の作者ゲートは作らない — 挿絵は語りに触れないプレイヤー側の 鑑賞レイヤーで、押すのもプレイヤー。package.yaml の image_style から注入もできる。"
+      },
+      {
+        "name": "initial_attributes",
+        "doc": "\"player\" の初期文字列属性 (クラス/職業/種族 等)。宣言キーが player の閉世界許可集合になり、 トリガーの set_attribute はこのキーにしか書けない。NPC は CharacterDef::attributes。"
+      },
+      {
+        "name": "initial_inventory",
+        "doc": "\"player\" の初期所持品。Scenario::initial_state で player に seed される (場所から拾う/譲渡/持ち越し以外の「最初から所持」経路)。NPC は CharacterDef::inventory。"
+      },
+      {
+        "name": "initial_skills",
+        "doc": "\"player\" の初期スキル糖衣 (閉世界宣言)。NPC は CharacterDef::skills。"
+      },
+      {
+        "name": "initial_stats",
+        "doc": "\"player\" の stat 糖衣 (後方互換)。min 0 / max なしで宣言扱い。"
+      },
+      {
+        "name": "internal_flags",
+        "doc": "GM もプレイヤーも見ない engine 内部の帳簿フラグ (タイマーの armed フラグ x_done 等、 2026-07-19 命名整理で hidden_flags の旧義を分離)。変数として使うフラグを全提示層 (UI フラグ一覧 / state_brief / 語彙節) が一切出さない宣言。engine 非使用・非検証 — gate/トリガーの評価は不変で効く。キーは allowed_flags 宣言必須。 (「プレイヤーには隠すが GM は見る秘密」は Self::hidden_flags。)"
+      },
+      {
+        "name": "internal_stats",
+        "doc": "GM もプレイヤーも見ない engine 内部の帳簿 stat (タイマー record_turn の刻みや repeatable カウンタ、2026-07-19 命名整理で hidden_stats の旧義を分離)。engine 内部値を全提示層 (UI の状態パネル / prompt の state_brief / CLI) が skip する。engine は使わない提示ヒント (非検証・キーは開集合ゆえ宣言不要)。全 entity に効く。 (「プレイヤーには隠すが GM は見る秘密」は Self::hidden_stats。)"
+      },
+      {
+        "name": "locations"
+      },
+      {
+        "name": "party",
+        "doc": "パーティのロスター (spec 23 (b))。人間 (ゲスト) が embody できる仲間 = 冒険を共にする companion 群 (characters の部分集合・主人公は含めない = 常に party)。initial_state/ transition で GameState::party に seed され gate entity: \"party\" の走査対象になる。 埋まらない席は GM が声を当てる NPC 仲間として party に居続ける (人間の頭数と無関係)。 validate が party ⊆ characters と \"party\" 予約語を検査。空 = 非 co-op (party gate は 主人公のみに縮退・後方互換)。app の validate_participants はゲストの割り当てをこの集合に締める。"
+      },
+      {
+        "name": "persistent_flags",
+        "doc": "場所フラグ (その場所＝このモジュールに持つ)。allowed_flags の部分集合 (spec 02)。 global と違い ambient に全モジュールへ漏らさず、このモジュールを再訪したときだけ復元される (例: chest_opened)。蓄積は engine でなく harness の campaign 層が担う (gm_core はこの宣言を持つだけ・transition は局所と同じく捨てる)。"
+      },
+      {
+        "name": "protagonist",
+        "doc": "主人公(プレイヤー)の設定 (語りの素材)。package.player から注入。NPC が認識する。"
+      },
+      {
+        "name": "push_cost",
+        "doc": "プッシュの代償 (spec 18 Phase B・任意)。None = 原典どおり無償 (代償は各 challenge の on_push_failure)。"
+      },
+      {
+        "name": "role_assignment",
+        "doc": "役職のランダム割り当て (spec 06 Phase A)。宣言があれば Self::initial_state が 専用ストリームで shuffle して配る。詳細は RoleAssignment。"
+      },
+      {
+        "name": "secret_attributes",
+        "doc": "ゲーム的秘匿情報の属性キー (spec 06 Phase B。役職等)。hidden_* (全提示層から 隠す帳簿) とは別軸の宛先別可視性: GM=全員分 (秘匿注記付き、ゲームを回すのに必要) / プレイヤー UI=本人分のみ (NPC 分は DTO 段階で落とす) / 登場人物どうし=不可 (GM の演じ分け=prompt 規律)。engine は宣言を運ぶだけで gate/トリガー評価は不変。 キーはどこかで宣言済み (initial_attributes / CharacterDef.attributes / role_assignment.key) 必須。"
+      },
+      {
+        "name": "spend_rules",
+        "doc": "差分買いの支払い規則 (spec 18 Phase B・opt-in)。None = この盤面に差分買いは無い。 Some で pushable/spendable な challenge の失敗が「stat を払って成功に変える」決断になる。"
+      },
+      {
+        "name": "start"
+      },
+      {
+        "name": "title"
+      },
+      {
+        "name": "triggers",
+        "doc": "反応ビート (Phase C)。when 成立で effects を原子適用し narration を注入する。"
+      },
+      {
+        "name": "use_tts",
+        "doc": "読み上げ (TTS) を作者が想定しているか (既定 false)。engine 非使用・非検証の 提示層宣言 (Self::hidden_stats と同類) — 正本も prompt も語りも一切変わらず、 true の盤面でだけ提示層が読み上げ操作を出す。  意味は「技術的に読めるか」ではない (narration は常に文字列なので全パッケージが読める)。 既定 false は、宣言を持たない配布物を作者の意図どおり無音に置くため。  文体は決めない: TTS の ON/OFF で語りが変わると chronicle/synopsis に残る記録まで 再生設定で食い違う。音声前提の会話文体は world に書く (作者がパッケージ固有に決め、 TTS はその上の再生手段、と分離する)。package.yaml の use_tts から注入もできる。"
+      },
+      {
+        "name": "vote_rules",
+        "doc": "投票権の宣言 (spec 06 Phase C)。CastVote はこのいずれかに合致したときだけ受理 (デフォルト拒否)。詳細は VoteRule。"
+      },
+      {
+        "name": "world",
+        "doc": "世界観 lore (語りの素材、非検証)。package.world から注入。可変状態は持たない (北極星)。"
+      }
+    ],
+    "SpendRules": [
+      {
+        "name": "from",
+        "doc": "支払い元 stat (player の宣言済みキー必須 = SpendStatUndeclared)。"
+      },
+      {
+        "name": "rate",
+        "doc": "差分 1 あたりの支払い量 (既定 1 = CoC7 の 1:1)。"
+      }
+    ],
+    "StatDecl": [
+      {
+        "name": "initial"
+      },
+      {
+        "name": "max"
+      },
+      {
+        "name": "min"
+      }
+    ],
+    "Tier": [
+      {
+        "name": "effects",
+        "doc": "該当時に同一 apply 内で原子適用する機械効果 (authored 専権 — trigger effects と 同じ信頼モデル。LLM は challenge を「選ぶ」だけで帰結を持てない)。stat/attribute/ スキル等をフラグ+トリガーの2点セット無しで直接動かせる。attempt_challenge は 無限再帰の芽なので validate が弾く (連鎖は flag→トリガー経由で書く)。"
+      },
+      {
+        "name": "flag",
+        "doc": "該当時に engine が直書きする帰結フラグ (任意)。allowed_flags 宣言必須 (Scenario::validate)。"
+      },
+      {
+        "name": "narration",
+        "doc": "該当時の結末ナレーション (authored・任意)。CheckOutcome.narration に載り毎回・同ターンに出る (トリガーと違い latch されないので、繰り返す判定でも毎回語れる)。フラグ無しの極でも語れる。"
+      },
+      {
+        "name": "natural",
+        "doc": "この tier が発火する自然出目の極。"
+      },
+      {
+        "name": "sound",
+        "doc": "該当時の結末効果音のアセット ID (audios/ 配下・任意)。CheckOutcome.sound に載り 毎回・同ターンに one-shot 再生される。engine 非解釈の不透明 string (narration と同列)。"
+      },
+      {
+        "name": "threshold",
+        "doc": "at_most/at_least の閾値 (1..=count*sides、Scenario::validate が検査)。 min/max では不要 (無視される)。省略時 None。"
+      }
+    ],
+    "Trigger": [
+      {
+        "name": "effects",
+        "doc": "発火時にエンジンが原子適用する機械的効果 (フラグ・stat・解放)。authored・信頼済。"
+      },
+      {
+        "name": "id",
+        "doc": "発火済み追跡のための識別子 (シナリオ内で一意)。"
+      },
+      {
+        "name": "image",
+        "doc": "発火時のイベント CG (画像 ID)。engine は解釈しない不透明 string (背景/narration と同類)。 提示層が images/{id} を解決して描画する。None なら CG 差し替え無し。"
+      },
+      {
+        "name": "image_hold",
+        "doc": "イベント CG をいつまで出すか (2026-07-28)。engine は使わない不透明データ。  省略 = 従来どおりそのターンだけ (発火ターンに出て次の受理ターンで場所背景へ戻る)。 ImageHold::Show = 消すまで持続 / ImageHold::Hide = 消す (image を併記すれば その ID が出ているときだけ消す = 別の CG に差し替わった後の取り消しが暴発しない)。  image_mode (描画位置) とは別の軸なので分けてある。"
+      },
+      {
+        "name": "image_mode",
+        "doc": "イベント CG の出し方 (既定 ImageMode::Background)。engine は使わない不透明データ。"
+      },
+      {
+        "name": "narration",
+        "doc": "発火時に語りへ注入する指示 (例「アリスは子供時代の約束を思い出す」)。検証しない。"
+      },
+      {
+        "name": "recall",
+        "doc": "Memoria 橋渡し (memoria_bridge): 発火時に伏線/性格を recall するための cue (tag/id)。 gm_core はこれを解釈せず運ぶだけ (engine は Memoria 非依存・決定論のまま)。 解決は上位 (harness) の責務。None なら recall しない静的な反応ビート。"
+      },
+      {
+        "name": "repeatable",
+        "doc": "繰り返し発火するか (既定 false = edge-triggered once)。  false: 一度発火すると GameState::fired に latch され二度と発火しない (伏線・覚醒など一回性のビート)。 true: 永続 latch しない。when が再び真化すれば将来のターンで再発火する (カウンタ閾値→効果→リセットのループ等)。リセットは authored 効果で書く (scale_stat num:0 でハードリセット / adjust_stat 負で繰り越し)。 停止性: repeatable でも 1 回の apply (settle) 内では高々 1 回しか発火しない (効果が when を真のままにしても無限ループしない)。複数閾値を一度に跨いでも発火は次ターンへ繰り越す。"
+      },
+      {
+        "name": "sound",
+        "doc": "発火時の SE (効果音) のアセット ID (audios/ 配下)。engine は解釈しない不透明 string (image と同類)。提示層が発火ターンに one-shot 再生する。None なら SE 無し。"
+      },
+      {
+        "name": "when",
+        "doc": "発火条件。delta 適用後の state で真化した瞬間に発火する。"
+      }
+    ],
+    "VoteRule": [
+      {
+        "name": "voter_attribute",
+        "doc": "投票権を持つ voter の条件 (省略時 = 生存者なら誰でも)。複数条件が要るまで単数 (必要になったら voter_attributes: [..] に拡張する余地を残す、査読で合意)。"
+      },
+      {
+        "name": "when",
+        "doc": "この rule が有効な状況 (フェーズフラグ等)。省略時 Always。"
+      }
+    ]
+  },
+  "wiring": [
+    {
+      "parent": "Scenario",
+      "key": "locations",
+      "kind": "map_values",
+      "child": "Location"
+    },
+    {
+      "parent": "Scenario",
+      "key": "triggers",
+      "kind": "seq",
+      "child": "Trigger"
+    },
+    {
+      "parent": "Scenario",
+      "key": "challenges",
+      "kind": "map_values",
+      "child": "Challenge"
+    },
+    {
+      "parent": "Scenario",
+      "key": "goals",
+      "kind": "seq",
+      "child": "Goal"
+    },
+    {
+      "parent": "Scenario",
+      "key": "goal",
+      "kind": "direct",
+      "child": "Gate"
+    },
+    {
+      "parent": "Scenario",
+      "key": "characters",
+      "kind": "map_values",
+      "child": "Character"
+    },
+    {
+      "parent": "Scenario",
+      "key": "flag_rules",
+      "kind": "map_values",
+      "child": "Gate"
+    },
+    {
+      "parent": "Scenario",
+      "key": "protagonist",
+      "kind": "direct",
+      "child": "Protagonist"
+    },
+    {
+      "parent": "Scenario",
+      "key": "role_assignment",
+      "kind": "direct",
+      "child": "RoleAssignment"
+    },
+    {
+      "parent": "Scenario",
+      "key": "spend_rules",
+      "kind": "direct",
+      "child": "SpendRules"
+    },
+    {
+      "parent": "Scenario",
+      "key": "push_cost",
+      "kind": "direct",
+      "child": "PushCost"
+    },
+    {
+      "parent": "Scenario",
+      "key": "contests",
+      "kind": "map_values",
+      "child": "Contest"
+    },
+    {
+      "parent": "Scenario",
+      "key": "vote_rules",
+      "kind": "seq",
+      "child": "VoteRule"
+    },
+    {
+      "parent": "Scenario",
+      "key": "initial_stats",
+      "kind": "stat_map",
+      "child": "StatDecl"
+    },
+    {
+      "parent": "Contest",
+      "key": "requires",
+      "kind": "direct",
+      "child": "Gate"
+    },
+    {
+      "parent": "Contest",
+      "key": "until",
+      "kind": "direct",
+      "child": "Gate"
+    },
+    {
+      "parent": "Contest",
+      "key": "player_roll",
+      "kind": "direct",
+      "child": "RollSpec"
+    },
+    {
+      "parent": "Contest",
+      "key": "opponent_roll",
+      "kind": "direct",
+      "child": "RollSpec"
+    },
+    {
+      "parent": "Contest",
+      "key": "on_win",
+      "kind": "direct",
+      "child": "Outcome"
+    },
+    {
+      "parent": "Contest",
+      "key": "on_lose",
+      "kind": "direct",
+      "child": "Outcome"
+    },
+    {
+      "parent": "Contest",
+      "key": "on_tie",
+      "kind": "direct",
+      "child": "Outcome"
+    },
+    {
+      "parent": "Character",
+      "key": "rolls",
+      "kind": "map_values",
+      "child": "RollSpec"
+    },
+    {
+      "parent": "Character",
+      "key": "stats",
+      "kind": "stat_map",
+      "child": "StatDecl"
+    },
+    {
+      "parent": "Character",
+      "key": "taboos",
+      "kind": "seq",
+      "child": "Gate"
+    },
+    {
+      "parent": "Location",
+      "key": "items",
+      "kind": "item_map",
+      "child": "LocationItem",
+      "child_tagged": "Gate"
+    },
+    {
+      "parent": "Location",
+      "key": "exits",
+      "kind": "seq",
+      "child": "Exit"
+    },
+    {
+      "parent": "Exit",
+      "key": "gate",
+      "kind": "direct",
+      "child": "Gate"
+    },
+    {
+      "parent": "Trigger",
+      "key": "when",
+      "kind": "direct",
+      "child": "Gate"
+    },
+    {
+      "parent": "Trigger",
+      "key": "effects",
+      "kind": "seq",
+      "child": "Op"
+    },
+    {
+      "parent": "Challenge",
+      "key": "requires",
+      "kind": "direct",
+      "child": "Gate"
+    },
+    {
+      "parent": "Challenge",
+      "key": "modifiers",
+      "kind": "seq",
+      "child": "ChallengeMod"
+    },
+    {
+      "parent": "Challenge",
+      "key": "on_success",
+      "kind": "direct",
+      "child": "Outcome"
+    },
+    {
+      "parent": "Challenge",
+      "key": "on_failure",
+      "kind": "direct",
+      "child": "Outcome"
+    },
+    {
+      "parent": "Challenge",
+      "key": "on_critical",
+      "kind": "direct",
+      "child": "Outcome"
+    },
+    {
+      "parent": "Challenge",
+      "key": "on_extreme",
+      "kind": "direct",
+      "child": "Outcome"
+    },
+    {
+      "parent": "Challenge",
+      "key": "on_hard",
+      "kind": "direct",
+      "child": "Outcome"
+    },
+    {
+      "parent": "Challenge",
+      "key": "on_fumble",
+      "kind": "direct",
+      "child": "Outcome"
+    },
+    {
+      "parent": "Challenge",
+      "key": "on_push_failure",
+      "kind": "direct",
+      "child": "Outcome"
+    },
+    {
+      "parent": "Challenge",
+      "key": "tiers",
+      "kind": "map_values",
+      "child": "Tier"
+    },
+    {
+      "parent": "Outcome",
+      "key": "effects",
+      "kind": "seq",
+      "child": "Op"
+    },
+    {
+      "parent": "Tier",
+      "key": "effects",
+      "kind": "seq",
+      "child": "Op"
+    },
+    {
+      "parent": "ChallengeMod",
+      "key": "when",
+      "kind": "direct",
+      "child": "Gate"
+    },
+    {
+      "parent": "Goal",
+      "key": "when",
+      "kind": "direct",
+      "child": "Gate"
+    },
+    {
+      "parent": "Gate",
+      "key": "of",
+      "kind": "seq",
+      "child": "Gate"
+    },
+    {
+      "parent": "VoteRule",
+      "key": "when",
+      "kind": "direct",
+      "child": "Gate"
+    },
+    {
+      "parent": "VoteRule",
+      "key": "voter_attribute",
+      "kind": "direct",
+      "child": "AttrRequirement"
+    },
+    {
+      "parent": "Manifest",
+      "key": "player",
+      "kind": "direct",
+      "child": "PlayerDef"
+    },
+    {
+      "parent": "Manifest",
+      "key": "globals",
+      "kind": "direct",
+      "child": "Globals"
+    },
+    {
+      "parent": "PlayerDef",
+      "key": "stats",
+      "kind": "stat_map",
+      "child": "StatDecl"
+    },
+    {
+      "parent": "Campaign",
+      "key": "edges",
+      "kind": "seq",
+      "child": "CampaignEdge"
+    }
+  ],
+  "gate_variant_keys": {
+    "all": [
+      {
+        "name": "kind"
+      },
+      {
+        "name": "of"
+      }
+    ],
+    "always": [
+      {
+        "name": "kind"
+      }
+    ],
+    "any": [
+      {
+        "name": "kind"
+      },
+      {
+        "name": "of"
+      }
+    ],
+    "attribute_is": [
+      {
+        "name": "entity"
+      },
+      {
+        "name": "key"
+      },
+      {
+        "name": "kind"
+      },
+      {
+        "name": "value"
+      }
+    ],
+    "flag_is": [
+      {
+        "name": "key"
+      },
+      {
+        "name": "kind"
+      },
+      {
+        "name": "value"
+      }
+    ],
+    "has_item": [
+      {
+        "name": "entity"
+      },
+      {
+        "name": "item"
+      },
+      {
+        "name": "kind"
+      }
+    ],
+    "has_skill": [
+      {
+        "name": "entity"
+      },
+      {
+        "name": "kind"
+      },
+      {
+        "name": "skill"
+      }
+    ],
+    "has_voted": [
+      {
+        "name": "entity"
+      },
+      {
+        "name": "kind"
+      }
+    ],
+    "location_is": [
+      {
+        "name": "at"
+      },
+      {
+        "name": "kind"
+      }
+    ],
+    "not": [
+      {
+        "name": "kind"
+      },
+      {
+        "name": "of"
+      }
+    ],
+    "presence_is": [
+      {
+        "name": "entity"
+      },
+      {
+        "name": "kind"
+      },
+      {
+        "name": "present"
+      }
+    ],
+    "stat_at_least": [
+      {
+        "name": "entity"
+      },
+      {
+        "name": "key"
+      },
+      {
+        "name": "kind"
+      },
+      {
+        "name": "value"
+      }
+    ],
+    "stat_at_most": [
+      {
+        "name": "entity"
+      },
+      {
+        "name": "key"
+      },
+      {
+        "name": "kind"
+      },
+      {
+        "name": "value"
+      }
+    ],
+    "turns_since": [
+      {
+        "name": "entity"
+      },
+      {
+        "name": "key"
+      },
+      {
+        "name": "kind"
+      },
+      {
+        "name": "turns"
+      }
+    ]
+  },
+  "op_variant_keys": {
+    "add_item": [
+      {
+        "name": "item"
+      },
+      {
+        "name": "op"
+      }
+    ],
+    "adjust_stat": [
+      {
+        "name": "delta"
+      },
+      {
+        "name": "entity"
+      },
+      {
+        "name": "key"
+      },
+      {
+        "name": "op"
+      }
+    ],
+    "attempt_challenge": [
+      {
+        "name": "challenge"
+      },
+      {
+        "name": "entity"
+      },
+      {
+        "name": "op"
+      }
+    ],
+    "attempt_contest": [
+      {
+        "name": "contest"
+      },
+      {
+        "name": "op"
+      }
+    ],
+    "cast_vote": [
+      {
+        "name": "op"
+      },
+      {
+        "name": "target"
+      },
+      {
+        "name": "voter"
+      }
+    ],
+    "check": [
+      {
+        "name": "dc"
+      },
+      {
+        "name": "entity"
+      },
+      {
+        "name": "op"
+      },
+      {
+        "name": "sides"
+      },
+      {
+        "name": "stat"
+      }
+    ],
+    "check_under": [
+      {
+        "name": "entity"
+      },
+      {
+        "name": "key"
+      },
+      {
+        "name": "op"
+      }
+    ],
+    "give_item": [
+      {
+        "name": "from"
+      },
+      {
+        "name": "item"
+      },
+      {
+        "name": "op"
+      },
+      {
+        "name": "to"
+      }
+    ],
+    "grant_skill": [
+      {
+        "name": "entity"
+      },
+      {
+        "name": "op"
+      },
+      {
+        "name": "skill"
+      }
+    ],
+    "move": [
+      {
+        "name": "op"
+      },
+      {
+        "name": "to"
+      }
+    ],
+    "record_turn": [
+      {
+        "name": "entity"
+      },
+      {
+        "name": "key"
+      },
+      {
+        "name": "op"
+      }
+    ],
+    "remove_item": [
+      {
+        "name": "item"
+      },
+      {
+        "name": "op"
+      }
+    ],
+    "request_roll": [
+      {
+        "name": "dc"
+      },
+      {
+        "name": "op"
+      },
+      {
+        "name": "sides"
+      }
+    ],
+    "resolve_vote": [
+      {
+        "name": "op"
+      }
+    ],
+    "roll_stat": [
+      {
+        "name": "bonus"
+      },
+      {
+        "name": "count"
+      },
+      {
+        "name": "entity"
+      },
+      {
+        "name": "key"
+      },
+      {
+        "name": "negate"
+      },
+      {
+        "name": "op"
+      },
+      {
+        "name": "sides"
+      }
+    ],
+    "scale_stat": [
+      {
+        "name": "den"
+      },
+      {
+        "name": "entity"
+      },
+      {
+        "name": "key"
+      },
+      {
+        "name": "num"
+      },
+      {
+        "name": "op"
+      }
+    ],
+    "set_attribute": [
+      {
+        "name": "entity"
+      },
+      {
+        "name": "key"
+      },
+      {
+        "name": "op"
+      },
+      {
+        "name": "value"
+      }
+    ],
+    "set_flag": [
+      {
+        "name": "key"
+      },
+      {
+        "name": "op"
+      },
+      {
+        "name": "value"
+      }
+    ],
+    "set_presence": [
+      {
+        "name": "entity"
+      },
+      {
+        "name": "op"
+      },
+      {
+        "name": "present"
+      },
+      {
+        "name": "volatile",
+        "doc": "揮発 (この場限り) にするか。既定 false = 従来の永続 override。"
+      }
+    ]
+  },
+  "tag_values": {
+    "kind": [
+      {
+        "name": "all",
+        "doc": "すべての子条件が通る (AND)。"
+      },
+      {
+        "name": "always",
+        "doc": "常に通る。"
+      },
+      {
+        "name": "any",
+        "doc": "いずれかの子条件が通る (OR)。"
+      },
+      {
+        "name": "attribute_is",
+        "doc": "指定キャラの文字列属性が value と一致する (クラス/職業条件)。未設定は空文字扱い。 「魔法剣士なら〜」のように転職後の状態を縛れる。entity 省略時は主人公。"
+      },
+      {
+        "name": "flag_is",
+        "doc": "指定フラグが指定値である。"
+      },
+      {
+        "name": "has_item",
+        "doc": "指定キャラが指定アイテムを所持している。entity 省略時は主人公。"
+      },
+      {
+        "name": "has_skill",
+        "doc": "指定キャラが能力を獲得済みである (能力条件)。閉世界: 宣言/開花した能力のみ true。entity 省略時は主人公。"
+      },
+      {
+        "name": "has_voted",
+        "doc": "指定キャラの票が現在の票箱に入っている (spec 06 / #38)。entity 省略時は主人公。 「プレイヤーが投票したら開票」をイベント駆動で書く述語 — resolve_vote が票を リセットするので開票後は自然に偽へ戻り、repeatable トリガーは次サイクルで再武装する。 タイマー (turns_since) と any で束ねれば「票が入るか N ターンで強制開票」も書ける。"
+      },
+      {
+        "name": "location_is",
+        "doc": "指定の場所にいる。"
+      },
+      {
+        "name": "not",
+        "doc": "子条件の否定 (NOT)。all(AND)/any(OR) に対して否定を与え、ブール代数を閉じる。 「鍵を持っていない」= { kind: not, of: { kind: has_item, item: 鍵 } }。has_item/has_skill/ attribute_is/location_is など任意の gate を否定でき、フラグでの二重管理が要らない。"
+      },
+      {
+        "name": "presence_is",
+        "doc": "指定キャラがこの場にいる (spec 04 の実効 presence = Location.present ± overrides)。 present: false で不在を直接問える (not で包まなくてよい)。  用途の核心は筋書きのビートを不在のキャラに出させないこと — 「〇〇が帰っていった」の ような退場の語りを、その場にいない相手に対して発火させない。譲渡や会話の前提にも使える。  実効 presence は scenario 側の土台 (Location.present) と state 側の override の合成なので、 この gate だけは Gate::eval が scenario を要る (state に写す案は、セーブに複製が残って パッケージ更新で作者が present を直しても古いセーブが古い顔ぶれのままになるため採らない)。 entity は必須 (主人公は常に居るので既定に意味がない)。"
+      },
+      {
+        "name": "stat_at_least",
+        "doc": "指定キャラの stat が value 以上である (数値条件)。未設定は 0 扱い。entity 省略時は主人公。"
+      },
+      {
+        "name": "stat_at_most",
+        "doc": "指定キャラの stat が value 以下である (Gate::StatAtLeast の双対)。未設定は 0 扱い。 hp は 0 クランプなので stat_at_most hp 0 が「気絶/死」を表せる (HP0 End を goal に書く経路)。 entity 省略時は主人公。"
+      },
+      {
+        "name": "turns_since",
+        "doc": "指定キャラの stat に刻まれたターンから turns ターン以上経過している (現在turn - stat >= turns)。StateOp::RecordTurn(crate::StateOp::RecordTurn) と対で 「〇〇から N ターン後に発火」を組む。stat 未設定 (=0) だと turn>=turns で誤発火しうるので、 「〇〇が起きた」フラグと all で束ねるのが定石。entity 省略時は主人公。"
+      }
+    ],
+    "op": [
+      {
+        "name": "add_item",
+        "doc": "player が現在地からアイテムを拾う (世界 → player)。"
+      },
+      {
+        "name": "adjust_stat",
+        "doc": "stat への加減 (+/−)。エンジンが clamp(current + delta) を計算する。 LLM は変化量(意図)だけを提案し、結果の値は持てない。entity 省略時は主人公。"
+      },
+      {
+        "name": "attempt_challenge",
+        "doc": "authored challenge への挑戦。LLM は challenge を「選ぶ」だけ — 判定の stat/sides/dc も、 大失敗/大成功(tier)とその帰結フラグも、すべて crate::Scenario の authored 定義側にある (LLM は帰結を持てない＝閉世界)。engine が 1d{sides} + stat修正 vs dc を振り、natural 値が tier に該当すれば authored な帰結フラグを直書きする (resolution: percentile なら d100 ロールアンダー + degree 別帰結、spec 16)。未宣言 challenge は却下。entity 省略時は主人公。"
+      },
+      {
+        "name": "attempt_contest",
+        "doc": "authored contest (対決) の開始 (spec 18 Phase C)。LLM は対決を「開く」だけ — 双方の振り方 (RollSpec)・帰結・決着条件はすべて authored 定義側にある。開始後の ラウンドは LLM を介さず engine とプレイヤーが直接回す (crate::contest_round) = 雑魚戦のトークンを消す一括型 (cadence はこの機構、逐次型は従来の challenge)。"
+      },
+      {
+        "name": "cast_vote",
+        "doc": "投票の意図 (spec 06 Phase C)。voter が target の処刑/襲撃に票を入れる。 LLM 提案可 — ただし受理は「voter/target 生存 + vote_rules のいずれかに合致 (デフォルト拒否)」をエンジンが裁く。一人一票 (GameState::votes は voter キーの map = 再投票は上書き)。開票は StateOp::ResolveVote の専権。voter 省略時は主人公。"
+      },
+      {
+        "name": "check",
+        "doc": "技能判定。エンジンが 1d{sides} + entity の stat 修正 を振り、total >= dc で成否を裁く。 LLM は出目も合計も主張できない (op 構造上不可能)。stat 未宣言は却下。entity 省略時は主人公。"
+      },
+      {
+        "name": "check_under",
+        "doc": "d100 ロールアンダー即興判定 (spec 16)。エンジンが 1d100 を振り、目標値 = その entity の stat 現在値、roll <= 目標値 で成功。成功度 (degree: critical/extreme/hard/regular/ failure/fumble) もエンジンが決定論で計算する — LLM は出目も成功度も持てない。 帰結は持たない (成否+degree の surface のみ。機械的帰結は authored challenge で書く)。 key (技能 stat) 未宣言は却下。entity 省略時は主人公。"
+      },
+      {
+        "name": "give_item",
+        "doc": "アイテムを譲渡する。from が所持していなければ却下 (持っていない物は渡せない)。 to は既知の entity でなければ却下。from 省略時は主人公。"
+      },
+      {
+        "name": "grant_skill",
+        "doc": "能力の付与 (開花)。authored トリガーの専権 — LLM が提案すると adjudicate が却下する (メアリー・スー遮断)。trigger effects は apply_ops 直行なので付与できる。entity 省略時は主人公。"
+      },
+      {
+        "name": "move"
+      },
+      {
+        "name": "record_turn",
+        "doc": "現在ターンを stat に刻む (タイムスタンプ)。authored トリガーの専権 — LLM が提案すると adjudicate が却下する (タイマー詐称遮断、GrantSkill/SetAttribute と同型)。trigger effects は apply_ops 直行なので刻める。Gate::TurnsSince と対で「〇〇から N ターン後に発火」を組む。 値は GameState.turn の生値 (stat 境界で clamp しない)。entity 省略時は主人公。"
+      },
+      {
+        "name": "remove_item",
+        "doc": "player がアイテムを手放す。"
+      },
+      {
+        "name": "request_roll",
+        "doc": "ダイスを振る要求。結果は含めない — エンジンが振って裁く。"
+      },
+      {
+        "name": "resolve_vote",
+        "doc": "開票 (spec 06 Phase C)。authored トリガーの専権 (効果 op 第5例) — LLM が提案 すると adjudicate が却下する (開票結果の捏造遮断)。エンジンが一箇所で原子適用: 集計 → 最多得票 (同数は seed 派生 VOTE_RNG で抽選 = 決定論) → 死亡 (生存=0 + presence false) → 役職カウンタ/優位 stat 再計算 → 票リセット。"
+      },
+      {
+        "name": "roll_stat",
+        "doc": "可変量ダイス (spec 16)。エンジンが count × d(sides) + bonus を振り、negate に 応じて ± を stat へ clamp 適用する (SAN 1d6 減少・1d8 ダメージ)。authored 専権 — LLM が提案すると adjudicate が却下する (ダメージ量の捏造遮断、GrantSkill と同型)。 trigger/challenge の effects は apply_ops 直行なので使える。出目は crate::StatRollOutcome として surface (「SAN -4 (1d6=4)」)。entity 省略時は主人公。"
+      },
+      {
+        "name": "scale_stat",
+        "doc": "stat への乗除 (×/÷)。エンジンが clamp(current * num / den) を計算する。 den == 0 (ゼロ除算) はエンジンが却下するので、LLM は /0 で壊せない。entity 省略時は主人公。"
+      },
+      {
+        "name": "set_attribute",
+        "doc": "文字列属性の書き換え (クラス転職 等)。authored トリガーの専権 — LLM が提案すると adjudicate が却下する (クラス捏造 = メアリー・スー遮断、GrantSkill と同型)。trigger effects は apply_ops 直行なので書き換えられる。未宣言キーは load 時 validate で弾く。entity 省略時は主人公。"
+      },
+      {
+        "name": "set_flag"
+      },
+      {
+        "name": "set_presence",
+        "doc": "画面上の登場/退場 (presence のオーバーライド)。authored トリガーの専権 — LLM が提案すると adjudicate が却下する (キャラ勝手登場の捏造遮断、GrantSkill/SetAttribute と同型)。trigger effects は apply_ops 直行なので登場/退場させられる。present=true で強制登場・false で強制退場。 entity 省略時は主人公。  volatile (既定 false) が様式を選ぶ (PresenceOverride, 2026-07-25): - false = 同行者。モジュール全域に効き transition で持ち越す (従来どおり)。 - true = 来訪者。適用時の現在地に紐づき、そこを離れた瞬間に破棄される。 「使者が駆け込んでくる」のようなその場限りの登場を、退場トリガーを書かずに済ませる。"
+      }
+    ]
+  },
+  "ids": {}
+}
