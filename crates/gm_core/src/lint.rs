@@ -40,7 +40,11 @@ pub fn unknown_key_lints(src: &str) -> Vec<String> {
 }
 
 /// 文脈 = 「いまどの型の mapping を見ているか」。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// spec 28 v2: エディタ補完も同じ文脈で候補を決めるので、[`Ctx::name`] で**名前に射影**して
+/// crate の外へ運べるようにしてある ([`wiring`] / [`context_keys`])。名前は enum の
+/// バリアント名そのままで、増減は [`Ctx::ALL`] の番人がコンパイル時に強制する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Ctx {
     Scenario,
     Location,
@@ -67,34 +71,113 @@ enum Ctx {
     RollSpec,
 }
 
+impl Ctx {
+    /// 全文脈。**バリアントを足したら [`_ctx_exhaustive_guard`] がコンパイルエラーになる**
+    /// ので、ここへ追加すること (漏れると export した表からその文脈だけ消える)。
+    const ALL: &'static [Ctx] = &[
+        Ctx::Scenario,
+        Ctx::Location,
+        Ctx::LocationItem,
+        Ctx::Exit,
+        Ctx::Trigger,
+        Ctx::Challenge,
+        Ctx::Outcome,
+        Ctx::Tier,
+        Ctx::ChallengeMod,
+        Ctx::Goal,
+        Ctx::Character,
+        Ctx::StatDecl,
+        Ctx::Gate,
+        Ctx::Op,
+        Ctx::Protagonist,
+        Ctx::RoleAssignment,
+        Ctx::VoteRule,
+        Ctx::AttrRequirement,
+        Ctx::SpendRules,
+        Ctx::PushCost,
+        Ctx::Contest,
+        Ctx::RollSpec,
+    ];
+
+    /// 文脈名 (バリアント名そのまま)。crate 外へ運ぶ唯一の形。
+    const fn name(self) -> &'static str {
+        match self {
+            Ctx::Scenario => "Scenario",
+            Ctx::Location => "Location",
+            Ctx::LocationItem => "LocationItem",
+            Ctx::Exit => "Exit",
+            Ctx::Trigger => "Trigger",
+            Ctx::Challenge => "Challenge",
+            Ctx::Outcome => "Outcome",
+            Ctx::Tier => "Tier",
+            Ctx::ChallengeMod => "ChallengeMod",
+            Ctx::Goal => "Goal",
+            Ctx::Character => "Character",
+            Ctx::StatDecl => "StatDecl",
+            Ctx::Gate => "Gate",
+            Ctx::Op => "Op",
+            Ctx::Protagonist => "Protagonist",
+            Ctx::RoleAssignment => "RoleAssignment",
+            Ctx::VoteRule => "VoteRule",
+            Ctx::AttrRequirement => "AttrRequirement",
+            Ctx::SpendRules => "SpendRules",
+            Ctx::PushCost => "PushCost",
+            Ctx::Contest => "Contest",
+            Ctx::RollSpec => "RollSpec",
+        }
+    }
+}
+
+/// [`Ctx::ALL`] の番人。バリアントを足すとここが非網羅でコンパイルエラーになる。
+#[allow(dead_code)]
+fn _ctx_exhaustive_guard(c: Ctx) {
+    match c {
+        Ctx::Scenario
+        | Ctx::Location
+        | Ctx::LocationItem
+        | Ctx::Exit
+        | Ctx::Trigger
+        | Ctx::Challenge
+        | Ctx::Outcome
+        | Ctx::Tier
+        | Ctx::ChallengeMod
+        | Ctx::Goal
+        | Ctx::Character
+        | Ctx::StatDecl
+        | Ctx::Gate
+        | Ctx::Op
+        | Ctx::Protagonist
+        | Ctx::RoleAssignment
+        | Ctx::VoteRule
+        | Ctx::AttrRequirement
+        | Ctx::SpendRules
+        | Ctx::PushCost
+        | Ctx::Contest
+        | Ctx::RollSpec => {}
+    }
+}
+
+/// シナリオ YAML のルート文脈 (エディタ補完が起点に使う)。
+pub const CTX_SCENARIO: &str = Ctx::Scenario.name();
+/// `characters/*.yaml` のルート文脈。
+pub const CTX_CHARACTER: &str = Ctx::Character.name();
+/// Gate の文脈名 (バリアント表 [`gate_variant_keys`] を引く合図)。
+pub const CTX_GATE: &str = Ctx::Gate.name();
+/// StateOp の文脈名 (バリアント表 [`op_variant_keys`] を引く合図)。
+pub const CTX_OP: &str = Ctx::Op.name();
+
 /// 各文脈の既知キー集合。実際の型から導出する ([`Tables::build`])。
+///
+/// spec 28 v2 で文脈ごとの名前つきフィールド 22 本を 1 本の表へ畳んだ。動機は
+/// **型名を doc の引き key として外へ出す**必要が生じたことで、キー集合と型名を
+/// 別々のリストで持つと必ずずれる (エディタ補完の説明が黙って消える形でずれる)。
 struct Tables {
-    scenario: BTreeSet<String>,
-    location: BTreeSet<String>,
-    location_item: BTreeSet<String>,
-    exit: BTreeSet<String>,
-    trigger: BTreeSet<String>,
-    challenge: BTreeSet<String>,
-    outcome: BTreeSet<String>,
-    tier: BTreeSet<String>,
-    challenge_mod: BTreeSet<String>,
-    goal: BTreeSet<String>,
-    character: BTreeSet<String>,
-    stat_decl: BTreeSet<String>,
-    /// Gate/StateOp は**バリアント別**の表が本線 (`*_variants`)。`gate`/`op` はタグが無い・
-    /// 未知の値でバリアントを決められないときの退避先 (和集合 = 疑わしきは黙る)。
-    gate: BTreeSet<String>,
+    /// 文脈 → 既知キー。Gate/StateOp はタグ不明時の**和集合** (`*_variants` が本線)。
+    structs: BTreeMap<Ctx, BTreeSet<String>>,
+    /// 文脈 → 型名 (doc 抽出の引き key)。型を持たない文脈 (`LocationItem`/`Gate`/`Op`) は無し。
+    types: BTreeMap<Ctx, &'static str>,
     gate_variants: BTreeMap<String, BTreeSet<String>>,
-    op: BTreeSet<String>,
     op_variants: BTreeMap<String, BTreeSet<String>>,
-    protagonist: BTreeSet<String>,
-    role_assignment: BTreeSet<String>,
-    vote_rule: BTreeSet<String>,
-    attr_requirement: BTreeSet<String>,
-    spend_rules: BTreeSet<String>,
-    push_cost: BTreeSet<String>,
-    contest: BTreeSet<String>,
-    roll_spec: BTreeSet<String>,
 }
 
 /// mapping 1 段の未知キーを警告文の列にする (近い既知キーの提案つき)。`path` は表示用の接頭辞
@@ -286,34 +369,66 @@ fn _op_exhaustive_guard(op: &StateOp) {
 
 impl Tables {
     fn build() -> Self {
+        let mut structs: BTreeMap<Ctx, BTreeSet<String>> = BTreeMap::new();
+        let mut types: BTreeMap<Ctx, &'static str> = BTreeMap::new();
+        /// 文脈 1 つ = (既知キー, 型名) を**同じ 1 行から**導く。
+        macro_rules! decl {
+            ($ctx:expr, $ty:ty, $sample:expr) => {{
+                structs.insert($ctx, struct_keys::<$ty>($sample));
+                types.insert($ctx, short_type_name::<$ty>());
+            }};
+        }
+        decl!(Ctx::Scenario, Scenario, "start: room
+locations: {}");
+        decl!(Ctx::Location, Location, "{}");
+        decl!(Ctx::Exit, Exit, "to: x");
+        decl!(Ctx::Trigger, Trigger, "id: t
+when: { kind: always }");
+        decl!(Ctx::Challenge, ChallengeDef, "sides: 1
+dc: 1");
+        decl!(Ctx::Outcome, ChallengeOutcome, "{}");
+        decl!(Ctx::Tier, TierDef, "natural: min");
+        decl!(Ctx::ChallengeMod, ChallengeMod, "when: { kind: always }
+bonus: 0");
+        decl!(Ctx::Goal, GoalDef, "id: g
+when: { kind: always }");
+        decl!(Ctx::Character, CharacterDef, "{}");
+        decl!(Ctx::StatDecl, StatDecl, "initial: 0");
+        decl!(Ctx::Protagonist, Protagonist, "{}");
+        decl!(Ctx::RoleAssignment, RoleAssignment, "key: k
+pool: {}
+among: []");
+        decl!(Ctx::VoteRule, VoteRule, "{}");
+        decl!(Ctx::AttrRequirement, AttrRequirement, "key: k
+value: v");
+        decl!(Ctx::SpendRules, SpendRules, "from: x");
+        decl!(Ctx::PushCost, PushCost, "from: x
+amount: 1");
+        decl!(
+            Ctx::Contest,
+            ContestDef,
+            "opponent: o
+player_roll: { sides: 6 }
+opponent_roll: { sides: 6 }"
+        );
+        decl!(Ctx::RollSpec, RollSpec, "{}");
+
+        // 型を持たない文脈。
+        // LocationItem 新形式 {when, take} (旧形式 = Gate は kind の有無で判別)。
+        structs.insert(Ctx::LocationItem, ["when", "take"].iter().map(|s| s.to_string()).collect());
+        structs.insert(Ctx::Gate, union_keys(&gate_samples()));
+        structs.insert(Ctx::Op, union_keys(&op_samples()));
+
+        debug_assert_eq!(
+            structs.len(),
+            Ctx::ALL.len(),
+            "全文脈に既知キー集合が要る (Ctx を足したら decl! も足すこと)"
+        );
         Self {
-            scenario: struct_keys::<Scenario>("start: room\nlocations: {}"),
-            location: struct_keys::<Location>("{}"),
-            // LocationItem 新形式 {when, take} (旧形式 = Gate は kind の有無で判別)。
-            location_item: ["when", "take"].iter().map(|s| s.to_string()).collect(),
-            exit: struct_keys::<Exit>("to: x"),
-            trigger: struct_keys::<Trigger>("id: t\nwhen: { kind: always }"),
-            challenge: struct_keys::<ChallengeDef>("sides: 1\ndc: 1"),
-            outcome: struct_keys::<ChallengeOutcome>("{}"),
-            tier: struct_keys::<TierDef>("natural: min"),
-            challenge_mod: struct_keys::<ChallengeMod>("when: { kind: always }\nbonus: 0"),
-            goal: struct_keys::<GoalDef>("id: g\nwhen: { kind: always }"),
-            character: struct_keys::<CharacterDef>("{}"),
-            stat_decl: struct_keys::<StatDecl>("initial: 0"),
-            gate: union_keys(&gate_samples()),
+            structs,
+            types,
             gate_variants: variant_keys(&gate_samples(), "kind"),
-            op: union_keys(&op_samples()),
             op_variants: variant_keys(&op_samples(), "op"),
-            protagonist: struct_keys::<Protagonist>("{}"),
-            role_assignment: struct_keys::<RoleAssignment>("key: k\npool: {}\namong: []"),
-            vote_rule: struct_keys::<VoteRule>("{}"),
-            attr_requirement: struct_keys::<AttrRequirement>("key: k\nvalue: v"),
-            spend_rules: struct_keys::<SpendRules>("from: x"),
-            push_cost: struct_keys::<PushCost>("from: x\namount: 1"),
-            contest: struct_keys::<ContestDef>(
-                "opponent: o\nplayer_roll: { sides: 6 }\nopponent_roll: { sides: 6 }",
-            ),
-            roll_spec: struct_keys::<RollSpec>("{}"),
         }
     }
 
@@ -324,43 +439,26 @@ impl Tables {
         match ctx {
             Ctx::Gate => tag_of(v, "kind")
                 .and_then(|name| self.gate_variants.get(name))
-                .unwrap_or(&self.gate),
-            Ctx::Op => {
-                tag_of(v, "op").and_then(|name| self.op_variants.get(name)).unwrap_or(&self.op)
-            }
+                .unwrap_or_else(|| self.known_struct(Ctx::Gate)),
+            Ctx::Op => tag_of(v, "op")
+                .and_then(|name| self.op_variants.get(name))
+                .unwrap_or_else(|| self.known_struct(Ctx::Op)),
             _ => self.known_struct(ctx),
         }
     }
 
     fn known_struct(&self, ctx: Ctx) -> &BTreeSet<String> {
-        match ctx {
-            Ctx::Scenario => &self.scenario,
-            Ctx::Location => &self.location,
-            Ctx::LocationItem => &self.location_item,
-            Ctx::Exit => &self.exit,
-            Ctx::Trigger => &self.trigger,
-            Ctx::Challenge => &self.challenge,
-            Ctx::Outcome => &self.outcome,
-            Ctx::Tier => &self.tier,
-            Ctx::ChallengeMod => &self.challenge_mod,
-            Ctx::Goal => &self.goal,
-            Ctx::Character => &self.character,
-            Ctx::StatDecl => &self.stat_decl,
-            Ctx::Gate => &self.gate,
-            Ctx::Op => &self.op,
-            Ctx::Protagonist => &self.protagonist,
-            Ctx::RoleAssignment => &self.role_assignment,
-            Ctx::VoteRule => &self.vote_rule,
-            Ctx::AttrRequirement => &self.attr_requirement,
-            Ctx::SpendRules => &self.spend_rules,
-            Ctx::PushCost => &self.push_cost,
-            Ctx::Contest => &self.contest,
-            Ctx::RollSpec => &self.roll_spec,
-        }
+        self.structs.get(&ctx).expect("Tables::build が全文脈を埋める (build の debug_assert と対)")
     }
 }
 
+/// 型名の最終セグメント (`gm_core::spine::Scenario` → `Scenario`) = doc 表の引き key。
+fn short_type_name<T: ?Sized>() -> &'static str {
+    std::any::type_name::<T>().rsplit("::").next().unwrap_or_default()
+}
+
 /// キー配下をどう歩くか。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Child {
     /// この文脈の mapping として直接歩く。
     Direct(Ctx),
@@ -376,56 +474,135 @@ enum Child {
     None,
 }
 
+/// **配線の唯一の表** — 「どの文脈のどのキーの下が、どの型か」。
+///
+/// spec 28 v2 でここを match からデータへ移した。理由は二重管理の解消で、エディタ補完は
+/// 以前この表を**平らに潰した写し**を app 側に手書きで持っていた (平らなので `to:` が
+/// 場所かエンティティかを文脈で解けず、提示層が場当たりに補っていた)。いまは
+/// [`wiring`] が名前へ射影したこの表そのものを渡すので、写しは存在しない。
+#[rustfmt::skip]
+const WIRING: &[(Ctx, &[&str], Child)] = &[
+    (Ctx::Scenario, &["locations"], Child::MapValues(Ctx::Location)),
+    (Ctx::Scenario, &["triggers"], Child::Seq(Ctx::Trigger)),
+    (Ctx::Scenario, &["challenges"], Child::MapValues(Ctx::Challenge)),
+    (Ctx::Scenario, &["goals"], Child::Seq(Ctx::Goal)),
+    (Ctx::Scenario, &["goal"], Child::Direct(Ctx::Gate)),
+    (Ctx::Scenario, &["characters"], Child::MapValues(Ctx::Character)),
+    (Ctx::Scenario, &["flag_rules"], Child::MapValues(Ctx::Gate)),
+    (Ctx::Scenario, &["protagonist"], Child::Direct(Ctx::Protagonist)),
+    (Ctx::Scenario, &["role_assignment"], Child::Direct(Ctx::RoleAssignment)),
+    (Ctx::Scenario, &["spend_rules"], Child::Direct(Ctx::SpendRules)),
+    (Ctx::Scenario, &["push_cost"], Child::Direct(Ctx::PushCost)),
+    (Ctx::Scenario, &["contests"], Child::MapValues(Ctx::Contest)),
+    (Ctx::Scenario, &["vote_rules"], Child::Seq(Ctx::VoteRule)),
+    // initial_stats は素の数値と境界つき宣言 (StatInit) の両受け — mapping 値だけ
+    // StatDecl として typo 検査する (Character.stats と同じ StatMap 意味論)。
+    (Ctx::Scenario, &["initial_stats"], Child::StatMap),
+    (Ctx::Contest, &["requires", "until"], Child::Direct(Ctx::Gate)),
+    // player_roll/opponent_roll は文字列 (テンプレート名) or mapping (RollSpec) の両受け。
+    // 文字列は walker が mapping でないため素通りし、mapping だけ RollSpec 検査になる。
+    (Ctx::Contest, &["player_roll", "opponent_roll"], Child::Direct(Ctx::RollSpec)),
+    (Ctx::Contest, &["on_win", "on_lose", "on_tie"], Child::Direct(Ctx::Outcome)),
+    // キャラの振り方テンプレート: キーはテンプレート名 (データ)、値が RollSpec。
+    (Ctx::Character, &["rolls"], Child::MapValues(Ctx::RollSpec)),
+    (Ctx::Character, &["stats"], Child::StatMap),
+    (Ctx::Character, &["taboos"], Child::Seq(Ctx::Gate)),
+    (Ctx::Location, &["items"], Child::ItemMap),
+    (Ctx::Location, &["exits"], Child::Seq(Ctx::Exit)),
+    (Ctx::Exit, &["gate"], Child::Direct(Ctx::Gate)),
+    (Ctx::Trigger, &["when"], Child::Direct(Ctx::Gate)),
+    (Ctx::Trigger, &["effects"], Child::Seq(Ctx::Op)),
+    (Ctx::Challenge, &["requires"], Child::Direct(Ctx::Gate)),
+    (Ctx::Challenge, &["modifiers"], Child::Seq(Ctx::ChallengeMod)),
+    // 全帰結スロット (spec 16 の degree 別 + spec 18 の on_push_failure)。
+    // 従来 on_success/on_failure のみ = degree スロット内の typo が盲点だった。
+    (Ctx::Challenge, &["on_success", "on_failure", "on_critical", "on_extreme", "on_hard",
+                       "on_fumble", "on_push_failure"], Child::Direct(Ctx::Outcome)),
+    (Ctx::Challenge, &["tiers"], Child::MapValues(Ctx::Tier)),
+    (Ctx::Outcome, &["effects"], Child::Seq(Ctx::Op)),
+    (Ctx::Tier, &["effects"], Child::Seq(Ctx::Op)),
+    (Ctx::ChallengeMod, &["when"], Child::Direct(Ctx::Gate)),
+    (Ctx::Goal, &["when"], Child::Direct(Ctx::Gate)),
+    (Ctx::Gate, &["of"], Child::Seq(Ctx::Gate)),
+    (Ctx::VoteRule, &["when"], Child::Direct(Ctx::Gate)),
+    (Ctx::VoteRule, &["voter_attribute"], Child::Direct(Ctx::AttrRequirement)),
+];
+
 fn child_of(ctx: Ctx, key: &str) -> Child {
-    match (ctx, key) {
-        (Ctx::Scenario, "locations") => Child::MapValues(Ctx::Location),
-        (Ctx::Scenario, "triggers") => Child::Seq(Ctx::Trigger),
-        (Ctx::Scenario, "challenges") => Child::MapValues(Ctx::Challenge),
-        (Ctx::Scenario, "goals") => Child::Seq(Ctx::Goal),
-        (Ctx::Scenario, "goal") => Child::Direct(Ctx::Gate),
-        (Ctx::Scenario, "characters") => Child::MapValues(Ctx::Character),
-        (Ctx::Scenario, "flag_rules") => Child::MapValues(Ctx::Gate),
-        (Ctx::Scenario, "protagonist") => Child::Direct(Ctx::Protagonist),
-        (Ctx::Scenario, "role_assignment") => Child::Direct(Ctx::RoleAssignment),
-        (Ctx::Scenario, "spend_rules") => Child::Direct(Ctx::SpendRules),
-        (Ctx::Scenario, "push_cost") => Child::Direct(Ctx::PushCost),
-        (Ctx::Scenario, "contests") => Child::MapValues(Ctx::Contest),
-        (Ctx::Contest, "requires" | "until") => Child::Direct(Ctx::Gate),
-        // player_roll/opponent_roll は文字列 (テンプレート名) or mapping (RollSpec) の両受け。
-        // 文字列は walker が mapping でないため素通りし、mapping だけ RollSpec 検査になる。
-        (Ctx::Contest, "player_roll" | "opponent_roll") => Child::Direct(Ctx::RollSpec),
-        (Ctx::Contest, "on_win" | "on_lose" | "on_tie") => Child::Direct(Ctx::Outcome),
-        // キャラの振り方テンプレート: キーはテンプレート名 (データ)、値が RollSpec。
-        (Ctx::Character, "rolls") => Child::MapValues(Ctx::RollSpec),
-        (Ctx::Scenario, "vote_rules") => Child::Seq(Ctx::VoteRule),
-        (Ctx::Location, "items") => Child::ItemMap,
-        (Ctx::Location, "exits") => Child::Seq(Ctx::Exit),
-        (Ctx::Exit, "gate") => Child::Direct(Ctx::Gate),
-        (Ctx::Trigger, "when") => Child::Direct(Ctx::Gate),
-        (Ctx::Trigger, "effects") => Child::Seq(Ctx::Op),
-        (Ctx::Challenge, "requires") => Child::Direct(Ctx::Gate),
-        (Ctx::Challenge, "modifiers") => Child::Seq(Ctx::ChallengeMod),
-        // 全帰結スロット (spec 16 の degree 別 + spec 18 の on_push_failure)。
-        // 従来 on_success/on_failure のみ = degree スロット内の typo が盲点だった。
-        (
-            Ctx::Challenge,
-            "on_success" | "on_failure" | "on_critical" | "on_extreme" | "on_hard" | "on_fumble"
-            | "on_push_failure",
-        ) => Child::Direct(Ctx::Outcome),
-        (Ctx::Challenge, "tiers") => Child::MapValues(Ctx::Tier),
-        (Ctx::Outcome, "effects") | (Ctx::Tier, "effects") => Child::Seq(Ctx::Op),
-        (Ctx::ChallengeMod, "when") => Child::Direct(Ctx::Gate),
-        (Ctx::Goal, "when") => Child::Direct(Ctx::Gate),
-        (Ctx::Character, "stats") => Child::StatMap,
-        // initial_stats は素の数値と境界つき宣言 (StatInit) の両受け — mapping 値だけ
-        // StatDecl として typo 検査する (Character.stats と同じ StatMap 意味論)。
-        (Ctx::Scenario, "initial_stats") => Child::StatMap,
-        (Ctx::Character, "taboos") => Child::Seq(Ctx::Gate),
-        (Ctx::Gate, "of") => Child::Seq(Ctx::Gate),
-        (Ctx::VoteRule, "when") => Child::Direct(Ctx::Gate),
-        (Ctx::VoteRule, "voter_attribute") => Child::Direct(Ctx::AttrRequirement),
-        _ => Child::None,
+    for (c, keys, child) in WIRING {
+        if *c == ctx && keys.contains(&key) {
+            return *child;
+        }
     }
+    Child::None
+}
+
+/// 配線 1 本を crate の外へ運ぶ形 (文脈は名前)。
+///
+/// `kind` は `"direct"` (この文脈の mapping) / `"seq"` (列の各要素) /
+/// `"map_values"` (mapping の値。キーは作者の自由語彙) / `"item_map"` / `"stat_map"`。
+/// `child_tagged` は「その mapping が `kind:` を持つときは別の文脈」という一例外
+/// (`Location.items` の旧形式 = Gate 直書き) を**データで**渡すためのもので、
+/// 受け手が形式の分岐を手で知らずに済む。
+#[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct WiringEntry {
+    pub parent: String,
+    pub key: String,
+    pub kind: String,
+    pub child: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_tagged: Option<String>,
+}
+
+/// 配線表を名前へ射影して返す (spec 28 v2 — エディタ補完の文脈解決がこれを辿る)。
+pub fn wiring() -> Vec<WiringEntry> {
+    let mut out = Vec::new();
+    for (parent, keys, child) in WIRING {
+        let (kind, ctx, tagged) = match child {
+            Child::Direct(c) => ("direct", *c, None),
+            Child::Seq(c) => ("seq", *c, None),
+            Child::MapValues(c) => ("map_values", *c, None),
+            Child::ItemMap => ("item_map", Ctx::LocationItem, Some(Ctx::Gate.name().to_string())),
+            Child::StatMap => ("stat_map", Ctx::StatDecl, None),
+            Child::None => continue,
+        };
+        for key in *keys {
+            out.push(WiringEntry {
+                parent: parent.name().to_string(),
+                key: (*key).to_string(),
+                kind: kind.to_string(),
+                child: ctx.name().to_string(),
+                child_tagged: tagged.clone(),
+            });
+        }
+    }
+    out
+}
+
+/// 文脈 1 つの語彙。
+#[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct ContextInfo {
+    /// 既知キー。Gate/Op はタグ不明時の**和集合**で、バリアント別は
+    /// [`gate_variant_keys`] / [`op_variant_keys`] が本線。
+    pub keys: BTreeSet<String>,
+    /// doc を引くための型名 (型を持たない文脈は `None`)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub type_name: Option<String>,
+}
+
+/// 全文脈の語彙 (文脈名 → [`ContextInfo`])。[`wiring`] と対で使う。
+pub fn context_keys() -> BTreeMap<String, ContextInfo> {
+    let t = Tables::build();
+    Ctx::ALL
+        .iter()
+        .map(|c| {
+            let info = ContextInfo {
+                keys: t.known_struct(*c).clone(),
+                type_name: t.types.get(c).map(|s| (*s).to_string()),
+            };
+            (c.name().to_string(), info)
+        })
+        .collect()
 }
 
 fn walk(v: &Value, ctx: Ctx, path: &str, t: &Tables, out: &mut Vec<String>) {
@@ -531,6 +708,68 @@ fn levenshtein(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 【spec 28 v2】配線を**データ表**にして名前へ射影した export が、
+    /// (a) 自己完結している (全ての文脈名が [`context_keys`] に在る)
+    /// (b) 全 [`Ctx`] を覆う ([`Ctx::ALL`] の番人と対)
+    /// (c) 名前だけを辿って内部の walk と同じ文脈へ着く
+    /// — (c) が本命で、エディタ補完はこの辿り方しか持たない。
+    #[test]
+    fn exported_wiring_is_self_contained_and_walkable_by_name() {
+        let ctxs = context_keys();
+        let w = wiring();
+
+        // (a) 参照の閉包。
+        for e in &w {
+            assert!(ctxs.contains_key(&e.parent), "未知の親文脈: {e:?}");
+            assert!(ctxs.contains_key(&e.child), "未知の子文脈: {e:?}");
+            if let Some(t) = &e.child_tagged {
+                assert!(ctxs.contains_key(t), "未知の tagged 文脈: {e:?}");
+            }
+        }
+        // (b) 文脈の網羅。
+        assert_eq!(ctxs.len(), Ctx::ALL.len());
+        assert!(ctxs[CTX_SCENARIO].keys.contains("locations"));
+        assert!(ctxs[CTX_CHARACTER].keys.contains("profile"));
+        assert_eq!(ctxs[CTX_CHARACTER].type_name.as_deref(), Some("CharacterDef"));
+        assert_eq!(ctxs["Challenge"].type_name.as_deref(), Some("ChallengeDef"));
+        assert!(ctxs[CTX_GATE].type_name.is_none(), "Gate は型でなくバリアント表が本線");
+        assert!(ctxs[CTX_GATE].keys.contains("kind") && ctxs[CTX_OP].keys.contains("op"));
+
+        // (c) 名前だけで辿る (frontend と同じ形。`[]` = 列の要素)。
+        let step = |ctx: &str, key: &str| -> Option<String> {
+            w.iter().find(|e| e.parent == ctx && e.key == key).map(|e| e.child.clone())
+        };
+        let walk_path = |segs: &[&str]| -> Option<String> {
+            let mut ctx = CTX_SCENARIO.to_string();
+            for seg in segs {
+                if *seg == "[]" {
+                    continue; // 列/名前つき map の 1 段は文脈を変えない (子文脈は親キーが決める)
+                }
+                ctx = match step(&ctx, seg) {
+                    Some(c) => c,
+                    // 未知キー = 作者の付けた名前 (locations の場所名など)。文脈は据え置き。
+                    None => ctx,
+                };
+            }
+            Some(ctx)
+        };
+        assert_eq!(walk_path(&["triggers", "[]", "effects", "[]"]).as_deref(), Some(CTX_OP));
+        assert_eq!(walk_path(&["triggers", "[]", "when"]).as_deref(), Some(CTX_GATE));
+        assert_eq!(walk_path(&["triggers", "[]", "when", "of", "[]"]).as_deref(), Some(CTX_GATE));
+        assert_eq!(walk_path(&["locations", "room", "exits", "[]"]).as_deref(), Some("Exit"));
+        assert_eq!(walk_path(&["locations", "room", "exits", "[]", "gate"]).as_deref(), Some(CTX_GATE));
+        assert_eq!(walk_path(&["challenges", "force", "on_success", "effects", "[]"]).as_deref(), Some(CTX_OP));
+        assert_eq!(walk_path(&["challenges", "force", "tiers", "big"]).as_deref(), Some("Tier"));
+        assert_eq!(walk_path(&["contests", "brawl", "on_win"]).as_deref(), Some("Outcome"));
+        assert_eq!(walk_path(&["characters", "alice", "taboos", "[]"]).as_deref(), Some(CTX_GATE));
+
+        // `Location.items` は形式で子文脈が割れる = その分岐をデータで渡している。
+        let items = w.iter().find(|e| e.parent == "Location" && e.key == "items").unwrap();
+        assert_eq!(items.kind, "item_map");
+        assert_eq!(items.child, "LocationItem");
+        assert_eq!(items.child_tagged.as_deref(), Some(CTX_GATE));
+    }
 
     /// 【entry typo (実測 2026-07-12, 1ldk)】challenge の `entity:` を `entry:` と書くと serde が
     /// 黙って無視し主体固定が効かない。lint が名指しし「entity の誤り？」を提案する。
