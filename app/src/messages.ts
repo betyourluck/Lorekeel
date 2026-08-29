@@ -711,6 +711,11 @@ export const messages = {
       saving: "保存中…",
       saveTitle: "保存 (Ctrl+S)",
       fontSizeTitle: "本文の文字サイズ (小 / 中 / 大)",
+      statusPos: "行 {line}, 列 {col}",
+      statusDoc: "{lines} 行, {chars} 文字",
+      statusInsert: "挿入",
+      statusOverwrite: "上書き",
+      statusModeTitle: "Insert キーで 挿入 / 上書き を切り替え",
       saved: "{file} を保存しました",
       savedWhilePlaying:
         "保存しました — 次の「新しいゲーム」またはロードから反映されます。現在のセッションには影響しません",
@@ -1474,6 +1479,11 @@ export const messages = {
       saving: "Saving…",
       saveTitle: "Save (Ctrl+S)",
       fontSizeTitle: "Editor font size (small / medium / large)",
+      statusPos: "Ln {line}, Col {col}",
+      statusDoc: "{lines} lines, {chars} chars",
+      statusInsert: "INS",
+      statusOverwrite: "OVR",
+      statusModeTitle: "Press Insert to toggle insert / overwrite",
       saved: "Saved {file}",
       savedWhilePlaying:
         "Saved — takes effect from the next New Game or load. The current session is unaffected",

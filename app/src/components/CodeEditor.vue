@@ -23,7 +23,7 @@ import { defaultHighlightStyle, syntaxHighlighting } from "@codemirror/language"
 import { linter, lintGutter, type Diagnostic } from "@codemirror/lint";
 import { rangeOfPath } from "../editorPath";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
-import { Compartment, EditorState } from "@codemirror/state";
+import { Compartment, EditorState, findClusterBreak } from "@codemirror/state";
 import {
   drawSelection,
   EditorView,
@@ -34,7 +34,10 @@ import {
   lineNumbers,
   placeholder,
 } from "@codemirror/view";
-import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+
+import { t } from "../i18n";
+import { countChars, overwriteSpan } from "../editorTyping";
 
 import { theme } from "../theme";
 
@@ -68,6 +71,10 @@ const props = withDefaults(
     completionSource?: CompletionSource;
     /** 本文の文字サイズ (px)。既定 13 = 従来のダイアログ用途の値 (無指定で挙動不変)。 */
     fontSize?: number;
+    /** フッタ (行・列・全体行数・文字数・挿入/上書き) を出す。既定 false = 従来の見た目。
+     *  **Insert キーの上書き切替もこれに連動する** — モードが見えない場所で打鍵の意味だけ
+     *  変わるのは事故なので、表示と機能を対にする。 */
+    status?: boolean;
   }>(),
   {
     language: "text",
@@ -77,12 +84,23 @@ const props = withDefaults(
     lintProvider: undefined,
     completionSource: undefined,
     fontSize: 13,
+    status: false,
   },
 );
 
 const emit = defineEmits<{ (e: "update:modelValue", value: string): void }>();
 
 const host = ref<HTMLElement | null>(null);
+/** フッタの表示値。行・列は 1 始まり、文字数は**コードポイント数** (絵文字を 2 と数えない)。 */
+const cursorLine = ref(1);
+const cursorCol = ref(1);
+const totalLines = ref(1);
+const totalChars = ref(0);
+/** 上書きモード (Insert で切替)。CodeMirror は挿入しか持たないので inputHandler で作る。 */
+const overwrite = ref(false);
+const modeLabel = computed(() =>
+  overwrite.value ? t("editor.statusOverwrite") : t("editor.statusInsert"),
+);
 const languageCompartment = new Compartment();
 const readOnlyCompartment = new Compartment();
 const placeholderCompartment = new Compartment();
@@ -100,11 +118,12 @@ function readOnlyExtension(readonly: boolean) {
   return [EditorState.readOnly.of(readonly), EditorView.editable.of(!readonly)];
 }
 
-function editorTheme(dark: boolean, height: string, fontSize: number) {
+function editorTheme(dark: boolean, fontSize: number) {
   return EditorView.theme(
     {
       "&": {
-        height,
+        // 高さは包みの div が持つ (フッタと縦に並べるため)。ここは容器いっぱい。
+        height: "100%",
         backgroundColor: "rgb(var(--ash) / 0.4)",
         color: "rgb(var(--parchment))",
         fontSize: `${fontSize}px`,
@@ -167,6 +186,37 @@ function externalLinter(provider: (text: string) => Promise<EditorLintIssue[]>) 
   );
 }
 
+/** 上書きモードの入力。**行末では何もしない** (次の行を食わない = 一般的なエディタの流儀)。
+ *  消す幅は書記素クラスタ単位 (`findClusterBreak`) — サロゲートペアや結合文字を半分にしない。 */
+function overwriteHandler() {
+  return EditorView.inputHandler.of((view, from, to, text) => {
+    if (!overwrite.value || from !== to || text.length === 0) return false;
+    const line = view.state.doc.lineAt(from);
+    const offset = from - line.from;
+    const span = overwriteSpan(line.length, offset, findClusterBreak(line.text, offset));
+    if (span === 0) return false;
+    view.dispatch({
+      changes: { from, to: from + span, insert: text },
+      selection: { anchor: from + text.length },
+      userEvent: "input.type",
+    });
+    return true;
+  });
+}
+
+/** フッタの値をいまの state から取り直す (カーソル移動でも本文変更でも呼ばれる)。 */
+function refreshStatus(state: EditorState, docChanged: boolean) {
+  const pos = state.selection.main.head;
+  const line = state.doc.lineAt(pos);
+  cursorLine.value = line.number;
+  // 列も**コードポイント数**で数える (文字数と同じ物差し。`pos - line.from` は
+  // UTF-16 の符号単位なので、行頭に絵文字が在ると列だけ 1 多く出る)。
+  cursorCol.value = countChars(line.text.slice(0, pos - line.from)) + 1;
+  totalLines.value = state.doc.lines;
+  // 文字数だけは走査が要るので本文が変わったときだけ数える。
+  if (docChanged) totalChars.value = countChars(state.doc.toString());
+}
+
 onMounted(() => {
   if (!host.value) return;
   const withLineNumbers = props.language !== "text" ? [lineNumbers(), highlightActiveLineGutter()] : [];
@@ -188,7 +238,13 @@ onMounted(() => {
         highlightSelectionMatches(),
         autocompletion(props.completionSource ? { override: [props.completionSource] } : {}),
         closeBrackets(),
+        ...(props.status ? [overwriteHandler()] : []),
         keymap.of([
+          // 上書き切替は**フッタを出しているときだけ**受ける (モードが見えない場所で
+          // 打鍵の意味だけ変わるのを避ける)。
+          ...(props.status
+            ? [{ key: "Insert", run: () => ((overwrite.value = !overwrite.value), true) }]
+            : []),
           // **リロードを飲む。** WebView の Ctrl+R は画面を作り直すので、編集中の本文が確認を
           // 一つも通さずに消える。エディタにフォーカスがある間だけ塞ぐ。
           { key: "Mod-r", run: () => true },
@@ -203,16 +259,20 @@ onMounted(() => {
         languageCompartment.of(languageExtension(props.language)),
         readOnlyCompartment.of(readOnlyExtension(props.readonly)),
         placeholderCompartment.of(placeholder(props.placeholder)),
-        themeCompartment.of(editorTheme(theme.value === "dark", props.height, props.fontSize)),
+        themeCompartment.of(editorTheme(theme.value === "dark", props.fontSize)),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             const value = update.state.doc.toString();
             if (value !== props.modelValue) emit("update:modelValue", value);
           }
+          if (props.status && (update.docChanged || update.selectionSet)) {
+            refreshStatus(update.state, update.docChanged);
+          }
         }),
       ],
     }),
   });
+  if (props.status) refreshStatus(editor.state, true);
 });
 
 watch(
@@ -234,9 +294,9 @@ watch(
   () => props.placeholder,
   (p) => editor?.dispatch({ effects: placeholderCompartment.reconfigure(placeholder(p)) }),
 );
-watch([theme, () => props.height, () => props.fontSize], ([t, h, fs]) =>
+watch([theme, () => props.fontSize], ([th, fs]) =>
   editor?.dispatch({
-    effects: themeCompartment.reconfigure(editorTheme(t === "dark", h as string, fs as number)),
+    effects: themeCompartment.reconfigure(editorTheme(th === "dark", fs as number)),
   }),
 );
 
@@ -250,5 +310,38 @@ defineExpose({ focus: () => editor?.focus() });
 </script>
 
 <template>
-  <div ref="host" class="overflow-hidden rounded" />
+  <!-- 包みが高さを持ち、本体とフッタを縦に並べる (CodeMirror 側は height:100%)。 -->
+  <div
+    class="flex flex-col overflow-hidden rounded"
+    :class="{ 'is-overwrite': overwrite }"
+    :style="{ height }"
+  >
+    <div ref="host" class="min-h-0 flex-1 overflow-hidden" />
+    <!-- フッタ: 行・列 / 全体行数・文字数 / 挿入・上書き。YAML はインデントが意味を持つので
+         列が効く。等幅にして、桁が動いても行がガタつかないようにする。 -->
+    <div
+      v-if="status"
+      class="flex shrink-0 items-center gap-4 border-t border-ash/40 bg-ash/30 px-2 py-0.5 font-mono text-[11px] leading-5 text-parchment/50"
+    >
+      <span>{{ t("editor.statusPos", { line: cursorLine, col: cursorCol }) }}</span>
+      <span>{{ t("editor.statusDoc", { lines: totalLines, chars: totalChars }) }}</span>
+      <!-- 読み取り専用では打鍵できないのでモードを出さない (在る意味の無い表示を作らない)。 -->
+      <span
+        v-if="!readonly"
+        class="ml-auto"
+        :class="overwrite ? 'text-ember' : ''"
+        :title="t('editor.statusModeTitle')"
+        >{{ modeLabel }}</span
+      >
+    </div>
+  </div>
 </template>
+
+<style scoped>
+/* 上書きモードはカーソルを太くする — フッタの語だけだと、打鍵の意味が変わったことに
+   本文を見ている目が気づけない。CodeMirror の内部要素なので :deep() で届かせる。 */
+.is-overwrite :deep(.cm-cursor) {
+  border-left-width: 0.55em;
+  opacity: 0.45;
+}
+</style>

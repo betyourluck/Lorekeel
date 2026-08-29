@@ -128,6 +128,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         :lint-provider="lintProvider"
         :completion-source="completionSource"
         :font-size="EDITOR_FONT_SIZES[game.editorFontStep]"
+        status
       />
     </div>
     <div v-else class="flex-1 flex items-center justify-center text-parchment/40 px-6 text-center text-sm">
