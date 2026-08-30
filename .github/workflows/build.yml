@@ -165,7 +165,7 @@ jobs:
         with:
           projectPath: ./app
           tagName: ${{ github.ref_name }}
-          releaseName: "Kataribe ${{ github.ref_name }}"
+          releaseName: "Outcasts Lorekeel ${{ github.ref_name }}"
           releaseBody: "各 OS の installer を下の Assets からダウンロードしてください。"
           # **draft で作り、人が publish する。**
           # このジョブは fail-fast: false の matrix で 3 OS が**独立に**ここを呼ぶので、
