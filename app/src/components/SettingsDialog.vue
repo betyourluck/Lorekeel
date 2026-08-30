@@ -311,9 +311,9 @@ const messageFonts = MESSAGE_FONTS;
 // カラーピッカーは常に具体値が要る (空 = テーマ既定 parchment を表示)。
 const msgColorValue = computed(() => game.msgColor || DEFAULT_MSG_COLOR);
 const authoredColorValue = computed(() => game.authoredColor || DEFAULT_AUTHORED_COLOR);
-// プレビュー: 本文フォント + 色/影を実際の見た目で確認する。
+// プレビュー: 本文フォント + サイズ + 色/影を実際の見た目で確認する。
 const previewStyle = computed(() => ({
-  fontFamily: game.messageFontFamily,
+  ...game.messageAreaStyle,
   ...game.narrationStyle,
 }));
 
@@ -549,6 +549,24 @@ onMounted(async () => {
 
             <hr class="border-ash/60" />
             <h3 class="text-parchment font-bold">{{ t("settings.display.bodyHeading") }}</h3>
+            <!-- 本文サイズ。0 = UI に合わせる (従来挙動)。UI の基準フォントと独立に選べる。 -->
+            <label class="block text-sm text-parchment/70">
+              {{ t("settings.display.msgSize") }}
+              <select
+                :value="game.msgSize"
+                class="mt-1 block w-40 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
+                @change="game.setMsgSize(Number(($event.target as HTMLSelectElement).value))"
+              >
+                <option :value="0">{{ t("settings.display.msgSizeFollow") }}</option>
+                <option :value="14">14px</option>
+                <option :value="16">{{ t("settings.display.fontSmall") }}</option>
+                <option :value="18">{{ t("settings.display.fontNormal") }}</option>
+                <option :value="20">{{ t("settings.display.fontLarge") }}</option>
+                <option :value="22">22px</option>
+                <option :value="24">{{ t("settings.display.fontXlarge") }}</option>
+                <option :value="28">28px</option>
+              </select>
+            </label>
             <label class="block text-sm text-parchment/70">
               {{ t("settings.display.font") }}
               <select

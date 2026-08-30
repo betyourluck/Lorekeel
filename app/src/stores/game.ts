@@ -305,6 +305,12 @@ function loadDiceReveal(): boolean {
 }
 // --- 本文テキスト設定 (GM の語りの見た目。提示層のみ・localStorage 永続) ---
 const MSG_FONT_KEY = "kataribe.msgFont";
+// 本文 (会話ログ) の文字サイズ px。**0 = UI に合わせる** (既定・従来挙動) — UI の基準
+// フォント (kataribe.fontScale = root の font-size) と独立に選べる (2026-08-31 ユーザーFB
+// 「UI と本文がまとめて大きくなるのを分けたい」)。適用は会話ログ container の inline
+// fontSize 1 箇所 — 語り系の段落はサイズクラスを持たず container を継承し、メタラベル
+// (text-xs 等) は rem = UI 側に残るので、本文だけが独立して動く。
+const MSG_SIZE_KEY = "kataribe.msgSize";
 // spec 28: エディタ本文の文字サイズ (3 段: 0=小 1=中 2=大)。**既定は中** (ユーザーFB
 // 2026-08-28 — 従来の 13px は「小」に相当し、既定としては小さすぎた)。
 const EDITOR_FONT_KEY = "kataribe.editorFontStep";
@@ -350,6 +356,10 @@ export const MESSAGE_FONTS: { id: string; label: string; family: string }[] = [
 function loadMsgFont(): string {
   const v = localStorage.getItem(MSG_FONT_KEY) || "default";
   return MESSAGE_FONTS.some((f) => f.id === v) ? v : "default";
+}
+function loadMsgSize(): number {
+  const v = Number(localStorage.getItem(MSG_SIZE_KEY));
+  return Number.isFinite(v) && v >= 12 && v <= 32 ? v : 0; // 範囲外・未設定 = UI に合わせる
 }
 function loadMsgColor(): string {
   return localStorage.getItem(MSG_COLOR_KEY) || "";
@@ -528,6 +538,8 @@ interface GameState {
   paneTheme: PaneTheme;
   // 本文フォント (MESSAGE_FONTS の id)。表示設定。
   msgFont: string;
+  // 本文の文字サイズ px (0 = UI に合わせる)。UI の基準フォントと独立。表示設定。
+  msgSize: number;
   // 本文の文字色 (hex)。空 = テーマ既定 (parchment)。表示設定。
   msgColor: string;
   // 作者が書いた確定文の色 (空 = 既定)。
@@ -696,6 +708,7 @@ export const useGameStore = defineStore("game", {
       fighting: false,
       multi: freshMultiState(),
       msgFont: loadMsgFont(),
+      msgSize: loadMsgSize(),
       msgColor: loadMsgColor(),
       authoredColor: localStorage.getItem(AUTHORED_COLOR_KEY) ?? "",
       msgShadow: loadMsgShadow(),
@@ -805,9 +818,15 @@ export const useGameStore = defineStore("game", {
     },
     // 実効音量 0..1 (BGM/SE 共通)。ミュート時は 0。<audio>.volume と new Audio に渡す。
     audioGain: (s): number => (s.audioMuted ? 0 : Math.max(0, Math.min(1, s.audioVolume / 100))),
-    // 本文フォント (会話ログの container に inherit させる。空 = UI 既定のまま)。
-    messageFontFamily: (s): string =>
-      MESSAGE_FONTS.find((f) => f.id === s.msgFont)?.family ?? "",
+    // 会話ログ container のスタイル (本文フォント + 本文サイズ、inherit で語り系要素へ)。
+    // サイズ 0 = UI に合わせる (root の font-size を継ぐ = 従来挙動)。
+    messageAreaStyle: (s): Record<string, string> => {
+      const style: Record<string, string> = {};
+      const family = MESSAGE_FONTS.find((f) => f.id === s.msgFont)?.family ?? "";
+      if (family) style.fontFamily = family;
+      if (s.msgSize > 0) style.fontSize = `${s.msgSize}px`;
+      return style;
+    },
     // 本文 (語り系要素) の色 + 影。inline style なので class (text-parchment 等) より優先される。
     narrationStyle: (s): Record<string, string> => {
       const style: Record<string, string> = {};
@@ -1467,6 +1486,12 @@ ${body}`, t("rename.ok"), true);
     setMsgFont(id: string) {
       this.msgFont = MESSAGE_FONTS.some((f) => f.id === id) ? id : "default";
       localStorage.setItem(MSG_FONT_KEY, this.msgFont);
+    },
+    // 本文の文字サイズを設定 (0 = UI に合わせる = キーごと消す)。表示設定タブから呼ぶ。
+    setMsgSize(px: number) {
+      this.msgSize = Number.isFinite(px) && px >= 12 && px <= 32 ? px : 0;
+      if (this.msgSize > 0) localStorage.setItem(MSG_SIZE_KEY, String(this.msgSize));
+      else localStorage.removeItem(MSG_SIZE_KEY);
     },
     // 本文の文字色を設定 (空 = テーマ既定へ戻す)。
     setMsgColor(hex: string) {
