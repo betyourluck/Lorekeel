@@ -18,6 +18,7 @@ mod ref_stock;
 mod rename;
 pub use rename::migrate_webview_storage;
 mod relay;
+mod settings_store;
 mod site;
 mod update;
 
@@ -2310,6 +2311,30 @@ fn set_dev_mode(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     }
     upsert_env(&path, &[(harness::env_name("DEV_MODE"), v.to_string())])
         .map_err(|e| format!(".env の保存に失敗: {e}"))
+}
+
+/// UI 設定ミラーの置き場: `app_data_dir/settings.json` (.env/saves/logs と同じ per-user)。
+/// localStorage (`kataribe.*`) の耐久コピー — WebView プロファイル消失 (identifier 変更・
+/// 破損) からの復元用。正本は localStorage のまま (読み取り経路は不変)。
+fn ui_settings_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("settings.json"))
+}
+
+/// 保存済みの UI 設定スナップショットを返す (不在・壊れは None)。frontend が起動時に呼び、
+/// localStorage が空 (新プロファイル) のときだけ復元する。
+#[tauri::command]
+fn load_ui_settings(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let path = ui_settings_path(&app).ok_or_else(|| "app_data_dir を解決できない".to_string())?;
+    Ok(settings_store::read_valid(&path))
+}
+
+/// UI 設定スナップショットを保存する (検証 → tmp→rename の原子書き込み)。frontend の
+/// write-through ミラー (localStorage 変更の debounce 後) が呼ぶ。
+#[tauri::command]
+fn save_ui_settings(app: tauri::AppHandle, json: String) -> Result<(), String> {
+    settings_store::validate(&json)?;
+    let path = ui_settings_path(&app).ok_or_else(|| "app_data_dir を解決できない".to_string())?;
+    settings_store::write_atomic(&path, &json)
 }
 
 /// `.env` の指定キーを upsert する。既存行は値だけ差し替え、無ければ末尾に追記。
@@ -4712,6 +4737,8 @@ pub fn run() {
             set_summary_llm_config,
             get_dev_mode,
             set_dev_mode,
+            load_ui_settings,
+            save_ui_settings,
             rename_notice,
             fetch_site_packages,
             install_site_package,
