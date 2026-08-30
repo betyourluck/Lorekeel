@@ -245,39 +245,36 @@ mod tests {
         assert_eq!(sc2.facts_policy, FactsPolicy::Open);
     }
 
-    /// 【読み上げの可否は作者宣言】`use_tts` は既定 false (宣言を持たない配布物 = 書庫の
-    /// 既刊すべてを作者の意図どおり無音に置く) で、package.yaml の宣言が全モジュールを支配する
-    /// (セッション単位 = 章の途中で再生設定が変わらない)。
+    /// 【`use_tts` の撤去 (2026-08-31)】作者ゲートは撤去され、読み上げの可否は
+    /// **プレイヤー側の設定一本**になった (挿絵の「作者ゲートは作らない — 鑑賞物で押すのも
+    /// プレイヤー」と同じ線)。撤去後の既存 content の挙動を固定する:
     ///
-    /// **engine 非使用の提示層宣言**であることも固定する — `use_tts` を true にしても
-    /// prompt (`scenario_brief`) は 1 バイトも変わらない。TTS で語りが変わると
-    /// chronicle/synopsis に残る記録まで再生設定で食い違うため (文体は `world` の役目)。
+    /// - `use_tts:` を書いた YAML は **parse は通り** (serde が未知キーを無視 = 配布済み
+    ///   content が受領側で死なない)、**未知キー lint が名指しで警告する** (scenario 直書き /
+    ///   package.yaml とも)。撤去した機構が黙って無視される「静かな罠」を作らない。
     #[test]
-    fn use_tts_defaults_off_and_package_declaration_wins_without_touching_prompt() {
-        let base = concat!(
+    fn removed_use_tts_parses_but_is_named_by_unknown_key_lints() {
+        // scenario 直書き: parse は通り、unknown_key_lints が名指しする。
+        let yaml = concat!(
             "title: t\nstart: r\n",
             "locations:\n  r: { description: d, items: {}, exits: [] }\n",
-            "goal: { kind: always }\n"
+            "goal: { kind: always }\n",
+            "use_tts: true\n"
         );
-        let sc = gm_core::Scenario::from_yaml(base).unwrap();
-        assert!(!sc.use_tts, "宣言なしは無音 (既刊を作者の意図どおりに置く)");
+        assert!(gm_core::Scenario::from_yaml(yaml).is_ok(), "配布済み content は死なない");
+        let lints = gm_core::unknown_key_lints(yaml);
+        assert!(
+            lints.iter().any(|l| l.contains("use_tts")),
+            "scenario の use_tts は未知キーとして名指しされるべき: {lints:?}"
+        );
 
-        // package 宣言が全モジュールを支配する。
-        let mut injected = sc.clone();
-        let manifest: crate::PackageManifest =
-            serde_yaml::from_str("entry: x.yaml\nuse_tts: true\n").unwrap();
-        crate::inject_package(&mut injected, &manifest);
-        assert!(injected.use_tts, "package の宣言が scenario の既定を上書きする");
-
-        // scenario 直書きも効く (package を持たない単発シナリオ)。
-        let direct = gm_core::Scenario::from_yaml(&format!("{base}use_tts: true\n")).unwrap();
-        assert!(direct.use_tts);
-
-        // 提示層宣言ゆえ prompt は不変 = 語りが再生設定に依存しない。
-        assert_eq!(
-            crate::prompt::scenario_brief(&sc),
-            crate::prompt::scenario_brief(&injected),
-            "use_tts は prompt を変えない (文体は world の役目・TTS は再生手段)"
+        // package.yaml: 同じく parse は通り、manifest_lints が名指しする。
+        let manifest_src = "entry: x.yaml\nuse_tts: true\n";
+        assert!(serde_yaml::from_str::<crate::PackageManifest>(manifest_src).is_ok());
+        let mlints = crate::manifest_lints(manifest_src);
+        assert!(
+            mlints.iter().any(|l| l.contains("use_tts")),
+            "package.yaml の use_tts は未知キーとして名指しされるべき: {mlints:?}"
         );
     }
 

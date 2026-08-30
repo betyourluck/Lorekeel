@@ -3,9 +3,6 @@ description: 海辺の喫茶店に毎週現れる謎の女性。亡き妻のレ�
 author: Lorekeel Studio
 version: "1.0"
 entry: scenarios/main.yaml
-# 読み上げを想定した盤面 (会話と観察で進む日常ミステリ)。会話ペインの右下に
-# ホバーで読み上げ操作が出る。宣言しなければ無音のまま (既定)。
-use_tts: true
 world: |
   舞台は海辺の小さな商店街にある喫茶店「夕凪」。
   毎週金曜日午後3時、必ず同じ席に座る謎の女性がいる。

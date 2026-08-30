@@ -755,15 +755,20 @@ onMounted(async () => {
             <p class="text-parchment/40 text-xs">{{ t("settings.mic.note") }}</p>
             <p v-if="micLabelsHidden" class="text-ember text-xs">{{ t("settings.mic.needPermission") }}</p>
 
-            <!-- 読み上げ (TTS)。作者が use_tts を宣言した盤面でだけ効く。 -->
+            <!-- 読み上げ (TTS)。プレイヤー側のチェックボックス一本で有効化 (imageGen と同型。
+                 旧 use_tts 作者ゲートは 2026-08-31 撤去)。 -->
             <hr class="border-ash/40" />
             <h3 class="text-parchment font-bold pt-1">{{ t("settings.voice.heading") }}</h3>
-            <!-- 前提の明示。use_tts の宣言が無い盤面では下の設定が一切効かないので、
-                 「設定したのに鳴らない」を設定画面の中で解決できるようにする。 -->
-            <p class="text-parchment/50 text-xs leading-relaxed">{{ t("settings.voice.useTtsNote") }}</p>
-            <p v-if="game.started" class="text-xs" :class="game.useTts ? 'text-ember/90' : 'text-warn/80'">
-              {{ game.useTts ? t("settings.voice.boardOn") : t("settings.voice.boardOff") }}
-            </p>
+            <label class="flex items-center gap-2 text-sm text-parchment/70">
+              <input
+                type="checkbox"
+                class="accent-ember"
+                :checked="game.ttsFeature"
+                @change="game.setTtsFeature(($event.target as HTMLInputElement).checked)"
+              />
+              {{ t("settings.voice.enabled") }}
+            </label>
+            <p class="text-parchment/50 text-xs leading-relaxed">{{ t("settings.voice.enabledNote") }}</p>
 
             <label class="block text-sm text-parchment/70">
               {{ t("settings.voice.engine") }}

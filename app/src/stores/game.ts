@@ -649,10 +649,12 @@ interface GameState {
   // 次回起動で文字が消えていたら事故)。
   showGeneratedImage: boolean;
   showText: boolean;
-  // 盤面が読み上げを想定しているか (作者宣言 use_tts)。false なら操作を一切出さない。
-  useTts: boolean;
-  // ユーザーの読み上げ ON/OFF (localStorage 永続、未設定は ON)。盤面が use_tts を宣言していても
-  // ユーザーが最終決定権を持つ (切れば記憶する)。
+  // 読み上げ機能を使うか (設定サウンドタブのチェックボックス、localStorage 永続・既定 OFF)。
+  // 旧 use_tts (作者宣言ゲート) は 2026-08-31 に撤去 — imageGen.enabled と同型の
+  // プレイヤー側スイッチ一本になった。false なら操作を一切出さない。
+  ttsFeature: boolean;
+  // クイックトグルの ON/OFF (会話ペイン右下、localStorage 永続、未設定は ON)。
+  // 機能スイッチの内側で効く (切れば記憶する)。
   ttsEnabled: boolean;
   // backend があらすじ圧縮中 (synopsis-compacting イベント)。ローディング文言を切り替える。
   compacting: boolean;
@@ -728,9 +730,7 @@ export const useGameStore = defineStore("game", {
       facts: [],
       // 既定は locked = 宣言のない盤面では既成事実タブを出さない (GM 専用の内部記憶)。
       factsPolicy: "locked",
-      // 盤面の宣言。既定 false = 宣言のない盤面 (書庫の既刊すべて) では読み上げ経路に
-      // 一切入らない。読み上げの ON/OFF (ttsEnabled) は宣言された盤面の中でだけ効く。
-      useTts: false,
+      ttsFeature: tts.loadFeature(),
       ttsEnabled: tts.loadEnabled(),
       imageGen: loadImageGenSettings(),
       generatedImage: null,
@@ -837,6 +837,13 @@ export const useGameStore = defineStore("game", {
   },
 
   actions: {
+    // 読み上げ機能そのものの ON/OFF (設定サウンドタブのチェックボックス)。OFF で操作列ごと
+    // 消えるので、今喋っているものも止める (設定と体感を一致させる)。
+    setTtsFeature(on: boolean): void {
+      this.ttsFeature = on;
+      tts.saveFeature(on);
+      if (!on) tts.stop();
+    },
     // 読み上げの ON/OFF。OFF にした瞬間、今喋っているものも止める (設定と体感を一致させる)。
     toggleTts(): void {
       this.ttsEnabled = !this.ttsEnabled;
@@ -1907,7 +1914,6 @@ ${body}`, t("rename.ok"), true);
       this.factsPolicy = view.facts_policy ?? "locked";
       // 盤面が変わったら読み上げは必ず止める (前のゲームの語りが喋り続けない)。
       tts.stop();
-      this.useTts = view.use_tts ?? false;
       this.compacting = false;
       // scenario の lint (作者向け・非 fatal)。死んだ flag_hint 等を開幕で報せる。
       for (const w of view.warnings ?? []) {
@@ -2196,7 +2202,7 @@ ${body}`, t("rename.ok"), true);
       if (this.pendingSpeech) {
         const text = this.pendingSpeech;
         this.pendingSpeech = null;
-        if (this.useTts && this.ttsEnabled) void tts.speak(text, { queue: true });
+        if (this.ttsFeature && this.ttsEnabled) void tts.speak(text, { queue: true });
       }
     },
 
@@ -2299,7 +2305,7 @@ ${body}`, t("rename.ok"), true);
             this.log.push({ kind: "narration", text: turn.narration });
             // 読み上げは narration だけ (判定結果やビートは読まない = ダイスの結果を
             // 開帳前に音声で漏らさない)。await しない = 語りの表示を音声待ちにしない。
-            if (this.useTts && this.ttsEnabled) void tts.speak(turn.narration);
+            if (this.ttsFeature && this.ttsEnabled) void tts.speak(turn.narration);
           }
           // ダイス系 3 行は伏せて積む (revealed=0)。演出オフなら全開 (= 従来動作)。
           // 演出オフのときは session 側の開帳カウンタ (spec 23 Phase B) も即・全開へ寄せる
@@ -2376,7 +2382,7 @@ ${body}`, t("rename.ok"), true);
             // ままだと帰結を音声で漏らす → 開帳待ちなら flush まで保留する。
             // **queue** = 同じターンの語りを途中で切らず、その後ろに続けて読む。
             if (revealing) this.pendingSpeech = turn.epilogue;
-            else if (this.useTts && this.ttsEnabled) void tts.speak(turn.epilogue, { queue: true });
+            else if (this.ttsFeature && this.ttsEnabled) void tts.speak(turn.epilogue, { queue: true });
           }
         } else {
           this.log.push({ kind: "reject", reasons: turn.reasons, attempts: turn.attempts });
@@ -2398,8 +2404,6 @@ ${body}`, t("rename.ok"), true);
         // 権限だけ campaign 遷移で追従する。
         if (turn.facts) this.facts = turn.facts;
         if (turn.facts_policy) this.factsPolicy = turn.facts_policy;
-        // campaign 遷移で盤面の音声想定が変わりうる。
-        this.useTts = turn.use_tts ?? this.useTts;
         // あらすじ (spec 10): 追記差分を push (append-only)。章が確定したら「最近の出来事」から
         // その章に呑まれた行 (turn <= upto_turn) を取り除く。会話ログには出さない
         // (物語の外の帳簿イベント — 更新はタブを見れば分かる、ユーザーFB 2026-07-14)。

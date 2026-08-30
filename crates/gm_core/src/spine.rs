@@ -1117,24 +1117,13 @@ pub struct Scenario {
     /// package.yaml の `facts_policy` から注入もできる。詳細は [`FactsPolicy`]。
     #[serde(default)]
     pub facts_policy: FactsPolicy,
-    /// 読み上げ (TTS) を**作者が想定しているか** (既定 false)。engine 非使用・非検証の
-    /// **提示層宣言** ([`Self::hidden_stats`] と同類) — 正本も prompt も語りも一切変わらず、
-    /// true の盤面でだけ提示層が読み上げ操作を出す。
-    ///
-    /// 意味は「技術的に読めるか」ではない (narration は常に文字列なので全パッケージが読める)。
-    /// 既定 false は、宣言を持たない配布物を作者の意図どおり無音に置くため。
-    ///
-    /// **文体は決めない**: TTS の ON/OFF で語りが変わると chronicle/synopsis に残る記録まで
-    /// 再生設定で食い違う。音声前提の会話文体は `world` に書く (作者がパッケージ固有に決め、
-    /// TTS はその上の再生手段、と分離する)。package.yaml の `use_tts` から注入もできる。
-    #[serde(default)]
-    pub use_tts: bool,
     /// 挿絵の画風指針 (spec 24, 2026-08-20)。**engine 非使用・非検証の提示層素材** (world /
     /// profile と同類)。プレイヤーが押す画像生成 (手動) のプロンプト書きに「作者の画風」として
     /// 渡る (例「水彩画・淡い色・キャラはデフォルメ」)。[`IMAGE_STYLE_MAX_CHARS`] を超えると
     /// lint 警告 ([`ScenarioError::ImageStyleTooLong`]) し、先頭だけが使われる。
-    /// `use_tts` のような ON/OFF の作者ゲートは作らない — 挿絵は語りに触れないプレイヤー側の
-    /// 鑑賞レイヤーで、押すのもプレイヤー。package.yaml の `image_style` から注入もできる。
+    /// ON/OFF の作者ゲートは作らない — 挿絵は語りに触れないプレイヤー側の鑑賞レイヤーで、
+    /// 押すのもプレイヤー (かつての `use_tts` は 2026-08-31 に同じ理由で撤去され、読み上げも
+    /// プレイヤー側の設定一本になった)。package.yaml の `image_style` から注入もできる。
     #[serde(default)]
     pub image_style: String,
     /// 役職のランダム割り当て (spec 06 Phase A)。宣言があれば [`Self::initial_state`] が

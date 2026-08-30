@@ -43,7 +43,7 @@ const textToggleLabel = computed(() => (game.showText ? t("image.hideText") : t(
     class="absolute bottom-3 z-20 flex items-center gap-1 rounded-full bg-ink/70 backdrop-blur-sm
            px-1.5 py-1 shadow-lg ring-1 ring-glow/10
            opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity duration-200"
-    :class="game.useTts ? 'right-28' : 'right-4'"
+    :class="game.ttsFeature ? 'right-28' : 'right-4'"
   >
     <!-- 生成。処理中は押せない (スピナー)。気に入らなければ何度でも押せる (差し替え)。 -->
     <button

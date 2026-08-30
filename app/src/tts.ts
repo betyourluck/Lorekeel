@@ -70,6 +70,7 @@ export const DEFAULT_SETTINGS: TtsSettings = {
   model: "",
 };
 
+const LS_FEATURE = "kataribe.tts.feature";
 const LS_ENABLED = "kataribe.tts.enabled";
 const LS_SETTINGS = "kataribe.tts.settings";
 const LS_VOICES = "kataribe.tts.voices";
@@ -103,12 +104,26 @@ export function isSupported(): boolean {
 }
 
 /**
- * ユーザー設定の ON/OFF (localStorage 永続)。
+ * 読み上げ機能を使うか (設定サウンドタブのチェックボックス、localStorage 永続)。
  *
- * **未設定は ON** — 読み上げ操作が出るのは作者が `use_tts: true` と宣言した盤面だけなので、
- * そこで既定 OFF にすると宣言が何も起こさない (ホバーで隠れた操作を自力で見つけて押すまで
- * 無音のまま = 二重に隠れる)。宣言のない盤面では speak 自体が呼ばれないので、
- * 既定 ON にしても勝手に喋り出す事故は起きない。
+ * **既定 OFF** — 旧 `use_tts` (作者宣言ゲート) の撤去 (2026-08-31) に伴い、可否は
+ * プレイヤー側のこの一本になった (imageGen の `enabled` と同型 = 会話ペインの操作列の
+ * 表示条件 + speak の前提条件)。既定 ON にすると全盤面で勝手に喋り出す。
+ */
+export function loadFeature(): boolean {
+  return localStorage.getItem(LS_FEATURE) === "1";
+}
+
+export function saveFeature(on: boolean): void {
+  localStorage.setItem(LS_FEATURE, on ? "1" : "0");
+}
+
+/**
+ * クイックトグルの ON/OFF (会話ペイン右下のホバー操作、localStorage 永続)。
+ *
+ * **未設定は ON** — 設定の機能スイッチ (`loadFeature`、既定 OFF) を入れた瞬間に、
+ * もう一段のトグルを探して押さなくても鳴り始めるように。機能スイッチの後ろに居るので、
+ * 既定 ON でも勝手に喋り出す事故は起きない。
  */
 export function loadEnabled(): boolean {
   return localStorage.getItem(LS_ENABLED) !== "0";

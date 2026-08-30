@@ -335,8 +335,6 @@ struct GameView {
     facts: Vec<FactView>,
     /// 既成事実のユーザー権限 (spec 20): "open" | "locked"。frontend は locked でタブごと隠す。
     facts_policy: String,
-    /// 読み上げ (TTS) を作者が想定しているか。false なら会話ペインに読み上げ操作を出さない。
-    use_tts: bool,
 }
 
 /// [`gm_core::FactsPolicy`] を frontend 向けの文字列へ。
@@ -445,8 +443,6 @@ struct TurnView {
     facts: Option<Vec<FactView>>,
     /// 既成事実のユーザー権限 (spec 20 Phase E)。campaign 遷移で盤面が変われば追従する。
     facts_policy: String,
-    /// 読み上げの可否。campaign 遷移で盤面が変われば追従する (章ごとに音声想定が違いうる)。
-    use_tts: bool,
     /// マップ (spec 15) — 訪問済み+1歩先の有向グラフ。移動/遷移で変わるので毎ターン返す
     /// (却下ターンは state 不変ゆえ現状スナップショット)。
     map: MapView,
@@ -3061,7 +3057,6 @@ async fn new_game(
         contest: None,
         facts: Vec::new(), // 新規開始に既成事実は無い (spec 20)
         facts_policy: facts_policy_str(scenario.facts_policy),
-        use_tts: scenario.use_tts,
     };
 
     let save_path = autosave_path(&app, &pkg_dir);
@@ -3222,7 +3217,6 @@ async fn restore_session(
         // 既成事実 (spec 20) — セーブから復元してタブを埋める。
         facts: fact_views(&save.facts),
         facts_policy: facts_policy_str(scenario.facts_policy),
-        use_tts: scenario.use_tts,
     };
 
     // オートセーブの書き先 (ロード元がスロットでも常に autosave パス = スロットは凍結点のまま)。
@@ -4033,7 +4027,6 @@ async fn do_play_turn(
                 epilogue: None, // 終端判定の後に埋める (spec 11)
                 facts: None, // GM は既成事実を書かない (ユーザー編集のみが変える)
                 facts_policy: facts_policy_str(sess.scenario.facts_policy),
-                use_tts: sess.scenario.use_tts,
                 map: map_view(&sess.scenario, &sess.state, &sess.history),
                 // spec 18 Phase B: 決断つき判定が凍結されたらパネル素材を載せる。
                 decision: decision_view(&sess.state, &sess.scenario),
@@ -4069,7 +4062,6 @@ async fn do_play_turn(
             // 却下では GM 提案は捨てられる (state 無傷と同じ扱い = 既成事実も無変化)。
             facts: None,
             facts_policy: facts_policy_str(sess.scenario.facts_policy),
-            use_tts: sess.scenario.use_tts,
             map: map_view(&sess.scenario, &sess.state, &sess.history),
             // 却下 = state 無傷 (決断があったならそのまま残っているはずだが、そもそも決断中は
             // play_turn 自体をガードで弾く)。
@@ -4669,7 +4661,6 @@ async fn current_game_view(
         contest: contest_view(&sess.state, &sess.scenario),
         facts: fact_views(&sess.facts),
         facts_policy: facts_policy_str(sess.scenario.facts_policy),
-        use_tts: sess.scenario.use_tts,
     })
 }
 
