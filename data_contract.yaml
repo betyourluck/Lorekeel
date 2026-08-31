@@ -25,7 +25,7 @@ GameState:
 StateDelta:
   narration: string             # 情景/NPC台詞。検証しない (LLMの領分)
   summary: string               # このターンの経緯 1 行 (非検証・省略可)。harness が経緯ログ (chronicle) に蓄積し「これまでの経緯」として以後の prompt に還流 = GM の中期記憶 (2026-07-02)
-  ops: [StateOp]                # 構造化された状態変更要求。エンジンが全件検証
+  ops: [StateOp]                # 構造化された状態変更要求。エンジンが全件検証。**受け側は単一オブジェクトも配列 1 件として受ける** (#64 の救済 one_or_many。schema は配列のまま=指示は正しく出す)。救済は**手書き Visitor で書く — untagged enum は禁止** (#93, 2026-09-01): untagged は全バリアント失敗時に内側のエラーを捨てるので `unknown variant \`xxx\`, expected one of ...` (有効 op の全列挙) が総称文言に潰れ、self-repair の燃料 (parse_error) が誤誘導になる。受理する形は配列 / 単一オブジェクトのみ (null・文字列・入れ子配列は拒否)
 
 StateOp:                        # 内部タグ "op" 付き列挙
   - { op: add_item,     item: ItemId }   # player が現在地から拾う (世界→player)
@@ -274,7 +274,7 @@ LlmClient:
   fallback:    "tool_calls 不在時は content のフェンス JSON を strip して再パース (tool_choice 非尊重サーバの保険)"
   schema:      "emit_delta の parameters は schemars が gm_core::StateDelta から機械生成 (規格=実装の単一真実源・手書き禁止)。state_delta_schema が2段後処理: ①inline_schema_defs で $ref/definitions/$schema を inline・除去し自己完結化 (Grok 等 grammar コンパイラ対応) ②filter_authored_only_ops で gm_core::AUTHORED_ONLY_OPS (grant_skill/set_attribute/record_turn/set_presence) を ops の oneOf から除外 = LLM にそもそも提案させない (露出すると却下→再生成ループで詰まる、特に constrained decoding な Grok。authored 専権 op は trigger 効果でのみ実行)"
   retry:       "一過性エラー (HTTP障害 / 429 / 5xx) のみ指数backoff、最大 LLM_MAX_RETRIES 回"
-  parse_error: "JSON パース失敗は raw を保持した LlmError::Parse を返す → 却下→再生成ループ(self_repair同型)が raw を LLM に戻せる"
+  parse_error: "JSON パース失敗は raw を保持した LlmError::Parse を返す → 却下→再生成ループ(self_repair同型)が raw を LLM に戻せる。**再生成の文言は理由を先頭に立て、source をそのまま載せる** (#93): 「JSON として壊れている」と断定したり 「ops は必ず配列」のような既に満たされている条件を指示すると、真因 (幻の op 名など) に触れないまま同じ出力を繰り返す"
   boundary:    "llm_client は transport + 構造化出力の保証のみ。messages 構築(GMペルソナ/シナリオ要約/却下理由) と adjudicate は上位(harness)の責務"
   env:         "LLM_BASE_URL / LLM_API_KEY(必須) / LLM_MODEL / LLM_TEMPERATURE / LLM_MAX_TOKENS / LLM_REQUEST_TIMEOUT_SECS / LLM_MAX_RETRIES / LLM_PROVIDER(anthropic|openai|gemini|responses、未設定=base_url から自動判定) / LLM_USE_TOOLS / LLM_TOOL_MODE(forced|auto|off、未設定=base_url から自動判定+400 で自己降格)。.env(gitignore済), 雛形 .env.example"
 
