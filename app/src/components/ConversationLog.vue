@@ -112,6 +112,7 @@ function statRollFinal(sr: StatRollView): number {
         </p>
         <DiceReveal
           v-if="entry.revealed < entry.rolls.length && i === game.revealTargetIndex"
+          :key="`${i}-${entry.revealed}`"
           :label="`1d${entry.rolls[entry.revealed].sides} (DC ${entry.rolls[entry.revealed].dc})`"
           :final="entry.rolls[entry.revealed].result"
           :max="entry.rolls[entry.revealed].sides"
@@ -135,6 +136,7 @@ function statRollFinal(sr: StatRollView): number {
         </template>
         <DiceReveal
           v-if="entry.revealed < entry.checks.length && i === game.revealTargetIndex"
+          :key="`${i}-${entry.revealed}`"
           :label="t('log.checkLabel', { entity: entry.checks[entry.revealed].entity, stat: entry.checks[entry.revealed].stat })"
           :final="entry.checks[entry.revealed].roll"
           :max="entry.checks[entry.revealed].degree ? 100 : entry.checks[entry.revealed].sides * entry.checks[entry.revealed].count"
@@ -149,6 +151,7 @@ function statRollFinal(sr: StatRollView): number {
         </p>
         <DiceReveal
           v-if="entry.revealed < entry.stat_rolls.length && i === game.revealTargetIndex"
+          :key="`${i}-${entry.revealed}`"
           :label="statRollLabel(entry.stat_rolls[entry.revealed])"
           :final="statRollFinal(entry.stat_rolls[entry.revealed])"
           :max="entry.stat_rolls[entry.revealed].count * entry.stat_rolls[entry.revealed].sides"

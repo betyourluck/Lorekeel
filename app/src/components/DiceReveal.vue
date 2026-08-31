@@ -6,6 +6,15 @@
  * クリック → 数字スクランブル (減速しながらパラパラ変わる) → 確定出目に着地 → `revealed` を
  * emit し、親 (ConversationLog) が store.revealNext で本物の行に差し替える。
  * 着地の数字と本物の行の数字は同じなので、開帳から結果表示への連続性が保たれる。
+ *
+ * **呼び出し側は必ず「いま開けている 1 個」で `:key` を切ること** (#94、2026-09-01 実プレイ)。
+ * このカードは `state` を idle → rolling へ一方向に進めるだけで idle へは戻らないので、
+ * 1 ターンに 2 個以上のダイスが**同じログ行に**積まれると (`checks` が 2 件など)、v-if は真の
+ * ままで Vue が**同じインスタンスを使い回す** → props だけ 2 個目に替わり `state` は rolling の
+ * まま = クリックが `start()` の先頭で弾かれ、入力欄は `hasUnrevealedDice` で締まったまま
+ * **デッドロック**する。プッシュの振り直しで露見しなかったのは、あちらが一度 v-if 偽 (=unmount)
+ * を通るから。key は**値でなく位置 (`revealed`) で切る** — 同じ出目が 2 回出た時に props の
+ * watch では区別できない。
  */
 import { onBeforeUnmount, ref } from "vue";
 import { t } from "../i18n";
