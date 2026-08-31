@@ -2242,6 +2242,10 @@ struct SummaryLlmConfigView {
     api_key: String,
     /// base_url か model のどちらかが設定されていれば true (summary_from_env の有効判定と同基準)。
     enabled: bool,
+    /// 要約 1 回のタイムアウト秒 (`SUMMARY_LLM_TIMEOUT_SECS`)。**0 = 未設定 = harness の既定**
+    /// (`SYNOPSIS_TIMEOUT_SECS` = 60)。画像生成の `timeout_secs: None` と同じ「0 は既定」流儀で、
+    /// 既定値を frontend に焼かない (既定は harness 側の単一定義)。
+    timeout_secs: u64,
 }
 
 /// 現在のあらすじ要約用設定を返す。設定「AIモデル」タブの初期値。
@@ -2255,7 +2259,30 @@ fn get_summary_llm_config() -> SummaryLlmConfigView {
         base_url: base_url.unwrap_or_default(),
         model: model.unwrap_or_default(),
         api_key: std::env::var("SUMMARY_LLM_API_KEY").unwrap_or_default(),
+        timeout_secs: opt("SUMMARY_LLM_TIMEOUT_SECS")
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(0),
     }
+}
+
+/// 要約 1 回のタイムアウトを更新する。**プロファイル選択とは別の command** にしてある —
+/// 一方を保存したときにもう一方を巻き添えで消さないため (「GM と同じ」に戻す保存は
+/// `set_summary_llm_config` が全欄を空にするので、同じ command に相乗りさせると
+/// タイムアウトの指定が黙って失われる)。spec 26 の「写像を凍結する」と同じ線引き。
+///
+/// `secs == 0` は**未設定**として空を書く = harness の既定 ([`harness::SYNOPSIS_TIMEOUT_SECS`])
+/// へ戻る。上限は設けない (待つと決めるのはプレイヤー) が、UI は「その秒数だけターンが
+/// 止まりうる」ことを表示する — あらすじ圧縮は今も `play_turn` を塞ぐ同期処理。
+#[tauri::command]
+fn set_summary_timeout(app: tauri::AppHandle, secs: u64) -> Result<(), String> {
+    let v = if secs == 0 { String::new() } else { secs.to_string() };
+    std::env::set_var("SUMMARY_LLM_TIMEOUT_SECS", &v);
+    let path = config_env_path(&app).ok_or_else(|| "app_data_dir を解決できない".to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("設定フォルダの作成に失敗: {e}"))?;
+    }
+    upsert_env(&path, &[("SUMMARY_LLM_TIMEOUT_SECS".to_string(), v)])
+        .map_err(|e| format!(".env の保存に失敗: {e}"))
 }
 
 /// あらすじ要約用 LLM 設定を更新する (`set_llm_config` と同経路 = プロセス env 即時 +
@@ -4726,6 +4753,7 @@ pub fn run() {
             set_llm_config,
             get_summary_llm_config,
             set_summary_llm_config,
+            set_summary_timeout,
             get_dev_mode,
             set_dev_mode,
             load_ui_settings,
@@ -4793,6 +4821,49 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    /// 【要約タイムアウトの独立性 (2026-09-01)】あらすじの待ち時間 (`SUMMARY_LLM_TIMEOUT_SECS`) を
+    /// プロファイル選択 (`set_summary_llm_config`) と**別の command** に分けた理由の固定。
+    ///
+    /// 「GM と同じ」に戻す保存は base_url / model / api_key を**全部空**で書くので、同じ command に
+    /// 相乗りさせるとタイムアウトの指定が巻き添えで消える (画面には何も出ず、次の長い章で
+    /// また 60 秒で落ちるまで気づけない沈黙の後退)。`upsert_env` が触るのは渡したキーだけ、を
+    /// 両向きで固定する。あわせて **0 = 空 = harness の既定** (既定値を app 側に焼かない) も。
+    #[test]
+    fn summary_timeout_and_profile_do_not_clobber_each_other() {
+        use super::upsert_env;
+        let dir = std::env::temp_dir().join(format!("lorekeel_env_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".env");
+        let _ = std::fs::remove_file(&path);
+
+        // ① タイムアウトを 300 秒に。
+        upsert_env(&path, &[("SUMMARY_LLM_TIMEOUT_SECS".into(), "300".into())]).unwrap();
+        // ② そのあと「GM と同じ」= プロファイル 3 欄を空で保存 (set_summary_llm_config と同じ列)。
+        upsert_env(
+            &path,
+            &[
+                ("SUMMARY_LLM_BASE_URL".into(), String::new()),
+                ("SUMMARY_LLM_MODEL".into(), String::new()),
+                ("SUMMARY_LLM_API_KEY".into(), String::new()),
+            ],
+        )
+        .unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("SUMMARY_LLM_TIMEOUT_SECS=300"), "待ち時間が巻き添えで消えない: {body}");
+
+        // ③ 逆向き: 待ち時間を既定へ戻しても (0 = 空)、プロファイル欄は触らない。
+        upsert_env(&path, &[("SUMMARY_LLM_MODEL".into(), "cheap-model".into())]).unwrap();
+        upsert_env(&path, &[("SUMMARY_LLM_TIMEOUT_SECS".into(), String::new())]).unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("SUMMARY_LLM_MODEL=cheap-model"), "モデルが巻き添えで消えない: {body}");
+        assert!(
+            body.contains("SUMMARY_LLM_TIMEOUT_SECS=
+") || body.trim_end().ends_with("SUMMARY_LLM_TIMEOUT_SECS="),
+            "0 は空を書く (= harness の既定 SYNOPSIS_TIMEOUT_SECS へ戻る。app 側に既定値を焼かない): {body}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// 【持続 CG の畳み込み (2026-07-28)】`image_hold: show` で立ち `hide` で消える。
     ///
     /// - **多重 show は差し替え** (後勝ち) — 前の CG は自動的に降りる。CG は背景の上書きなので

@@ -317,6 +317,11 @@ export const messages = {
           ".env を書き換えます（プロセスへ即時反映＋ファイル永続化）。次の「新しいゲーム」から新モデルで接続します。右の「保存 + 登録モデルを更新」は、選択中の登録モデルの中身（モデル名・エンドポイント・API キー）も同じ値に書き換えます — キーを変えるのに一度消して作り直す必要はありません。",
         summaryHeading: "あらすじ要約用モデル",
         summarySameAsGm: "GM と同じ（既定）",
+        summaryTimeout: "要約 1 回の待ち時間の上限",
+        summaryTimeoutDefault: "既定（60 秒）",
+        summaryTimeoutSecs: "{secs} 秒",
+        summaryTimeoutNote:
+          "遅いモデルや長い章では 60 秒で足りないことがあります。あらすじの生成はターンの確定と同時に行われるので、この秒数だけ次の語りが待たされることがあります（失敗したときは毎回その時間を払います）。同じ範囲で 3 回失敗すると、あらすじは機械的にまとめて先へ進みます。",
         summaryNote:
           "長編プレイで自動生成される「あらすじ」（右ペイン第 3 タブ）の要約に使うモデル。安いモデルを選ぶとコストを抑えられます。選択は即保存（次の「新しいゲーム」から有効）。",
       },
@@ -366,6 +371,8 @@ export const messages = {
         profileDeleted: "「{name}」を削除しました",
         summarySameAsGm: "GM と同じモデルで要約します",
         summaryUsing: "「{name}」で要約します（次の「新しいゲーム」から有効）",
+        summaryTimeoutSet: "要約の待ち時間の上限を {secs} 秒にしました",
+        summaryTimeoutDefault: "要約の待ち時間の上限を既定（60 秒）に戻しました",
       },
     },
     contest: {
@@ -1090,6 +1097,11 @@ export const messages = {
           "Rewrites .env (applied to the process immediately and persisted to file). Connects with the new model from the next “New game”. “Save + update saved model” also rewrites the selected entry (model, endpoint, API key), so you no longer have to delete and re-create it just to change a key.",
         summaryHeading: "Synopsis-summary model",
         summarySameAsGm: "Same as GM (default)",
+        summaryTimeout: "Time limit for one summary",
+        summaryTimeoutDefault: "Default (60 s)",
+        summaryTimeoutSecs: "{secs} s",
+        summaryTimeoutNote:
+          "Slow models or long chapters may need more than 60 seconds. The synopsis is written as the turn is committed, so the next passage can be held for up to this long — and a failing summary costs that time on every attempt. After 3 failures on the same range the synopsis is joined mechanically and play moves on.",
         summaryNote:
           "The model used to summarize the auto-generated “synopsis” (3rd tab on the right) in long playthroughs. A cheaper model lowers cost. The choice is saved instantly (applies from the next “New game”).",
       },
@@ -1140,6 +1152,8 @@ export const messages = {
         profileDeleted: "Deleted “{name}”",
         summarySameAsGm: "Summarizing with the same model as the GM",
         summaryUsing: "Summarizing with “{name}” (applies from the next “New game”)",
+        summaryTimeoutSet: "Summary time limit set to {secs} s",
+        summaryTimeoutDefault: "Summary time limit reset to the default (60 s)",
       },
     },
     contest: {

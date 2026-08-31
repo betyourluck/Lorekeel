@@ -441,6 +441,28 @@ async function applySummaryProfile() {
     summaryStatus.value = t("settings.status.saveFailed", { error: String(e) });
   }
 }
+// 要約 1 回のタイムアウト秒。**0 = 既定** (既定値は harness 側の単一定義なので frontend に焼かない)。
+// プロファイル選択とは別 command = 片方の保存でもう片方を巻き添えで消さない。
+const summaryTimeout = ref(0);
+async function loadSummaryTimeout() {
+  try {
+    const v = await invoke<{ timeout_secs: number }>("get_summary_llm_config");
+    summaryTimeout.value = v.timeout_secs ?? 0;
+  } catch {
+    summaryTimeout.value = 0;
+  }
+}
+async function applySummaryTimeout() {
+  try {
+    await invoke("set_summary_timeout", { secs: summaryTimeout.value });
+    summaryStatus.value =
+      summaryTimeout.value > 0
+        ? t("settings.status.summaryTimeoutSet", { secs: summaryTimeout.value })
+        : t("settings.status.summaryTimeoutDefault");
+  } catch (e) {
+    summaryStatus.value = t("settings.status.saveFailed", { error: String(e) });
+  }
+}
 
 // 選択中の登録モデルがあるか (「登録モデルも更新」の可否)。
 const canUpdateProfile = computed(() => profiles.value.some((p) => p.id === selectedProfileId.value));
@@ -499,6 +521,7 @@ onMounted(async () => {
   loadDefaultLogDir();
   loadDefaultImageDir();
   void loadImageKeys();
+  void loadSummaryTimeout();
   void refreshSheets();
   game.refreshDevMode();
   void refreshMicDevices(); // 開いた時点で候補を出す (権限前は名前が空 = 案内を出す)
@@ -1353,6 +1376,20 @@ onMounted(async () => {
               </select>
               <p class="text-parchment/40 text-xs">
                 {{ t("settings.model.summaryNote") }}
+              </p>
+              <label class="block text-parchment/70 text-xs pt-1">{{ t("settings.model.summaryTimeout") }}</label>
+              <select
+                v-model.number="summaryTimeout"
+                @change="applySummaryTimeout"
+                class="block w-full rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none"
+              >
+                <option :value="0">{{ t("settings.model.summaryTimeoutDefault") }}</option>
+                <option v-for="sec in [90, 120, 180, 240, 300, 600]" :key="sec" :value="sec">
+                  {{ t("settings.model.summaryTimeoutSecs", { secs: sec }) }}
+                </option>
+              </select>
+              <p class="text-parchment/40 text-xs">
+                {{ t("settings.model.summaryTimeoutNote") }}
               </p>
               <span v-if="summaryStatus" class="text-xs text-parchment/60">{{ summaryStatus }}</span>
             </div>
