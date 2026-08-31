@@ -863,8 +863,13 @@ mod tests {
                 // 2 回目: 修正指示が messages に積まれていることを確認してから正しい提案。
                 let fed_back = messages
                     .iter()
-                    .any(|m| m.content.contains("JSON として壊れていて読めなかった"));
+                    .any(|m| m.content.contains("スキーマに従っておらず読み取れなかった"));
                 assert!(fed_back, "raw+修正指示が還流されている");
+                // #93: 再生成の燃料には**真因がそのまま載る** (総称文言に潰さない)。
+                let carries_reason = messages
+                    .iter()
+                    .any(|m| m.content.contains("理由:") && !m.content.contains("untagged"));
+                assert!(carries_reason, "パース失敗の真因を還流する");
                 Ok(StateDelta::new("直した", vec![]))
             }
         }

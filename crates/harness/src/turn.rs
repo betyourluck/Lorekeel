@@ -399,11 +399,15 @@ pub async fn run_turn<P: DeltaProposer>(
                 // 原因を提示層へ運ぶ (捨てると「却下された試行:」の空欄になる)。
                 retries.push(RetryCause::Malformed { detail: source.to_string() });
                 messages.push(ChatMessage::assistant(raw));
+                // 文言は**理由を先頭に立てる** (#93)。旧文は「JSON として壊れていて読めなかった」と
+                // 断定したうえで「ops は要素が 1 つでも必ず配列」と続けており、実際の失敗が幻の
+                // op 名だったとき **構文は正しく ops も既に配列** = LLM が正しくやっていることを
+                // 指示して真因に一言も触れない誤誘導になっていた (単一オブジェクトは受け側が
+                // 救済する #64 ので、その注意書き自体がもう要らない)。
                 messages.push(ChatMessage::user(format!(
-                    "あなたの前回の出力は JSON として壊れていて読めなかった ({source})。\
-                     同じ内容を、スキーマに従う**正しい JSON だけ**で再提出せよ \
-                     (narration / summary / ops。**ops は要素が 1 つでも必ず配列**。\
-                     前置き・注釈・フェンスは不要)。"
+                    "あなたの前回の出力はスキーマに従っておらず読み取れなかった。
+理由: {source}
+この理由を直したうえで、同じ内容を**正しい JSON だけ**で再提出せよ (narration / summary / ops)。理由に op 名の一覧が示されているなら、**使えるのはその名前だけ** — 行動の意図を新しい op 名にしてはいけない (「肉を渡す」なら give_item、「食べる」なら remove_item のように既存の op へ翻訳する)。前置き・注釈・フェンスは不要。"
                 )));
                 continue;
             }

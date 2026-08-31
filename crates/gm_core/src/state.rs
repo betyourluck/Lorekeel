@@ -430,29 +430,56 @@ pub struct StateDelta {
     // に別経路で足す — ターン毎の delta には戻さない。
 }
 
-/// 配列フィールドを**単要素スカラーでも受ける** (#64)。
+/// 配列フィールドを**単要素オブジェクトでも受ける** (#64)。
 ///
-/// LLM は要素が 1 つのとき配列を省いて書くことが実在する
-/// (`"facts": "…"` / `"ops": {…}`)。従来は serde が `invalid type: string, expected a sequence`
-/// で落ち、**delta 全体が失われて再送**になっていた (再送時は当該フィールドごと落とすので、
-/// 書かれた内容は永久に失われる = 外からは「GM が書かない」に見える)。
+/// LLM は要素が 1 つのとき配列を省いて書くことが実在する (`"ops": {…}`)。従来は serde が
+/// `invalid type: map, expected a sequence` で落ち、**delta 全体が失われて再送**になっていた。
 /// schema 側は配列のまま (指示は正しく出す)、**受け側だけを寛容にする**
 /// — 「パース失敗は raw を保持し再生成の燃料にする」(#40) の一歩手前で救う。
+///
+/// **untagged enum で書いてはいけない** (#93、2026-09-01 実プレイで発覚)。serde の untagged は
+/// 全バリアントを試して全部失敗すると**内側のエラーを捨てて**総称文言だけを返すので、
+/// `unknown variant \`give_meat_to_momoka\`, expected one of \`add_item\`, …` という
+/// 有効な op を全列挙した完璧なメッセージが `data did not match any variant of untagged enum
+/// OneOrMany` に潰れていた。潰れた文言は self-repair の燃料 (#40) にそのまま載るので、
+/// **LLM は何を直せばいいか分からず同じ出力を繰り返し** max_attempts を使い切る。
+/// 幻の op だけでなく**有効な op のフィールド typo も**同じ文言に潰れており、`ops` の診断
+/// チャネルは #64 以降まるごと死んでいた。ゆえに手書き Visitor で受ける — 受理する形は
+/// untagged 版と同一 (配列 / 単一オブジェクトのみ。null・文字列・入れ子配列は従来どおり拒否) で、
+/// **変わるのは失敗したときに何が言えるかだけ**。一般化は #78 と同じ:
+/// **緩さが安全なのは情報を捨てないときだけ**。
 fn one_or_many<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,
 {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum OneOrMany<T> {
-        Many(Vec<T>),
-        One(T),
+    use serde::de::{value::MapAccessDeserializer, MapAccess, SeqAccess, Visitor};
+
+    struct OneOrMany<T>(std::marker::PhantomData<T>);
+
+    impl<'de, T: Deserialize<'de>> Visitor<'de> for OneOrMany<T> {
+        type Value = Vec<T>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("配列、または要素を 1 つだけ書いたオブジェクト")
+        }
+
+        // 通常形。**要素の失敗はそのまま伝播する** — ここが untagged との差 (#93)。
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+            while let Some(x) = seq.next_element::<T>()? {
+                out.push(x);
+            }
+            Ok(out)
+        }
+
+        // #64 の救済: `"ops": {…}` のように配列を省いた単一要素。
+        fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+            T::deserialize(MapAccessDeserializer::new(map)).map(|x| vec![x])
+        }
     }
-    Ok(match OneOrMany::<T>::deserialize(d)? {
-        OneOrMany::Many(v) => v,
-        OneOrMany::One(x) => vec![x],
-    })
+
+    d.deserialize_any(OneOrMany(std::marker::PhantomData))
 }
 
 impl StateDelta {

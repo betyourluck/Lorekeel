@@ -330,6 +330,49 @@ mod tests {
         assert!(d.ops.is_empty());
     }
 
+    /// 【#93 救済が診断を握り潰さない】#64 の `one_or_many` を **untagged enum** で書いていた間、
+    /// serde は全バリアント失敗時に内側のエラーを捨て `data did not match any variant of
+    /// untagged enum OneOrMany` だけを返していた。この文言は self-repair の燃料 (#40) に
+    /// そのまま載るので、**LLM は何を直せばいいか分からず同じ出力を繰り返し** max_attempts を
+    /// 使い切る (2026-09-01 実プレイ: GM が `give_meat_to_momoka` / `eat_meat` という幻の op を
+    /// 発明し、ターンが丸ごとエラーで落ちた)。手書き Visitor に替えて内側のエラーを伝播させる。
+    /// 一般化は #78 と同じ — **緩さが安全なのは情報を捨てないときだけ**。
+    #[test]
+    fn rescue_must_not_swallow_the_reason_a_delta_failed() {
+        // (a) 幻の op: 無効な名前を名指しし、**有効な op を全列挙する** (self-repair が一発で直せる)。
+        let e = serde_json::from_str::<gm_core::StateDelta>(
+            r#"{"narration":"n","ops":[{"op":"give_meat_to_momoka"},{"op":"eat_meat"}]}"#,
+        )
+        .expect_err("幻の op は当然 parse 失敗する");
+        let msg = e.to_string();
+        assert!(!msg.contains("untagged"), "総称文言に潰さない: {msg}");
+        assert!(msg.contains("give_meat_to_momoka"), "無効な op を名指しする: {msg}");
+        assert!(msg.contains("give_item"), "有効な op を列挙する: {msg}");
+
+        // (b) 単一オブジェクト経路 (#64 の救済側) でも同じく真因が出る。
+        let msg = serde_json::from_str::<gm_core::StateDelta>(r#"{"narration":"n","ops":{"op":"nope"}}"#)
+            .expect_err("幻の op")
+            .to_string();
+        assert!(msg.contains("`nope`") && msg.contains("add_item"), "救済経路でも真因: {msg}");
+
+        // (c) **有効な op のフィールド欠落**も潰れていた (幻 op だけの話ではない)。
+        let msg = serde_json::from_str::<gm_core::StateDelta>(
+            r#"{"narration":"n","ops":[{"op":"add_item","itme":"x"}]}"#,
+        )
+        .expect_err("item が無い")
+        .to_string();
+        assert!(msg.contains("item"), "欠けた欄を名指しする: {msg}");
+
+        // (d) 受理する形は untagged 版と同一 — null / 文字列 / 入れ子配列は従来どおり拒否。
+        for bad in [
+            r#"{"narration":"n","ops":null}"#,
+            r#"{"narration":"n","ops":"add_item"}"#,
+            r#"{"narration":"n","ops":[[{"op":"add_item","item":"x"}]]}"#,
+        ] {
+            assert!(serde_json::from_str::<gm_core::StateDelta>(bad).is_err(), "拒否のまま: {bad}");
+        }
+    }
+
     /// 【authored 専権 op の除外】LLM 向け schema は set_presence/grant_skill 等を **提案肢に出さない**
     /// (露出すると LLM が使い続けて却下→再生成ループで詰まる。Grok の constrained decoding 対策の核心)。
     /// LLM が使える op (add_item 等) は残る。
