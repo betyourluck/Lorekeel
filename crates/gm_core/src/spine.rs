@@ -587,6 +587,29 @@ pub struct ChallengeDef {
     /// 代償はここ — push_cost の stat 支払いは上乗せしたい時だけ)。
     #[serde(default)]
     pub on_push_failure: Option<ChallengeOutcome>,
+    /// **同一ターンに同じ主体が挑める回数の上限** (2026-09-01)。`None` (既定) は無制限 =
+    /// 従来の挙動そのまま。
+    ///
+    /// **動機**: `attempt_challenge` は LLM が選べる唯一の「authored 効果を持つ op」で、
+    /// 同じ challenge を 1 デルタに N 回並べると帰結効果が N 倍になる (実測: `on_success` に
+    /// `adjust_stat hp +5` を持つ challenge を 5 回並べて hp 10 → 25 が受理された)。
+    /// LLM は効果**量**を書けない (#23/#24 の閉世界) のに、**回数で実質的に量を決められる**
+    /// という抜けだった。しかも却下されないので沈黙する。
+    ///
+    /// **`requires` では塞げない** — ダイス op の帰結は非射影 (spec 09) なので、
+    /// `requires: not(flag_is rested)` は**ターンをまたいでは効くがターンの内側では効かない**
+    /// (実測: 同一デルタ 3 回が全部通り、次ターンだけ却下された)。作者の持つ「一度きり」の
+    /// 粒度はターンで、その一段内側にちょうどバッチ 1 回ぶんの穴が開いていた。
+    ///
+    /// **数えるのは (challenge, 主体) の組** — 「同じ人が 1 ターンに何回まで」であって
+    /// 「この場面で何回まで」ではない。多人数卓 (spec 23) で仲間 2 人が同じ challenge に
+    /// 1 回ずつ挑むのは正当なので、challenge 単位で数えると偽の却下が生まれる。
+    /// 主体の解決は判定と同じ (`entity` の authored 固定があればそれ、無ければ op の entity)。
+    ///
+    /// **繰り返せて正しい challenge もある** (容器 2 つに水を汲む等) ので既定は無制限。
+    /// 回数で得をする challenge (休息・回復・採取) を書くときだけ宣言する。
+    #[serde(default)]
+    pub max_per_turn: Option<u32>,
 }
 
 impl ChallengeDef {
@@ -831,6 +854,11 @@ pub enum ScenarioError {
     /// **lint** ([`Scenario::lints`]) — プレイは壊れないので load は拒否しない (警告表示のみ。
     /// fatal にすると配布済み content が受領側で死ぬ)。
     FlagHintOnAuthoredOnly { flag: FlagKey },
+    /// `challenges.{id}.max_per_turn: 0` — **一度も挑めない挑戦**。回数上限は「1 ターンに何回まで」
+    /// なので 0 は封鎖と同義で、`scenario_brief` には出るのに選ぶと必ず却下される (作者には
+    /// 「たまに判定が出ない」ようにしか見えない)。挑めなくしたいなら `requires` を使う。
+    /// **lint** — 閉世界は壊れないので load は拒否しない (死んだ参照の一族と同じ扱い)。
+    ChallengeMaxPerTurnZero { challenge: ChallengeId },
     /// `epilogue_prompt` を書いた goal に結末文 (`narration`) が無い (None/空文字/空白のみ =
     /// `trim().is_empty()` 基準)。narration はエピローグ生成失敗時のフォールバックであり、
     /// 「封印か討伐か死か」という結末の意味を生成に伝える接地素材 — 無いと生成失敗時に
@@ -1394,6 +1422,12 @@ impl Scenario {
         for flag in self.flag_hints.keys() {
             if self.allowed_flags.contains(flag) && authored_only.contains(flag) {
                 warns.push(ScenarioError::FlagHintOnAuthoredOnly { flag: flag.clone() });
+            }
+        }
+        // 2026-09-01: max_per_turn: 0 = 一度も挑めない (提示には出るのに必ず却下される死んだ挑戦)。
+        for (id, def) in &self.challenges {
+            if def.max_per_turn == Some(0) {
+                warns.push(ScenarioError::ChallengeMaxPerTurnZero { challenge: id.clone() });
             }
         }
         // spec 11: エピローグ指示があるのに結末文が無い goal — 生成失敗時のフォールバックが

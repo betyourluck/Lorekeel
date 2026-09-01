@@ -410,7 +410,14 @@ pub fn scenario_brief(scenario: &Scenario) -> String {
                 Some(g) => format!("【前提: {}】", gate_brief(g)),
                 None => String::new(),
             };
-            s.push_str(&format!("- {label} (id: {id}): {basis}{req}\n"));
+            // 回数上限 (2026-09-01)。**先に見せて起こさせない** — 却下は op クラスへの信頼を
+            // 毀損する (#42) ので、越えてから叱るより「何回まで」を最初から出す。
+            let cap = match c.max_per_turn {
+                Some(n) => format!("【1 ターンに {n} 回まで】"),
+                None => String::new(),
+            };
+            s.push_str(&format!("- {label} (id: {id}): {basis}{req}{cap}
+"));
         }
     }
     // 対決 (spec 18 Phase C)。attempt_contest で「開く」と、決着まで LLM を介さず

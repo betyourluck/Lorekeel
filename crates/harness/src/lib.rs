@@ -1823,6 +1823,36 @@ mod tests {
         );
     }
 
+    /// 【回数上限を先に見せる (2026-09-01)】`max_per_turn` を書いた challenge は
+    /// `scenario_brief` に「1 ターンに N 回まで」と出る。**越えてから叱るより先に見せる** —
+    /// 却下は op クラスへの信頼を毀損し、LLM は回避学習で op ごと使わなくなる (#42)。
+    /// 書いていない challenge の行は従来と byte 一致 (既定 None = 提示も不変)。
+    #[test]
+    fn scenario_brief_surfaces_challenge_turn_cap() {
+        let yaml = |cap: &str| {
+            format!(
+                "title: t
+start: room
+allowed_flags: []
+challenges:
+  rest: {{ description: 休む, sides: 1, dc: 1{cap} }}
+goal: {{ kind: always }}
+locations:
+  room: {{ description: d, items: {{}}, exits: [] }}
+"
+            )
+        };
+        let capped = Scenario::from_yaml(&yaml(", max_per_turn: 2")).unwrap();
+        let line = prompt::scenario_brief(&capped);
+        let line = line.lines().find(|l| l.contains("id: rest")).expect("挑戦の行");
+        assert!(line.contains("1 ターンに 2 回まで"), "回数を先に見せる: {line}");
+
+        let plain = Scenario::from_yaml(&yaml("")).unwrap();
+        let plain_line = prompt::scenario_brief(&plain);
+        let plain_line = plain_line.lines().find(|l| l.contains("id: rest")).unwrap();
+        assert!(!plain_line.contains("ターンに"), "書いていなければ何も足さない: {plain_line}");
+    }
+
     /// 【投票の prompt 接地 (spec 06 Phase D)】engine が CastVote を受理できても、GM が
     /// 「いま誰が投票できるか・票は op で出す」を知らなければ実プレイで使われない
     /// (challenge の実プレイ surfacing と同じギャップ)。scenario_brief が vote_rules を

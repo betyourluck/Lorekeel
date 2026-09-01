@@ -106,6 +106,15 @@ pub enum RejectReason {
         #[serde(default)]
         unmet: Vec<Gate>,
     },
+    /// 同一ターンの挑戦回数が `ChallengeDef.max_per_turn` を超えた (2026-09-01)。
+    /// **数えるのは (challenge, 主体) の組** — 同じ人が同じ挑戦を繰り返して authored 効果を
+    /// 積み増すのを防ぐ。「次のターンにすれば通る」と言えるので、`requirement` 系と同じく
+    /// **何をすれば通るかを語る** (#42 の規律)。
+    ChallengeExhausted {
+        challenge: String,
+        entity: String,
+        max: u32,
+    },
     /// 宣言されていない contest への挑戦 (spec 18 Phase C)。
     UnknownContest { contest: String },
     /// requires gate 未達の contest (解禁前)。
@@ -310,6 +319,11 @@ impl RejectReason {
             RejectReason::ChallengeLocked { challenge, requirement, unmet } => {
                 format!("'{challenge}' にはまだ挑めない (必要: {})", requirement_ja(requirement, unmet))
             }
+            RejectReason::ChallengeExhausted { challenge, entity, max } => {
+                format!(
+                    "{entity} はこのターンにもう '{challenge}' へ挑めない (1 ターンに {max} 回まで。次のターンなら挑める)"
+                )
+            }
             RejectReason::UnknownContest { contest } => {
                 format!("このシナリオに対決 '{contest}' は存在しない")
             }
@@ -385,6 +399,9 @@ impl RejectReason {
             }
             RejectReason::ChallengeLocked { challenge, requirement, unmet } => {
                 format!("'{challenge}' cannot be attempted yet (requires: {})", requirement_en(requirement, unmet))
+            }
+            RejectReason::ChallengeExhausted { challenge, entity, max } => {
+                format!("{entity} cannot attempt '{challenge}' again this turn (limit {max} per turn; it is available again next turn)")
             }
             RejectReason::UnknownContest { contest } => {
                 format!("there is no contest '{contest}' in this scenario")

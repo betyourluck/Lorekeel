@@ -228,9 +228,31 @@ fn validate_ops(
     delta: &StateDelta,
 ) {
     let mut proj = state.clone();
+    // 同一デルタ内の挑戦回数 (challenge, 主体) → 回数。`ChallengeDef.max_per_turn` の検査用。
+    // **cross-op の制約なので validate_op (1 op 単位) ではなくこのループが持つ。**
+    let mut attempts: BTreeMap<(String, String), u32> = BTreeMap::new();
     for op in &delta.ops {
         let before = reasons.len();
         validate_op(reasons, &proj, scenario, op);
+        // 回数上限 (2026-09-01)。LLM が同じ challenge を並べて authored 効果を積み増すのを塞ぐ
+        // — `requires` はダイス op の帰結が非射影 (spec 09) ゆえターンの内側では効かない。
+        // 数えるのは (challenge, 主体) の組 = 仲間 2 人が 1 回ずつ挑むのは正当なまま。
+        if let StateOp::AttemptChallenge { entity, challenge } = op {
+            if let Some(def) = scenario.challenge(challenge) {
+                let subject = def.entity.clone().unwrap_or_else(|| entity.clone());
+                let n = attempts.entry((challenge.clone(), subject.clone())).or_insert(0);
+                *n += 1;
+                if let Some(max) = def.max_per_turn {
+                    if *n > max {
+                        reasons.push(RejectReason::ChallengeExhausted {
+                            challenge: challenge.clone(),
+                            entity: subject,
+                            max,
+                        });
+                    }
+                }
+            }
+        }
         // この op が合法なら射影へ仮適用 (不正な op は射影に乗せず、残りは現射影で診断を続ける)。
         if reasons.len() == before {
             apply_deterministic_op(&mut proj, scenario, op);
@@ -5223,6 +5245,112 @@ locations:
     }
 
     /// 【ダイス→フラグ】challenge の通常成否 (total>=dc) でフラグが立つ。stat 有り=修正が乗り、
+    /// 【回数上限 (2026-09-01 実プレイ観察)】`max_per_turn` が同一ターンの積み増しを塞ぐ。
+    ///
+    /// 動機は muse-spark が 1 ターンに 2 つの challenge を束ねた観察から見つけた穴 —
+    /// `attempt_challenge` は **LLM が選べる唯一の「authored 効果を持つ op」**で、同じ
+    /// challenge を N 回並べると帰結効果が N 倍になる (probe 実測: `on_success` に
+    /// `adjust_stat hp +5` を持つ challenge 5 回で hp 10 → 25 が受理された)。LLM は効果**量**を
+    /// 書けない (#23/#24) のに**回数で実質的に量を決められる**という抜けで、しかも沈黙する。
+    ///
+    /// **`requires` では塞げない**ことも実測済み: ダイス op の帰結は非射影 (spec 09) なので
+    /// `requires: not(flag_is rested)` は同一デルタ 3 回を全部通し、次ターンだけ却下した。
+    /// 作者の持つ「一度きり」の粒度はターンで、その内側にバッチ 1 回ぶんの穴が開いていた。
+    ///
+    /// **数えるのは (challenge, 主体) の組** — 仲間 2 人が同じ challenge に 1 回ずつ挑むのは
+    /// 正当なので、challenge 単位で数えると多人数卓 (spec 23) で偽の却下が生まれる。
+    #[test]
+    fn max_per_turn_caps_repeats_per_subject_within_one_delta() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: [rested]
+characters:
+  ally: { name: 仲間, stats: { hp: { initial: 10, min: 0, max: 100 } } }
+initial_stats: { hp: { initial: 10, min: 0, max: 100 } }
+challenges:
+  rest:
+    description: 休む
+    sides: 1
+    dc: 1
+    max_per_turn: 1
+    on_success: { flag: rested, effects: [ { op: adjust_stat, key: hp, delta: 5 } ] }
+  fill:
+    description: 容器を満たす
+    sides: 1
+    dc: 1
+goal: { kind: always }
+locations:
+  room: { description: d, items: {}, exits: [], present: [ally] }
+"#;
+        let sc: Scenario = serde_yaml::from_str(yaml).unwrap();
+        assert!(sc.lints().is_empty(), "0 でなければ lint は鳴らない");
+        let s0 = sc.initial_state(1);
+        let attempt = |who: &str| StateOp::AttemptChallenge {
+            entity: who.to_string(),
+            challenge: "rest".into(),
+        };
+
+        // 1 回は通る (既存の書き方は不変)。
+        assert!(matches!(adjudicate(&s0, &sc, &d(vec![attempt(PLAYER)])), Verdict::Accept));
+
+        // 同じ主体の 2 回目以降は却下 — 原子性ゆえデルタ全体が落ち、state は無傷。
+        let reasons = match adjudicate(&s0, &sc, &d(vec![attempt(PLAYER), attempt(PLAYER)])) {
+            Verdict::Reject { reasons } => reasons,
+            Verdict::Accept => panic!("2 回目は却下されるべき"),
+        };
+        assert!(
+            reasons.iter().any(|r| matches!(r,
+                RejectReason::ChallengeExhausted { challenge, entity, max }
+                    if challenge == "rest" && entity == PLAYER && *max == 1)),
+            "何をすれば通るかを語る理由が出る: {reasons:?}"
+        );
+
+        // **別の主体なら通る** (仲間 2 人が 1 回ずつ = 多人数卓の正当な形)。
+        assert!(matches!(
+            adjudicate(&s0, &sc, &d(vec![attempt(PLAYER), attempt("ally")])),
+            Verdict::Accept
+        ));
+
+        // 上限を書いていない challenge は無制限のまま (既定 None = 後方互換)。
+        let fill = |_: u32| StateOp::AttemptChallenge {
+            entity: PLAYER.into(),
+            challenge: "fill".into(),
+        };
+        assert!(matches!(
+            adjudicate(&s0, &sc, &d(vec![fill(0), fill(1), fill(2)])),
+            Verdict::Accept
+        ), "容器 2 つに水を汲むような繰り返しは殺さない");
+
+        // 上限内なら apply も従来どおり (効果は 1 回だけ乗る)。
+        let mut st = s0.clone();
+        apply(&mut st, &sc, &d(vec![attempt(PLAYER)])).unwrap();
+        assert_eq!(st.entities[PLAYER]["hp"], 15, "1 回ぶんだけ効く");
+    }
+
+    /// 【max_per_turn: 0 は lint】一度も挑めない挑戦は「閉世界の破れ」ではないので load は
+    /// 拒否しないが、提示には出るのに必ず却下される (作者からは「たまに判定が出ない」に見える)。
+    #[test]
+    fn max_per_turn_zero_is_a_lint_not_a_load_error() {
+        let yaml = r#"
+title: t
+start: room
+allowed_flags: []
+challenges:
+  never: { description: 挑めない, sides: 1, dc: 1, max_per_turn: 0 }
+goal: { kind: always }
+locations:
+  room: { description: d, items: {}, exits: [] }
+"#;
+        let sc: Scenario = serde_yaml::from_str(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "load は拒否しない");
+        assert!(
+            sc.lints().iter().any(|l| matches!(l,
+                crate::spine::ScenarioError::ChallengeMaxPerTurnZero { challenge } if challenge == "never")),
+            "lint が名指しする: {:?}", sc.lints()
+        );
+    }
+
     /// stat 無し=修正0 の純粋ダイス (能力に依らない運試し)。sides:1 で出目を 1 に固定し決定論検証。
     #[test]
     fn challenge_outcomes_set_flags_with_and_without_stat() {

@@ -17,6 +17,9 @@ pub fn scenario_lint_messages(scenario: &Scenario) -> Vec<String> {
                 "フラグ「{flag}」の flag_hint は GM に届きません（トリガー/challenge が立てる専権フラグのため）。\
                  GM に立てさせるならトリガー/challenge 側の set_flag を外し、筋書きで立てるならヒントを外してください"
             ),
+            gm_core::ScenarioError::ChallengeMaxPerTurnZero { challenge } => format!(
+                "挑戦「{challenge}」の max_per_turn が 0 です。一覧には出るのに選ぶと必ず却下されます                 （作者からは「たまに判定が出ない」ようにしか見えません）。                 挑めなくしたいなら requires を、回数を制限したいなら 1 以上を書いてください"
+            ),
             // spec 21 同梱: 幻の場所を指す location_is は永久に false = その Gate は死んでいる。
             gm_core::ScenarioError::UnknownLocationInGate { origin, at } => format!(
                 "{origin} の location_is が、宣言されていない場所「{at}」を指しています。\
