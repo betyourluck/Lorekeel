@@ -22,7 +22,14 @@ import { yaml } from "@codemirror/lang-yaml";
 import { defaultHighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { linter, lintGutter, type Diagnostic } from "@codemirror/lint";
 import { rangeOfPath } from "../editorPath";
-import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
+import {
+  closeSearchPanel,
+  highlightSelectionMatches,
+  openSearchPanel,
+  search,
+  searchKeymap,
+  searchPanelOpen,
+} from "@codemirror/search";
 import { Compartment, EditorState, findClusterBreak } from "@codemirror/state";
 import {
   drawSelection,
@@ -36,7 +43,8 @@ import {
 } from "@codemirror/view";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
-import { t } from "../i18n";
+import { locale, t } from "../i18n";
+import { searchPhrases } from "../editorPhrases";
 import { countChars, overwriteSpan } from "../editorTyping";
 
 import { theme } from "../theme";
@@ -105,6 +113,10 @@ const languageCompartment = new Compartment();
 const readOnlyCompartment = new Compartment();
 const placeholderCompartment = new Compartment();
 const themeCompartment = new Compartment();
+// 検索・置換パネル (CodeMirror 組み込み) の文言。**キーはライブラリ側の英語文字列**なので
+// 表は editorPhrases.ts に置き、ここは差し替え口だけ持つ (テーマと同じく Compartment =
+// 言語を切り替えたら開いているエディタにも即反映する。再読込を要求しない)。
+const phrasesCompartment = new Compartment();
 let editor: EditorView | null = null;
 
 /** `text` では構文も lint も付けない (プロンプトに文法は無い — 赤線は誤警告にしかならない)。 */
@@ -260,6 +272,7 @@ onMounted(() => {
         readOnlyCompartment.of(readOnlyExtension(props.readonly)),
         placeholderCompartment.of(placeholder(props.placeholder)),
         themeCompartment.of(editorTheme(theme.value === "dark", props.fontSize)),
+        phrasesCompartment.of(EditorState.phrases.of(searchPhrases(locale.value))),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             const value = update.state.doc.toString();
@@ -294,6 +307,20 @@ watch(
   () => props.placeholder,
   (p) => editor?.dispatch({ effects: placeholderCompartment.reconfigure(placeholder(p)) }),
 );
+watch(locale, (l) => {
+  if (!editor) return;
+  editor.dispatch({
+    effects: phrasesCompartment.reconfigure(EditorState.phrases.of(searchPhrases(l))),
+  });
+  // **開いている検索パネルは自力では貼り替わらない** — CodeMirror の SearchPanel はラベルを
+  // コンストラクタで 1 度だけ組み、`update()` は検索語しか同期しない。ファセットを差し替えた
+  // だけだと「言語を変えたのにパネルだけ英語のまま」という半分動く形になるので、開いていれば
+  // 閉じて開き直す (検索語・オプションは state 側にあるので失われない)。
+  if (searchPanelOpen(editor.state)) {
+    closeSearchPanel(editor);
+    openSearchPanel(editor);
+  }
+});
 watch([theme, () => props.fontSize], ([th, fs]) =>
   editor?.dispatch({
     effects: themeCompartment.reconfigure(editorTheme(th === "dark", fs as number)),
