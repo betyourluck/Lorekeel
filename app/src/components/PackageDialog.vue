@@ -208,7 +208,7 @@ function totalPages(): number {
             <span class="text-xs text-parchment/50 shrink-0">{{ t("packages.site") }}</span>
             <input
               v-model="siteUrlInput"
-              placeholder="https://kataribe.outcasts.jp"
+              placeholder="https://lorekeel.outcasts.jp"
               class="flex-1 rounded bg-ash/40 px-2 py-1 text-xs text-parchment focus:outline-none"
               @keyup.enter="applySiteUrl"
             />

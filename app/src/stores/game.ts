@@ -471,7 +471,24 @@ export function profileMatchesConfig(
 // --- 配布サイト「Kataribe 書庫」(spec 05 Phase C) ---
 // サイト URL は設定項目 (既定 = 公式)。自前サーバも指せる = Outcasts 固有ロックインを避ける。
 const SITE_URL_KEY = "kataribe.siteUrl";
-export const DEFAULT_SITE_URL = "https://kataribe.outcasts.jp";
+// 既定は新ホスト (2026-09-01)。**既存ユーザーは影響を受けない** — localStorage に保存済みの
+// 値が優先され、既定は「一度も設定していない人」にしか効かない。
+export const DEFAULT_SITE_URL = "https://lorekeel.outcasts.jp";
+/**
+ * 公式書庫の**同一実体を指すホスト名**。改名 (2026-08-28) で新ホストを足し、旧ホストは
+ * 退役させていない (同じ DB を配っている)。
+ *
+ * 既定を新ホストへ替えた以上、旧ホストから取得したパッケージ (出所メタの `site_url` が旧名)
+ * を持つ人が新既定に載ると、**「取得済み」判定が外れて同じ配布物を `_2` で二重に据える**。
+ * 更新照会側の同名の表は backend (`app/src-tauri/src/lib.rs` の `ARCHIVE_ALIASES`) にあり、
+ * **増やすときは両方触ること** (deployment の事実なので型からは導けない)。
+ */
+const ARCHIVE_ALIASES = ["https://kataribe.outcasts.jp", "https://lorekeel.outcasts.jp"];
+/** 別名を正規形へ畳む。**完全一致の表引き**（置換ではない = 接尾辞細工は畳まれない）。 */
+function canonicalSite(url: string): string {
+  const u = url.replace(/\/+$/, "");
+  return ARCHIVE_ALIASES.includes(u) ? ARCHIVE_ALIASES[1] : u;
+}
 function loadSiteUrl(): string {
   return localStorage.getItem(SITE_URL_KEY) || DEFAULT_SITE_URL;
 }
@@ -1696,9 +1713,9 @@ ${body}`, t("rename.ok"), true);
     // 出所メタの site_url まで見るので、別サイトの同 id とは混ざらない。同じ配布物を
     // `_2` で二重に据えるのを止めるのが眼目 (更新はローカルタブの役割)。
     installedFromSite(id: string): PackageEntry | undefined {
-      const site = this.siteUrl.replace(/\/+$/, "");
+      const site = canonicalSite(this.siteUrl);
       return this.packages.find(
-        (p) => p.source_id === id && (p.source_site ?? "").replace(/\/+$/, "") === site,
+        (p) => p.source_id === id && canonicalSite(p.source_site ?? "") === site,
       );
     },
 

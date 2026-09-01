@@ -2785,11 +2785,40 @@ async fn fetch_package_detail(base: &str, id: &str) -> Result<RemotePackage, Str
         .map_err(|e| format!("詳細の形式が読めません: {e}"))
 }
 
+/// 公式書庫の**同一実体を指すホスト名**。2026-08-28 の改名で `lorekeel.outcasts.jp` を足し、
+/// 旧 `kataribe.outcasts.jp` は退役させていない (同じ DB を配っている — 実測で両方が同一の
+/// `/api/packages` を返すことを確認済み)。
+///
+/// **これが要る理由**: 既定サイトを新ホストへ替えると、旧ホストから取得した出所メタを持つ
+/// パッケージは [`meta_matches_site`] が偽になり、**更新照会もサイトタブの「取得済み」判定も
+/// 沈黙で止まる** (照会の失敗は仕様上すべて沈黙 = 誰も気づけない)。設定を手で新ホストへ
+/// 移した人にも同じことが起きる。
+///
+/// **SSRF 姿勢は変わらない** — この別名が効くのは「照会するかどうか」の判断だけで、
+/// 実際の接続先は常にユーザーが設定した `normalized_site` の方 (`check_package_updates` /
+/// `update_site_package` はどちらも `base` へ出る)。
+///
+/// **frontend にも同じ表がある** (`app/src/stores/game.ts` の `ARCHIVE_ALIASES`) — サイトタブの
+/// 「取得済み」判定が localStorage の設定値と突き合わせるため。増やすときは両方触ること。
+const ARCHIVE_ALIASES: [&str; 2] =
+    ["https://kataribe.outcasts.jp", "https://lorekeel.outcasts.jp"];
+
+/// 別名を正規形へ畳む。**完全一致の表引き**であって置換ではない — `kataribe.outcasts.jp.evil.example`
+/// のような接尾辞細工はどの別名とも一致しないのでそのまま返り、従来どおり弾かれる。
+fn canonical_site(normalized: &str) -> &str {
+    if ARCHIVE_ALIASES.contains(&normalized) {
+        ARCHIVE_ALIASES[1]
+    } else {
+        normalized
+    }
+}
+
 /// 出所メタが「いま設定中のサイト由来」かを判定する (rev2 A-4 SSRF 遮断)。
 /// 一致する時だけネットワークに出る — 細工メタを手動配置されても照会先はユーザー自身が
 /// 登録したサイトだけ (`open_external_url` の原則と同じ)。
+/// 公式書庫の 2 ホストは同一実体として扱う ([`ARCHIVE_ALIASES`])。
 fn meta_matches_site(meta: &update::SourceMeta, normalized_site: &str) -> bool {
-    meta.site_url.trim_end_matches('/') == normalized_site
+    canonical_site(meta.site_url.trim_end_matches('/')) == canonical_site(normalized_site)
 }
 
 /// `packagePaths` の各フォルダについて更新の有無を照会する (spec 17 機構③)。
@@ -4979,6 +5008,29 @@ mod tests {
         assert!(
             !meta_matches_site(&meta("https://kataribe.outcasts.jp.evil.example"), &site),
             "前方一致では通さない (部分文字列の罠)"
+        );
+
+        // 【公式書庫の別名 (2026-09-01)】改名で lorekeel.outcasts.jp を足し旧ホストは
+        // 残した。既定サイトを新ホストへ替えると、旧メタを持つパッケージの更新照会が
+        // **沈黙で**止まる (照会の失敗はすべて沈黙 = 誰も気づけない) ので、2 ホストは
+        // 同一実体として扱う。**両向き**に効くことを固定する。
+        let lorekeel = normalize_site_url("https://lorekeel.outcasts.jp").unwrap();
+        assert!(
+            meta_matches_site(&meta("https://kataribe.outcasts.jp"), &lorekeel),
+            "旧ホストで取得したパッケージは新既定でも更新照会に載る"
+        );
+        assert!(
+            meta_matches_site(&meta("https://lorekeel.outcasts.jp"), &site),
+            "新ホストで取得したパッケージは旧設定のままでも載る"
+        );
+        // 別名は**完全一致の表引き**であって置換ではない — 接尾辞細工は通らないまま。
+        assert!(
+            !meta_matches_site(&meta("https://lorekeel.outcasts.jp.evil.example"), &lorekeel),
+            "新ホスト名の接尾辞細工も通さない"
+        );
+        assert!(
+            !meta_matches_site(&meta("https://kataribe.outcasts.jp"), &normalize_site_url("https://other.example").unwrap()),
+            "無関係なサイトを設定している人には別名は効かない"
         );
     }
     use std::path::{Path, PathBuf};

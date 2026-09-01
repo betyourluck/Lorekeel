@@ -64,7 +64,8 @@ Scope: 書庫（配布サイト）から取得したパッケージについて�
 
 ```json
 {
-  "site_url": "https://kataribe.outcasts.jp",
+  "site_url": "https://kataribe.outcasts.jp",  // 旧ホストのまま残る。既定を
+  // lorekeel.outcasts.jp へ替えた後も ARCHIVE_ALIASES が同一視するので照会は生きる (2026-09-01)
   "id": "550e8400-e29b-41d4-a716-446655440000",
   "version": "0.2",
   "content_hash": "sha256hex...",

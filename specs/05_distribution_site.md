@@ -20,7 +20,9 @@ Scope: `packages/<name>/`（自己完結フォルダ）を zip で配布する�
 
 ## 着地したもの（outcast Spec 23、2026-07-07 実装・デプロイのみ残）
 
-サイト「**Kataribe 書庫**」= `kataribe.outcasts.jp`。outcast リポジトリの
+サイト「**書庫**」= `lorekeel.outcasts.jp`（改名前の `kataribe.outcasts.jp` も同じ実体を
+配り続けている＝退役させない。既定は 2026-09-01 に新ホストへ切替、2 ホストは
+`ARCHIVE_ALIASES` で同一視する）。outcast リポジトリの
 `kataribe/backend`（Axum + Postgres 別 DB）+ `kataribe/frontend`（Vue3 + Tailwind、
 古書店・羊皮紙テーマ）の**独立 Docker コンテナ**。起草時の「outcast backend に同居」から
 **スタンドアロンサービスへ変更**（Kataribe 側の障害・脆弱性が Outcasts 本体を汚染しない疎結合）。
@@ -81,7 +83,10 @@ Scope: `packages/<name>/`（自己完結フォルダ）を zip で配布する�
   （再取得で旧フォルダを上書きしない — 進行中セーブの参照先を壊さない）。
   展開後に `read_manifest` が読めなければフォルダごと撤去（恒久エラー行を作らない）。
 - サイト URL は設定項目（`localStorage["kataribe.siteUrl"]`、既定 =
-  `https://kataribe.outcasts.jp`、自前サーバも指せる＝Outcasts 固有ロックインを避ける）。
+  `https://lorekeel.outcasts.jp`〔2026-09-01 に旧 `kataribe.outcasts.jp` から変更。**既定は
+  一度も設定していない人にしか効かない**ので既存ユーザーは無影響。旧ホストで取得済みの
+  パッケージは `ARCHIVE_ALIASES` が同一視するので更新照会も「取得済み」判定も生きる〕、
+  自前サーバも指せる＝Outcasts 固有ロックインを避ける）。
 - engine semver: manifest の `engine` はサーバが読まないため、互換警告は
   **展開後の受領側**（既存の `load_package` 警告と同じ層）のまま。
 - **PoC**: unit 7 本（zip slip 遮断・Flat/複数トップ/manifest 欠落の拒否・拒否拡張子・
