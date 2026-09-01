@@ -19,3 +19,6 @@ agent-key.txt
 Thumbs.db
 /blackboard
 /briefs/*
+
+# winget マニフェストの生成先 (正本は microsoft/winget-pkgs 側。Fuseforks と同じ流儀)
+manifests/
