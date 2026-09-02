@@ -99,3 +99,22 @@ no-op** にする。inventory は集合なので複製は構造的に起きな�
 5. 台帳: data_contract の adjudicate 契約 + authoring 指針（ペーシングはダイスで割る）、
    CLAUDE.md、failures.md #43（mujinto の catch-22）、outcast `package_spec.md` は
    作者向け実害なし（YAML 形式不変）につき追従不要の見込み — 作法欄の文言だけ確認。
+
+## 追補（2026-09-03）— 自壊する束の名指し
+
+逐次射影は**裁定の時点を op ごとにずらす**。その帰結として、gate 未達の却下理由が
+「プレイヤーと LLM が見ているターン開始時の事実」と食い違う形が実プレイで出た（failures #95）:
+焼き魚を所持している状態で GM が `[remove_item 焼き魚, attempt_challenge eat_fish]` を書き、
+射影の中で魚が消えて `requires` が偽になる。理由は「必要: 焼き魚を所持」としか言わず、
+画面でも state_brief でも持っているので、LLM は同じ形を 4 回繰り返して max_attempts を
+使い切った（GM は「食べる = 手放す」の意味論で challenge の帰結を自分で二重に書いていた）。
+
+**決定**: gate 未達 5 種（item / flag / move / challenge / contest）に `broken_by: Option<StateOp>` を
+足す。`validate_ops` は、gate が**ターン開始時の state では真**だったときだけ、射影に載せた op 列を
+開始時から再生して最初に偽へ落とした op を載せる（attempt_challenge の共通効果が壊した場合の
+責めは attempt_challenge 自身）。文面は「この条件はターン開始時には満たされていた。先行 op
+〔op: remove_item, item: 焼き魚〕がそれを壊している。その op を消すか順序を入れ替えれば通る」。
+最初から未達なら従来文面のまま。prompt/schema は不変。
+
+射影裁定を持つ以上、却下理由は「どの時点の評価か」と「そこまで誰が状態を動かしたか」を
+必ず語る — これは A（逐次射影）の設計に最初から含めておくべき条項だった。

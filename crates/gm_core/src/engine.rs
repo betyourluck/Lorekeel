@@ -228,12 +228,21 @@ fn validate_ops(
     delta: &StateDelta,
 ) {
     let mut proj = state.clone();
+    // 射影に載せた op 列: (仮適用した op, それを書いた LLM の op = 責めを負う側)。
+    // attempt_challenge の共通効果は authored なので、責めは attempt_challenge 自身に付く。
+    let mut applied: Vec<(StateOp, StateOp)> = Vec::new();
     // 同一デルタ内の挑戦回数 (challenge, 主体) → 回数。`ChallengeDef.max_per_turn` の検査用。
     // **cross-op の制約なので validate_op (1 op 単位) ではなくこのループが持つ。**
     let mut attempts: BTreeMap<(String, String), u32> = BTreeMap::new();
     for op in &delta.ops {
         let before = reasons.len();
         validate_op(reasons, &proj, scenario, op);
+        // 自壊する束の名指し (2026-09-03): gate 未達がターン開始時には真だったなら、それを
+        // 壊した先行 op を理由に載せる。射影裁定は「画面では満たしているのに『必要』と言われる」
+        // 怪奇 (#50 の item 版) を作りうるので、理由は壊した犯人を語らねばならない (#42)。
+        for r in reasons[before..].iter_mut() {
+            annotate_broken_premise(r, state, scenario, &applied);
+        }
         // 回数上限 (2026-09-01)。LLM が同じ challenge を並べて authored 効果を積み増すのを塞ぐ
         // — `requires` はダイス op の帰結が非射影 (spec 09) ゆえターンの内側では効かない。
         // 数えるのは (challenge, 主体) の組 = 仲間 2 人が 1 回ずつ挑むのは正当なまま。
@@ -256,6 +265,7 @@ fn validate_ops(
         // この op が合法なら射影へ仮適用 (不正な op は射影に乗せず、残りは現射影で診断を続ける)。
         if reasons.len() == before {
             apply_deterministic_op(&mut proj, scenario, op);
+            applied.push((op.clone(), op.clone()));
             // ダイス op の帰結は原則非射影 (出目は apply 時確定) だが、attempt_challenge の
             // **全帰結に共通する効果**だけは射影する — どの出目でも必ず起きる = 裁定時に
             // 確定扱いしても「裁定は適用のドライラン」の健全性を破らない。日次フラグを
@@ -265,9 +275,41 @@ fn validate_ops(
                 if let Some(def) = scenario.challenge(challenge) {
                     for eff in guaranteed_challenge_effects(scenario, def) {
                         apply_deterministic_op(&mut proj, scenario, &eff);
+                        applied.push((eff, op.clone()));
                     }
                 }
             }
+        }
+    }
+}
+
+/// 自壊する束の名指し: gate 未達系の理由について、その gate が**ターン開始時の state では真**
+/// だったなら、射影に載せた op 列を開始時から順に再生し、最初に偽へ落とした op (責めを負う側)
+/// を `broken_by` に載せる。開始時から偽なら本当に未達なので触らない。delta は小さいので
+/// O(n²) の clone は無視できる。
+fn annotate_broken_premise(
+    reason: &mut RejectReason,
+    start: &GameState,
+    scenario: &Scenario,
+    applied: &[(StateOp, StateOp)],
+) {
+    let (requirement, broken_by) = match reason {
+        RejectReason::ItemGateUnmet { requirement, broken_by, .. }
+        | RejectReason::FlagGateUnmet { requirement, broken_by, .. }
+        | RejectReason::MoveGateUnmet { requirement, broken_by, .. }
+        | RejectReason::ChallengeLocked { requirement, broken_by, .. }
+        | RejectReason::ContestLocked { requirement, broken_by, .. } => (&*requirement, broken_by),
+        _ => return,
+    };
+    if applied.is_empty() || !requirement.eval(start, scenario) {
+        return;
+    }
+    let mut replay = start.clone();
+    for (eff, blame) in applied {
+        apply_deterministic_op(&mut replay, scenario, eff);
+        if !requirement.eval(&replay, scenario) {
+            *broken_by = Some(blame.clone());
+            return;
         }
     }
 }
@@ -387,6 +429,7 @@ fn validate_op(
                                     item: item.clone(),
                                     requirement: li.when().clone(),
                                     unmet: li.when().unmet(state, scenario),
+                                    broken_by: None,
                                 });
                             }
                         }
@@ -439,6 +482,7 @@ fn validate_op(
                             key: key.clone(),
                             requirement: gate,
                             unmet,
+                            broken_by: None,
                         });
                     }
                 }
@@ -452,6 +496,7 @@ fn validate_op(
                             to: to.clone(),
                             requirement: exit.gate.clone(),
                             unmet: exit.gate.unmet(state, scenario),
+                            broken_by: None,
                         });
                     }
                 }
@@ -500,6 +545,7 @@ fn validate_op(
                                     challenge: challenge.clone(),
                                     requirement: req.clone(),
                                     unmet: req.unmet(state, scenario),
+                                    broken_by: None,
                                 });
                             }
                         }
@@ -554,6 +600,7 @@ fn validate_op(
                                     contest: contest.clone(),
                                     requirement: req.clone(),
                                     unmet: req.unmet(state, scenario),
+                                    broken_by: None,
                                 });
                             }
                         }
@@ -3648,6 +3695,99 @@ goal: { kind: flag_is, key: made_shelter, value: true }
                 "{reasons:?}"
             ),
             Verdict::Accept => panic!("attempt 時点で未所持なので却下されるべき"),
+        }
+    }
+
+    /// 【自壊する束の名指し (2026-09-03, 実プレイ #95)】前提 gate が**ターン開始時には真**なのに
+    /// 同じ delta の先行 op が射影の中でそれを壊すと、従来の却下理由は「必要: 流木を所持」としか
+    /// 言わず、画面では持っているので LLM は同じ形を繰り返して max_attempts を使い切った
+    /// (eat_fish に `remove_item 焼き魚` を先置き = challenge の帰結を自分で二重に書く)。
+    /// 理由は**壊した op を名指し**し、消すか順序を入れ替えれば通ると語る (#42 の規律)。
+    /// 最初から未達なら名指ししない (本当に未達 = 従来どおり)。
+    #[test]
+    fn self_broken_premise_names_the_earlier_op() {
+        let sc = Scenario::from_yaml(PROJECTION_BOARD).unwrap();
+        let mut s = sc.initial_state(1);
+        s.add_to_inventory(PLAYER, "流木");
+        s.add_to_inventory(PLAYER, "小石");
+        // 自壊: 流木を手放してから流木の要る挑戦
+        let delta = d(vec![
+            StateOp::RemoveItem { item: "流木".into() },
+            StateOp::AttemptChallenge { entity: PLAYER.into(), challenge: "build_shelter".into() },
+        ]);
+        let reasons = match adjudicate(&s, &sc, &delta) {
+            Verdict::Reject { reasons } => reasons,
+            Verdict::Accept => panic!("射影で流木が消えるので却下されるべき"),
+        };
+        let locked = reasons
+            .iter()
+            .find(|r| matches!(r, RejectReason::ChallengeLocked { .. }))
+            .expect("ChallengeLocked が出る");
+        match locked {
+            RejectReason::ChallengeLocked { broken_by, .. } => assert_eq!(
+                broken_by,
+                &Some(StateOp::RemoveItem { item: "流木".into() }),
+                "壊した op が構造化データで載る"
+            ),
+            _ => unreachable!(),
+        }
+        let ja = locked.localize(crate::Lang::Ja);
+        assert!(
+            ja.contains("remove_item") && ja.contains("流木") && ja.contains("開始時"),
+            "文面が先行 op を名指しし、開始時には満たされていたと語る: {ja}"
+        );
+        let en = locked.localize(crate::Lang::En);
+        assert!(en.contains("remove_item") && en.contains("流木"), "{en}");
+
+        // 対照 1: 最初から未達 (何も持っていない) は名指ししない = 本当に未達。
+        let fresh = sc.initial_state(1);
+        match adjudicate(&fresh, &sc, &delta) {
+            Verdict::Reject { reasons } => {
+                let r = reasons.iter().find(|r| matches!(r, RejectReason::ChallengeLocked { .. })).unwrap();
+                assert!(matches!(r, RejectReason::ChallengeLocked { broken_by: None, .. }), "{r:?}");
+                assert!(!r.localize(crate::Lang::Ja).contains("開始時"), "{}", r.localize(crate::Lang::Ja));
+            }
+            Verdict::Accept => panic!("未所持なので却下"),
+        }
+
+        // 対照 2: 順序を入れ替えれば (挑戦 → 手放す) 受理される = 文面の助言どおり通る。
+        let swapped = d(vec![
+            StateOp::AttemptChallenge { entity: PLAYER.into(), challenge: "build_shelter".into() },
+            StateOp::RemoveItem { item: "流木".into() },
+        ]);
+        assert!(matches!(adjudicate(&s, &sc, &swapped), Verdict::Accept), "{:?}", adjudicate(&s, &sc, &swapped));
+
+        // 移動の gate でも同じ (MoveGateUnmet): 鍵を手放してから鍵の要る出口。
+        let board = r#"
+title: t
+start: a
+allowed_flags: []
+locations:
+  a:
+    description: d
+    items:
+      key: { when: { kind: always }, take: infinite }
+    exits:
+      - { to: b, gate: { kind: has_item, entity: player, item: key } }
+  b:
+    description: d
+    exits: []
+goal: { kind: always }
+"#;
+        let sc2 = Scenario::from_yaml(board).unwrap();
+        let mut s2 = sc2.initial_state(1);
+        s2.add_to_inventory(PLAYER, "key");
+        let delta2 = d(vec![StateOp::RemoveItem { item: "key".into() }, StateOp::Move { to: "b".into() }]);
+        match adjudicate(&s2, &sc2, &delta2) {
+            Verdict::Reject { reasons } => {
+                let r = reasons.iter().find(|r| matches!(r, RejectReason::MoveGateUnmet { .. })).unwrap();
+                assert!(
+                    matches!(r, RejectReason::MoveGateUnmet { broken_by: Some(StateOp::RemoveItem { .. }), .. }),
+                    "{r:?}"
+                );
+                assert!(r.localize(crate::Lang::Ja).contains("remove_item"), "{}", r.localize(crate::Lang::Ja));
+            }
+            Verdict::Accept => panic!("鍵を手放した後なので却下"),
         }
     }
 

@@ -5,6 +5,7 @@
 //! ルール (所持/移動/gate の力学) はエンジンの普遍法則として残り、文面だけが言語層に分離する。
 
 use crate::spine::Gate;
+use crate::state::StateOp;
 use serde::{Deserialize, Serialize};
 
 /// レンダリング言語。
@@ -33,6 +34,12 @@ pub enum RejectReason {
         requirement: Gate,
         #[serde(default)]
         unmet: Vec<Gate>,
+        /// **自壊する束の名指し (2026-09-03)**: この gate はターン開始時には真だったが、同じ
+        /// delta の先行 op (射影に仮適用済み) が壊した — その op を載せる。最初から未達なら None。
+        /// 文面は「壊した op を消すか順序を入れ替えれば通る」と語る (#42 の規律)。旧セーブ互換で
+        /// serde default。
+        #[serde(default)]
+        broken_by: Option<StateOp>,
     },
     /// 備え付けアイテム (`take: fixed`)。取得は不可だが、その場で使えることを LLM に説明する。
     ItemFixed { item: String },
@@ -53,6 +60,12 @@ pub enum RejectReason {
         requirement: Gate,
         #[serde(default)]
         unmet: Vec<Gate>,
+        /// **自壊する束の名指し (2026-09-03)**: この gate はターン開始時には真だったが、同じ
+        /// delta の先行 op (射影に仮適用済み) が壊した — その op を載せる。最初から未達なら None。
+        /// 文面は「壊した op を消すか順序を入れ替えれば通る」と語る (#42 の規律)。旧セーブ互換で
+        /// serde default。
+        #[serde(default)]
+        broken_by: Option<StateOp>,
     },
     NoExit { to: String },
     /// 出口の gate が未達。`requirement` は条件そのもの (#42 — 「未達」だけでは LLM が
@@ -63,6 +76,12 @@ pub enum RejectReason {
         requirement: Gate,
         #[serde(default)]
         unmet: Vec<Gate>,
+        /// **自壊する束の名指し (2026-09-03)**: この gate はターン開始時には真だったが、同じ
+        /// delta の先行 op (射影に仮適用済み) が壊した — その op を載せる。最初から未達なら None。
+        /// 文面は「壊した op を消すか順序を入れ替えれば通る」と語る (#42 の規律)。旧セーブ互換で
+        /// serde default。
+        #[serde(default)]
+        broken_by: Option<StateOp>,
     },
     DiceSidesInvalid,
     UnknownStat { entity: String, key: String },
@@ -105,6 +124,12 @@ pub enum RejectReason {
         requirement: Gate,
         #[serde(default)]
         unmet: Vec<Gate>,
+        /// **自壊する束の名指し (2026-09-03)**: この gate はターン開始時には真だったが、同じ
+        /// delta の先行 op (射影に仮適用済み) が壊した — その op を載せる。最初から未達なら None。
+        /// 文面は「壊した op を消すか順序を入れ替えれば通る」と語る (#42 の規律)。旧セーブ互換で
+        /// serde default。
+        #[serde(default)]
+        broken_by: Option<StateOp>,
     },
     /// 同一ターンの挑戦回数が `ChallengeDef.max_per_turn` を超えた (2026-09-01)。
     /// **数えるのは (challenge, 主体) の組** — 同じ人が同じ挑戦を繰り返して authored 効果を
@@ -123,6 +148,12 @@ pub enum RejectReason {
         requirement: Gate,
         #[serde(default)]
         unmet: Vec<Gate>,
+        /// **自壊する束の名指し (2026-09-03)**: この gate はターン開始時には真だったが、同じ
+        /// delta の先行 op (射影に仮適用済み) が壊した — その op を載せる。最初から未達なら None。
+        /// 文面は「壊した op を消すか順序を入れ替えれば通る」と語る (#42 の規律)。旧セーブ互換で
+        /// serde default。
+        #[serde(default)]
+        broken_by: Option<StateOp>,
     },
     /// 対決の進行中に新しい対決/ターンを始めようとした (決着が先)。
     ContestInProgress,
@@ -232,6 +263,36 @@ fn requirement_en(requirement: &Gate, unmet: &[Gate]) -> String {
     }
 }
 
+/// op を 1 行に畳む (却下文面で先行 op を名指しする用)。`op: remove_item, item: 焼き魚` の形 —
+/// LLM が書いた JSON と欄名が一致するので、どの op を消す/動かすかが一意に伝わる。
+fn op_brief(op: &StateOp) -> String {
+    serde_yaml::to_string(op)
+        .map(|y| y.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(", "))
+        .unwrap_or_else(|_| format!("{op:?}"))
+}
+
+/// 自壊する束の注記 (ja)。None なら空 = 本当に未達 (従来文面のまま)。
+fn broken_ja(broken_by: &Option<StateOp>) -> String {
+    match broken_by {
+        None => String::new(),
+        Some(op) => format!(
+            " — ただし、この条件はターン開始時には満たされていた。この ops の先行 op〔{}〕がそれを壊している。その op を消すか、順序を入れ替えれば通る (挑戦や移動の帰結は筋書きが自動で行うので、同じ物への remove_item 等を自分で並べないこと)",
+            op_brief(op)
+        ),
+    }
+}
+
+/// 自壊する束の注記 (en)。
+fn broken_en(broken_by: &Option<StateOp>) -> String {
+    match broken_by {
+        None => String::new(),
+        Some(op) => format!(
+            " — note: this condition WAS met at the start of the turn; an earlier op in these ops [{}] broke it. Drop that op or reorder, and this will pass (a challenge's or move's consequences are applied by the script automatically, so do not add your own remove_item etc. for the same thing)",
+            op_brief(op)
+        ),
+    }
+}
+
 impl RejectReason {
     /// 指定言語の表示文字列を生成する。新言語の追加はここに一手で閉じる。
     pub fn localize(&self, lang: Lang) -> String {
@@ -247,8 +308,8 @@ impl RejectReason {
                 format!("現在地 '{location}' がシナリオに存在しない")
             }
             RejectReason::ItemNotHere { item } => format!("'{item}' はこの場所には存在しない"),
-            RejectReason::ItemGateUnmet { item, requirement, unmet } => {
-                format!("'{item}' はまだ取得できない (必要: {})", requirement_ja(requirement, unmet))
+            RejectReason::ItemGateUnmet { item, requirement, unmet, broken_by } => {
+                format!("'{item}' はまだ取得できない (必要: {}){}", requirement_ja(requirement, unmet), broken_ja(broken_by))
             }
             RejectReason::ItemFixed { item } => {
                 format!("'{item}' は備え付けで持ち運べない (取得せず、その場で使える)")
@@ -264,14 +325,15 @@ impl RejectReason {
                     format!("フラグ '{key}' は存在しない (使えるフラグ: {})", available.join(", "))
                 }
             }
-            RejectReason::FlagGateUnmet { key, requirement, unmet } => {
-                format!("フラグ '{key}' はまだ立てられない (必要: {})", requirement_ja(requirement, unmet))
+            RejectReason::FlagGateUnmet { key, requirement, unmet, broken_by } => {
+                format!("フラグ '{key}' はまだ立てられない (必要: {}){}", requirement_ja(requirement, unmet), broken_ja(broken_by))
             }
             RejectReason::NoExit { to } => format!("'{to}' への出口は存在しない"),
-            RejectReason::MoveGateUnmet { to, requirement, unmet } => {
+            RejectReason::MoveGateUnmet { to, requirement, unmet, broken_by } => {
                 format!(
-                    "'{to}' へはまだ移動できない (必要: {}。満たせば move は通る — 語りだけで移動した事にしないこと)",
-                    requirement_ja(requirement, unmet)
+                    "'{to}' へはまだ移動できない (必要: {}。満たせば move は通る — 語りだけで移動した事にしないこと){}",
+                    requirement_ja(requirement, unmet),
+                    broken_ja(broken_by)
                 )
             }
             RejectReason::DiceSidesInvalid => "ダイスの面数は1以上でなければならない".to_string(),
@@ -316,8 +378,8 @@ impl RejectReason {
             RejectReason::UnknownChallenge { challenge } => {
                 format!("'{challenge}' という挑戦はこのシナリオに存在しない")
             }
-            RejectReason::ChallengeLocked { challenge, requirement, unmet } => {
-                format!("'{challenge}' にはまだ挑めない (必要: {})", requirement_ja(requirement, unmet))
+            RejectReason::ChallengeLocked { challenge, requirement, unmet, broken_by } => {
+                format!("'{challenge}' にはまだ挑めない (必要: {}){}", requirement_ja(requirement, unmet), broken_ja(broken_by))
             }
             RejectReason::ChallengeExhausted { challenge, entity, max } => {
                 format!(
@@ -327,8 +389,8 @@ impl RejectReason {
             RejectReason::UnknownContest { contest } => {
                 format!("このシナリオに対決 '{contest}' は存在しない")
             }
-            RejectReason::ContestLocked { contest, requirement, unmet } => {
-                format!("対決 '{contest}' はまだ開けない (必要: {})", requirement_ja(requirement, unmet))
+            RejectReason::ContestLocked { contest, requirement, unmet, broken_by } => {
+                format!("対決 '{contest}' はまだ開けない (必要: {}){}", requirement_ja(requirement, unmet), broken_ja(broken_by))
             }
             RejectReason::ContestInProgress => {
                 "対決が進行中 — 決着がつくまで他の行動はできない".to_string()
@@ -342,8 +404,8 @@ impl RejectReason {
                 format!("current location '{location}' does not exist in the scenario")
             }
             RejectReason::ItemNotHere { item } => format!("'{item}' is not present in this location"),
-            RejectReason::ItemGateUnmet { item, requirement, unmet } => {
-                format!("'{item}' cannot be taken yet (requires: {})", requirement_en(requirement, unmet))
+            RejectReason::ItemGateUnmet { item, requirement, unmet, broken_by } => {
+                format!("'{item}' cannot be taken yet (requires: {}){}", requirement_en(requirement, unmet), broken_en(broken_by))
             }
             RejectReason::ItemFixed { item } => {
                 format!("'{item}' is a fixture and cannot be carried (use it where it is, without taking it)")
@@ -361,15 +423,12 @@ impl RejectReason {
                     format!("flag '{key}' does not exist (available flags: {})", available.join(", "))
                 }
             }
-            RejectReason::FlagGateUnmet { key, requirement, unmet } => {
-                format!("flag '{key}' cannot be set yet (requires: {})", requirement_en(requirement, unmet))
+            RejectReason::FlagGateUnmet { key, requirement, unmet, broken_by } => {
+                format!("flag '{key}' cannot be set yet (requires: {}){}", requirement_en(requirement, unmet), broken_en(broken_by))
             }
             RejectReason::NoExit { to } => format!("there is no exit to '{to}'"),
-            RejectReason::MoveGateUnmet { to, requirement, unmet } => {
-                format!(
-                    "cannot move to '{to}' yet (requires: {}. once met, move will succeed — do not narrate the move as done)",
-                    requirement_en(requirement, unmet)
-                )
+            RejectReason::MoveGateUnmet { to, requirement, unmet, broken_by } => {
+                format!("cannot move to '{to}' yet (requires: {}. once met, move will succeed — do not narrate the move as done){}", requirement_en(requirement, unmet), broken_en(broken_by))
             }
             RejectReason::DiceSidesInvalid => "a die must have at least 1 side".to_string(),
             RejectReason::UnknownStat { entity, key } => {
@@ -397,8 +456,8 @@ impl RejectReason {
             RejectReason::UnknownEntity { entity } => {
                 format!("cannot give to '{entity}' because it does not exist in this scenario")
             }
-            RejectReason::ChallengeLocked { challenge, requirement, unmet } => {
-                format!("'{challenge}' cannot be attempted yet (requires: {})", requirement_en(requirement, unmet))
+            RejectReason::ChallengeLocked { challenge, requirement, unmet, broken_by } => {
+                format!("'{challenge}' cannot be attempted yet (requires: {}){}", requirement_en(requirement, unmet), broken_en(broken_by))
             }
             RejectReason::ChallengeExhausted { challenge, entity, max } => {
                 format!("{entity} cannot attempt '{challenge}' again this turn (limit {max} per turn; it is available again next turn)")
@@ -406,8 +465,8 @@ impl RejectReason {
             RejectReason::UnknownContest { contest } => {
                 format!("there is no contest '{contest}' in this scenario")
             }
-            RejectReason::ContestLocked { contest, requirement, unmet } => {
-                format!("contest '{contest}' cannot be opened yet (requires: {})", requirement_en(requirement, unmet))
+            RejectReason::ContestLocked { contest, requirement, unmet, broken_by } => {
+                format!("contest '{contest}' cannot be opened yet (requires: {}){}", requirement_en(requirement, unmet), broken_en(broken_by))
             }
             RejectReason::ContestInProgress => {
                 "a contest is in progress — nothing else can happen until it is settled".to_string()
