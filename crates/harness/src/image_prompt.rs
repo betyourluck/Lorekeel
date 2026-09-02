@@ -259,12 +259,50 @@ pub fn compose_image_prompt(style: &str, scene: &str, override_text: &str) -> St
     }
     // 末尾の区切り記号は落としてから繋ぐ (`watercolor,` + `, ` で `,,` を作らない)。
     let style = style.trim().trim_end_matches([',', '、', '。']).trim();
-    let scene = scene.trim();
+    // 機械の守り (2026-09-03): プロンプト書きが「前置きされるので重複して書くな」を守らず
+    // スタイルを出力の先頭へ写すことがある (タグ列のスタイルを画風タグとして写す)。規律は
+    // 見せる側、ここは通さない側 — 先頭の写しを落としてから繋ぐ。
+    let scene = strip_leading_style_echo(style, scene.trim());
     match (style.is_empty(), scene.is_empty()) {
         (true, _) => scene.to_string(),
         (false, true) => style.to_string(),
         (false, false) => format!("{style}, {scene}"),
     }
+}
+
+/// `scene` の先頭が `style` の写しなら、その写しと直後の区切りを落とした残りを返す。
+/// 一致は**空白を無視し大小文字を同一視**して非空白文字の列で見る (LLM は空白と大小を揃えない)。
+/// 写しの直後が語の途中 (英数字が続く) なら一致と見なさない (`photo` は `photograph` を剥がさない)。
+/// `style` が空、または一致しなければ `scene` をそのまま返す。
+fn strip_leading_style_echo<'a>(style: &str, scene: &'a str) -> &'a str {
+    if style.is_empty() {
+        return scene;
+    }
+    let mut want = style.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase);
+    let mut cut = 0usize; // 一致した最後の文字の直後 (byte index)
+    for (i, c) in scene.char_indices() {
+        if c.is_whitespace() {
+            continue;
+        }
+        match want.next() {
+            None => break,
+            Some(w) => {
+                if c.to_lowercase().ne(std::iter::once(w)) {
+                    return scene;
+                }
+                cut = i + c.len_utf8();
+            }
+        }
+    }
+    if want.next().is_some() {
+        return scene; // scene が style より短い (途中で尽きた)
+    }
+    let rest = &scene[cut..];
+    // 語の途中で一致していたら写しではない。
+    if rest.chars().next().is_some_and(|c| c.is_alphanumeric()) {
+        return scene;
+    }
+    rest.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, ',' | '.' | '、' | '。' | ';' | '；'))
 }
 
 /// `generate` に渡す messages。
@@ -485,5 +523,39 @@ allowed_flags: [done]
         assert!(sc.validate().is_empty(), "lint であって load 拒否ではない");
         let msgs = crate::scenario_lint_messages(&sc);
         assert!(msgs.iter().any(|m| m.contains("image_style") && m.contains("501")), "{msgs:?}");
+    }
+
+    /// 【スタイルの写しを落とす (2026-09-03、ユーザー報告「スタイル指定が最終プロンプトに二重で出る」)】
+    /// プロンプト書きには「前置きされるので重複して書くな」と渡しているが、規律だけでは守られない
+    /// (タグ列のスタイルを画風タグとして出力の先頭へ写す)。合成は**機械の守り**として、出力の
+    /// 先頭がスタイル原文と (空白・大小文字・末尾区切りを無視して) 一致するならその写しを落とす。
+    /// 語の途中では切らない (`photo` は `photograph…` を剥がさない)。override は不変。
+    #[test]
+    fn compose_strips_a_leading_echo_of_the_style() {
+        let style = "Photograph, looking away,  full body,";
+        // 写し (大小文字と空白が違う・区切りの直後に本文)
+        let scene = "photograph, looking away, full body, a man stands on a beach at dawn";
+        assert_eq!(
+            compose_image_prompt(style, scene, ""),
+            "Photograph, looking away,  full body, a man stands on a beach at dawn"
+        );
+        // 写しの後の区切りが `.` や改行でも落ちる
+        assert_eq!(
+            compose_image_prompt(style, "Photograph, looking away, full body.\nA man stands.", ""),
+            "Photograph, looking away,  full body, A man stands."
+        );
+        // 写しだけ (本文なし) ならスタイルだけになる
+        assert_eq!(compose_image_prompt(style, "photograph, looking away, full body", ""), "Photograph, looking away,  full body");
+        // 写しでない出力は不変
+        assert_eq!(
+            compose_image_prompt(style, "a man stands on a beach", ""),
+            "Photograph, looking away,  full body, a man stands on a beach"
+        );
+        // 語の途中で一致しても剥がさない
+        assert_eq!(compose_image_prompt("photo", "photograph of a man", ""), "photo, photograph of a man");
+        // override は verbatim のまま (スタイルが入っていても触らない)
+        assert_eq!(compose_image_prompt(style, "x", "photograph, photograph, x"), "photograph, photograph, x");
+        // 空スタイルは何もしない
+        assert_eq!(compose_image_prompt("", "a man", ""), "a man");
     }
 }
