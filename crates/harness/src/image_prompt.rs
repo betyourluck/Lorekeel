@@ -271,38 +271,81 @@ pub fn compose_image_prompt(style: &str, scene: &str, override_text: &str) -> St
 }
 
 /// `scene` の先頭が `style` の写しなら、その写しと直後の区切りを落とした残りを返す。
-/// 一致は**空白を無視し大小文字を同一視**して非空白文字の列で見る (LLM は空白と大小を揃えない)。
-/// 写しの直後が語の途中 (英数字が続く) なら一致と見なさない (`photo` は `photograph` を剥がさない)。
+///
+/// 写しは **verbatim ではない** (2026-09-03 実データ): プロンプト書きは空白と大小文字を揃えず、
+/// スタイルの誤字 (`hyper-rea`) を直して (`hyper-real`) 写す。そこで一致は**タグ単位** (`,` `、` `.`
+/// `。` `;` 改行で区切る) で見て、各タグは正規化 (小文字・空白畳み) のうえ**わずかな編集距離**を
+/// 許す (5 文字以上で 1 + 長さ/10)。短いタグは完全一致のみ (`cat`/`car` を同一視しない)。
+/// スタイルの全タグが順に scene の先頭タグ列と一致したときだけ落とす。語の途中では一致しない
+/// (タグは区切りまでを一塊に見るので `photo` は `photograph of a man` と比べられ不一致)。
 /// `style` が空、または一致しなければ `scene` をそのまま返す。
 fn strip_leading_style_echo<'a>(style: &str, scene: &'a str) -> &'a str {
-    if style.is_empty() {
+    let want: Vec<String> = split_tags(style).into_iter().map(|(_, _, t)| t).filter(|t| !t.is_empty()).collect();
+    if want.is_empty() {
         return scene;
     }
-    let mut want = style.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase);
-    let mut cut = 0usize; // 一致した最後の文字の直後 (byte index)
-    for (i, c) in scene.char_indices() {
-        if c.is_whitespace() {
-            continue;
-        }
-        match want.next() {
-            None => break,
-            Some(w) => {
-                if c.to_lowercase().ne(std::iter::once(w)) {
-                    return scene;
-                }
-                cut = i + c.len_utf8();
-            }
+    let have = split_tags(scene);
+    let mut have = have.into_iter().filter(|(_, _, t)| !t.is_empty());
+    let mut cut = 0usize;
+    for w in &want {
+        match have.next() {
+            Some((_, end, h)) if tags_similar(w, &h) => cut = end,
+            _ => return scene,
         }
     }
-    if want.next().is_some() {
-        return scene; // scene が style より短い (途中で尽きた)
+    scene[cut..].trim_start_matches(|c: char| c.is_whitespace() || is_tag_sep(c))
+}
+
+fn is_tag_sep(c: char) -> bool {
+    // 改行 (LF/CR) も区切り — 散文の写しは句点や改行で本文と切れる。
+    matches!(c, ',' | '、' | '.' | '。' | ';' | '；') || c == char::from(10) || c == char::from(13)
+}
+
+/// 区切りで割り、各タグの (開始 byte, 終了 byte = 区切りの手前, 正規化文字列) を返す。
+/// 正規化 = 小文字化 + 空白の畳み込み + 前後 trim。
+fn split_tags(text: &str) -> Vec<(usize, usize, String)> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    for (i, c) in text.char_indices() {
+        if is_tag_sep(c) {
+            out.push((start, i, normalize_tag(&text[start..i])));
+            start = i + c.len_utf8();
+        }
     }
-    let rest = &scene[cut..];
-    // 語の途中で一致していたら写しではない。
-    if rest.chars().next().is_some_and(|c| c.is_alphanumeric()) {
-        return scene;
+    out.push((start, text.len(), normalize_tag(&text[start..])));
+    out
+}
+
+fn normalize_tag(t: &str) -> String {
+    t.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+/// 2 タグの類似判定: 同一、または 5 文字以上で編集距離が `1 + 長さ/10` 以内。
+fn tags_similar(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
     }
-    rest.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, ',' | '.' | '、' | '。' | ';' | '；'))
+    let n = a.chars().count().max(b.chars().count());
+    if n < 5 {
+        return false;
+    }
+    levenshtein(a, b) <= 1 + n / 10
+}
+
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            cur[j + 1] = (prev[j + 1] + 1).min(cur[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
 }
 
 /// `generate` に渡す messages。
@@ -557,5 +600,27 @@ allowed_flags: [done]
         assert_eq!(compose_image_prompt(style, "x", "photograph, photograph, x"), "photograph, photograph, x");
         // 空スタイルは何もしない
         assert_eq!(compose_image_prompt("", "a man", ""), "a man");
+    }
+
+    /// 【写しは verbatim ではない (2026-09-03、ユーザー実データ)】プロンプト書きはスタイルの誤字
+    /// (`hyper-rea`) を**直して** (`hyper-real`) 写す。文字列の完全一致では剥がれないので、
+    /// 一致はタグ単位でわずかな編集距離を許す。短いタグは許さない (`cat`/`car` を同一視しない)。
+    #[test]
+    fn compose_strips_echo_even_when_the_writer_fixed_a_typo() {
+        let style = "Photograph, looking away,  hyper-rea, full body,";
+        let scene = "Photograph, looking away, hyper-real, full body, a single continuous scene, one frame, no panels or split screen, the scene background fills the entire frame, no plain backdrop or border. A young Japanese man with model-like features holds a smartphone.";
+        let out = compose_image_prompt(style, scene, "");
+        assert!(
+            out.starts_with("Photograph, looking away,  hyper-rea, full body, a single continuous scene, one frame"),
+            "{out}"
+        );
+        assert_eq!(out.matches("looking away").count(), 1, "{out}");
+        // 短いタグの 1 文字違いは同一視しない (剥がさない)
+        assert_eq!(compose_image_prompt("cat, red", "car, red, a man", ""), "cat, red, car, red, a man");
+        // 散文のスタイルが句点で終わる写しも落ちる
+        assert_eq!(
+            compose_image_prompt("a watercolor scene in soft light", "A watercolor scene in soft light. A man stands.", ""),
+            "a watercolor scene in soft light, A man stands."
+        );
     }
 }
