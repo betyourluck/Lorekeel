@@ -1598,13 +1598,35 @@ ${body}`, t("rename.ok"), true);
     // 選択がキャンセルされたら何もしない。無効な (package.yaml の無い) フォルダを選んでも
     // 追加はされ、一覧に「読込失敗」で並ぶ (手入力パスと同じ扱い)。
     async browseAndAddPackage() {
+      const picked = await this.pickFolder();
+      if (picked) this.addPackage(picked);
+    },
+    /** フォルダ選択ダイアログ (前回追加した場所から開く)。キャンセルは null、失敗はエラー表示。 */
+    async pickFolder(start?: string): Promise<string | null> {
       try {
-        const picked = await invoke<string | null>("pick_package_folder", {
-          start: this.lastPackageParent,
-        });
-        if (picked) this.addPackage(picked);
+        return await invoke<string | null>("pick_package_folder", { start: start ?? this.lastPackageParent });
       } catch (e) {
         this.error = t("store.folderPickFailed", { error: String(e) });
+        return null;
+      }
+    },
+    /**
+     * 新しいパッケージの骨格を作る (2026-09-04 ユーザー要望)。置き場と名前だけで
+     * `{parent}/{name}/` に package.yaml と最小の entry を書き、一覧へ登録して選択する
+     * (従来は手でフォルダと package.yaml を作ってローカル読み込みしないと編集に入れなかった
+     * = その手順をここへ畳む)。編集モードへの入場は呼び出し側 (ダイアログを閉じてから)。
+     * 成功なら true。
+     */
+    async createLocalPackage(parent: string, name: string): Promise<boolean> {
+      try {
+        const path = await invoke<string>("create_local_package", { parent, name });
+        this.addPackage(path);
+        this.packagePath = path;
+        this.logToast = t("store.packageCreated", { path });
+        return true;
+      } catch (e) {
+        this.logToast = t("store.packageCreateFailed", { error: String(e) });
+        return false;
       }
     },
 

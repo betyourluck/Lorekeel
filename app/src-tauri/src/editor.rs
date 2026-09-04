@@ -328,6 +328,55 @@ pub fn fork_meta(root: &Path, fork: bool, meta_files: &[&str]) -> (bool, Option<
     remove_meta(root, meta_files)
 }
 
+/// シナリオの雛形 (start + goal + 場所 1 つ = validate も通る最小盤面)。エディタの
+/// 「新しいシナリオ」と新規パッケージの entry が同じものを書く。
+const SCENARIO_TEMPLATE: &str = concat!(
+    "title: \"\"\n",
+    "start: start\n",
+    "goal: { kind: flag_is, key: goal_flag, value: true }\n",
+    "allowed_flags: [goal_flag]\n",
+    "locations:\n",
+    "  start:\n",
+    "    description: \"\"\n",
+);
+
+/// 新しいパッケージの骨格を作る (2026-09-04 ユーザー要望 = spec 28「ウィザード」の最小形)。
+/// 従来はフォルダと package.yaml を手で作ってローカル読み込みしないと編集モードに入れなかった。
+/// 置き場 (親フォルダ) と名前だけ受け、`{parent}/{name}/` に **package.yaml と最小の entry
+/// (`scenarios/main.yaml`)** を書く — package.yaml だけだと `load_package` が entry 不在で
+/// 落ち、一覧で「読込失敗」になるので、作った瞬間から読める形にする。
+///
+/// 名前はファイル名と同じ stem 規則 (英数と `_` `-`)。同名フォルダが在れば拒否 (黙って中に
+/// 書き足さない = 既存パッケージを壊さない)。返りは作ったフォルダの絶対パス。
+pub fn create_package(parent: &Path, name: &str) -> Result<PathBuf, String> {
+    validate_new_stem(name, "フォルダ名がそのままパッケージの置き場になります")?;
+    if !parent.is_dir() {
+        return Err(format!("置き場のフォルダがありません: {}", parent.display()));
+    }
+    let root = parent.join(name);
+    if root.exists() {
+        return Err(format!("{} は既にあります", root.display()));
+    }
+    std::fs::create_dir_all(root.join("scenarios")).map_err(|e| format!("フォルダを作れません: {e}"))?;
+    let manifest = format!(
+        concat!(
+            "title: {name}\n",
+            "description: \"\"\n",
+            "author: \"\"\n",
+            "version: \"0.1\"\n",
+            "entry: scenarios/main.yaml\n",
+            "world: \"\"\n",
+            "player:\n",
+            "  name: \"\"\n",
+            "  profile: \"\"\n",
+        ),
+        name = name
+    );
+    atomic_write(&root.join("package.yaml"), &manifest)?;
+    atomic_write(&root.join("scenarios/main.yaml"), SCENARIO_TEMPLATE)?;
+    Ok(std::fs::canonicalize(&root).unwrap_or(root))
+}
+
 /// 新規ファイルの作成 (spec 28 Phase D、2026-08-27 に 4 カテゴリへ一般化 = ユーザーFB)。
 /// 雛形は**そのまま parse できる**形にする (作った瞬間に赤線が出る雛形は摩擦):
 /// - character: `name` に stem (null は String で parse エラー・後で直せばよい)
@@ -362,19 +411,7 @@ pub fn create_file(
         }
         "scenario" => {
             validate_new_stem(stem, "package.yaml の entry や campaign の modules から参照する名前です")?;
-            (
-                format!("scenarios/{stem}.yaml"),
-                concat!(
-                    "title: \"\"\n",
-                    "start: start\n",
-                    "goal: { kind: flag_is, key: goal_flag, value: true }\n",
-                    "allowed_flags: [goal_flag]\n",
-                    "locations:\n",
-                    "  start:\n",
-                    "    description: \"\"\n",
-                )
-                .to_string(),
-            )
+            (format!("scenarios/{stem}.yaml"), SCENARIO_TEMPLATE.to_string())
         }
         "campaign" => (
             "campaign.yaml".to_string(),
@@ -584,6 +621,31 @@ mod tests {
 
     /// Phase D: 新規作成 4 カテゴリ — stem 検証 (character は予約 id 込み)・雛形が
     /// それぞれの型として parse できる・フォルダ不在でも作れる・重複は明示エラー・一覧に載る。
+    #[test]
+    fn create_package_makes_a_loadable_skeleton_and_refuses_overwrite() {
+        let parent = std::env::temp_dir().join(format!("lorekeel_newpkg_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        std::fs::create_dir_all(&parent).unwrap();
+
+        let root = create_package(&parent, "my_tale").unwrap();
+        assert!(root.join("package.yaml").is_file());
+        assert!(root.join("scenarios/main.yaml").is_file());
+        // 作った瞬間から読める (entry 不在で「読込失敗」にならない)・作者向け警告もゼロ。
+        let loaded = harness::load_package(&root).expect("骨格が load_package を通らない");
+        assert_eq!(loaded.manifest.title, "my_tale");
+        assert!(loaded.warnings.is_empty(), "警告: {:?}", loaded.warnings);
+        assert!(loaded.scenario.validate().is_empty());
+
+        // 同名は拒否 (既存パッケージの中へ黙って書き足さない)。
+        assert!(create_package(&parent, "my_tale").is_err());
+        // 名前は stem 規則・置き場は実在必須。
+        assert!(create_package(&parent, "my tale").is_err());
+        assert!(create_package(&parent, "../x").is_err());
+        assert!(create_package(&parent.join("missing"), "ok").is_err());
+
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
     #[test]
     fn create_file_writes_parseable_templates_for_every_category() {
         // stem 検証: 受ける / 拒否 (文字集合・長さ・character の予約 id)。

@@ -1617,6 +1617,14 @@ async fn create_editor_file(
     Ok(EditorCreateView { rel_path, files: editor::list_files(base), forked, fork_warning })
 }
 
+/// 新しいパッケージの骨格を作る (2026-09-04 ユーザー要望)。パッケージ一覧の「新規作成」から。
+/// セッションにも編集ルートにも触らない (作るだけ。登録と編集モード入場は frontend の流れ)。
+#[tauri::command]
+fn create_local_package(parent: String, name: String) -> Result<String, String> {
+    let root = editor::create_package(Path::new(parent.trim()), name.trim())?;
+    Ok(root.to_string_lossy().into_owned())
+}
+
 /// ファイルの削除 (2026-08-27 に v1 昇格 = ユーザーFB)。package.yaml は editor 層が拒否。
 /// 不可逆の確認は frontend の責務 (askConfirm)。返りはリネームと同じ形 (files と media の
 /// 両方 — 削除はどちらにも効く経路なので、片方だけ返すと消した側の一覧が古いまま残る)。
@@ -4841,6 +4849,7 @@ pub fn run() {
             inspect_editor_package,
             editor_vocabulary,
             create_editor_file,
+            create_local_package,
             delete_editor_file,
             rename_editor_file,
             put_editor_media,

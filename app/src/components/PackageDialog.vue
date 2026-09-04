@@ -23,6 +23,36 @@ function add() {
   newPath.value = "";
 }
 
+// 新規作成 (2026-09-04 ユーザー要望): 置き場 + 名前 → フォルダと package.yaml と最小の
+// シナリオを作り、一覧に登録して選択し、ダイアログを閉じて編集モードで開く。
+const creating = ref(false);
+const newParent = ref("");
+const newName = ref("");
+const creatingBusy = ref(false);
+function startCreate() {
+  creating.value = true;
+  if (!newParent.value) newParent.value = game.lastPackageParent;
+}
+async function pickParent() {
+  const picked = await game.pickFolder(newParent.value || game.lastPackageParent);
+  if (picked) newParent.value = picked;
+}
+async function createPackage() {
+  if (creatingBusy.value || !newParent.value.trim() || !newName.value.trim()) return;
+  creatingBusy.value = true;
+  try {
+    const ok = await game.createLocalPackage(newParent.value, newName.value);
+    if (!ok) return;
+    creating.value = false;
+    newName.value = "";
+    emit("close");
+    // プレイ中・卓中は入らない (toggleEditor 側のガードと二層)。登録と選択までは済んでいる。
+    if (!game.started) await game.toggleEditor();
+  } finally {
+    creatingBusy.value = false;
+  }
+}
+
 // 更新検知 (spec 17 機構③): ローカルタブを開くたびに書庫へ照会する。失敗は沈黙 (store 側)。
 function openLocalTab() {
   tab.value = "local";
@@ -175,7 +205,53 @@ function totalPages(): number {
           </div>
         </div>
 
+        <!-- 新規作成の行 (footer の「新規作成」で開く)。置き場は前回追加した場所を既定に。 -->
+        <div v-if="creating" class="px-4 py-3 border-t border-ash space-y-2">
+          <p class="text-xs text-parchment/50">{{ t("packages.newPkgHint") }}</p>
+          <div class="flex items-center gap-2">
+            <input
+              v-model="newParent"
+              :placeholder="t('packages.newPkgParent')"
+              class="flex-1 rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none"
+            />
+            <button
+              class="shrink-0 text-parchment/60 hover:text-ember px-1.5 py-1"
+              :title="t('packages.newPkgPickParent')"
+              :aria-label="t('packages.browse')"
+              @click="pickParent"
+            >
+              <Icon name="folder" :size="18" />
+            </button>
+          </div>
+          <div class="flex items-center gap-2">
+            <input
+              v-model="newName"
+              :placeholder="t('packages.newPkgName')"
+              class="flex-1 rounded bg-ash/40 px-2 py-1 text-sm text-parchment font-mono focus:outline-none"
+              @keyup.enter="createPackage"
+            />
+            <button class="shrink-0 text-parchment/50 hover:text-parchment text-sm px-1" @click="creating = false">
+              {{ t("packages.newPkgCancel") }}
+            </button>
+            <button
+              :disabled="creatingBusy || !newParent.trim() || !newName.trim()"
+              class="shrink-0 rounded bg-ember/80 hover:bg-ember px-3 py-1 text-sm text-ink font-bold disabled:opacity-40"
+              @click="createPackage"
+            >
+              {{ t("packages.newPkgCreate") }}
+            </button>
+          </div>
+        </div>
+
         <footer class="flex items-center gap-2 px-4 py-3 border-t border-ash">
+          <button
+            v-if="!creating"
+            class="shrink-0 rounded border border-ember/50 text-ember hover:bg-ember/10 px-2.5 py-1 text-sm"
+            :title="t('packages.newPkgTitle')"
+            @click="startCreate"
+          >
+            {{ t("packages.newPkg") }}
+          </button>
           <input
             v-model="newPath"
             :placeholder="t('packages.pathPlaceholder')"

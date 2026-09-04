@@ -548,6 +548,15 @@ export const messages = {
       browseTitle: "フォルダ選択ダイアログで参照する (前回追加した場所から開く)",
       browse: "参照",
       add: "追加",
+      newPkg: "新規作成",
+      newPkgTitle: "置き場と名前を決めて、空のパッケージ (フォルダ + package.yaml + 最小のシナリオ) を作る",
+      newPkgHint:
+        "置き場に指定した名前のフォルダを作り、package.yaml と最小のシナリオ (scenarios/main.yaml) を入れて一覧に登録し、そのまま編集モードで開きます。",
+      newPkgParent: "置き場のフォルダ (この中に作ります)",
+      newPkgPickParent: "置き場をフォルダ選択ダイアログで選ぶ",
+      newPkgName: "フォルダ名 (英数字と _ -)",
+      newPkgCancel: "やめる",
+      newPkgCreate: "作成",
       site: "サイト",
       connect: "接続",
       connectTitle: "この URL の書庫へ接続する (自前サーバも可)",
@@ -674,6 +683,8 @@ export const messages = {
       windowTitleModel: "Outcasts Lorekeel ({model})",
       openSiteFailed: "サイトを開けませんでした: {error}",
       folderPickFailed: "フォルダの選択に失敗しました: {error}",
+      packageCreated: "パッケージを作りました: {path}",
+      packageCreateFailed: "パッケージを作れませんでした: {error}",
       deleteSaveConfirm:
         "「{title}」のセーブデータ (turn {turn}・セーブスロット含む) も削除しますか？\nキャンセル: セーブは残ります (パスを再追加すれば続きから遊べます)",
       deleteSlotsConfirm:
@@ -1328,6 +1339,15 @@ export const messages = {
       browseTitle: "Browse with a folder picker (opens from the last added location)",
       browse: "Browse",
       add: "Add",
+      newPkg: "New package",
+      newPkgTitle: "Pick a location and a name to create an empty package (folder + package.yaml + a minimal scenario)",
+      newPkgHint:
+        "Creates a folder with that name inside the location, writes package.yaml and a minimal scenario (scenarios/main.yaml), registers it in the list and opens it in edit mode.",
+      newPkgParent: "Location (the folder is created inside this)",
+      newPkgPickParent: "Choose the location with a folder picker",
+      newPkgName: "Folder name (letters, digits, _ -)",
+      newPkgCancel: "Cancel",
+      newPkgCreate: "Create",
       site: "Site",
       connect: "Connect",
       connectTitle: "Connect to the archive at this URL (your own server works too)",
@@ -1453,6 +1473,8 @@ export const messages = {
       windowTitleModel: "Outcasts Lorekeel ({model})",
       openSiteFailed: "Couldn't open the site: {error}",
       folderPickFailed: "Folder selection failed: {error}",
+      packageCreated: "Created the package: {path}",
+      packageCreateFailed: "Could not create the package: {error}",
       deleteSaveConfirm:
         "Also delete the save data for “{title}” (turn {turn}, including save slots)?\nCancel: the saves are kept (re-add the path to continue later).",
       deleteSlotsConfirm:
