@@ -1243,10 +1243,14 @@ ${body}`, t("rename.ok"), true);
       try {
         const res = await invoke<{
           files: { rel_path: string; category: string }[];
+          media: { rel_path: string; category: string }[];
           forked: boolean;
           fork_warning: string | null;
         }>("delete_editor_file", { relPath, fork });
+        // 削除は YAML にもメディアにも効くので、返りの両方を写す (2026-09-04 ユーザー報告:
+        // files だけ写していたのでメディアを消しても一覧が変わらず「無反応」に見えた)。
         ed.files = res.files.map((f) => ({ relPath: f.rel_path, category: f.category }));
+        ed.media = res.media.map((f) => ({ relPath: f.rel_path, category: f.category }));
         if (res.forked) ed.fromSite = false;
         if (res.fork_warning) this.logToast = res.fork_warning;
         else this.logToast = t("editor.deleted", { file: relPath });

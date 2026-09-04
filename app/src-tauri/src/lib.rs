@@ -1618,22 +1618,40 @@ async fn create_editor_file(
 }
 
 /// ファイルの削除 (2026-08-27 に v1 昇格 = ユーザーFB)。package.yaml は editor 層が拒否。
-/// 不可逆の確認は frontend の責務 (askConfirm)。返りは作成と同じ形 (更新後の一覧込み)。
+/// 不可逆の確認は frontend の責務 (askConfirm)。返りはリネームと同じ形 (files と media の
+/// 両方 — 削除はどちらにも効く経路なので、片方だけ返すと消した側の一覧が古いまま残る)。
 #[tauri::command]
 async fn delete_editor_file(
     rel_path: String,
     fork: bool,
     session: tauri::State<'_, SharedSession>,
     editor_root: tauri::State<'_, EditorRoot>,
-) -> Result<EditorCreateView, String> {
+) -> Result<EditorListsView, String> {
     if table_is_active(&session).await {
         return Err("卓の最中は削除できません".into());
     }
     let guard = editor_root.0.lock().await;
     let Some(base) = guard.as_ref() else { return Err("編集モードではありません".into()) };
+    delete_editor_file_view(base, rel_path, fork)
+}
+
+/// 削除の実体 (command の卓ガード・編集ルート解決の後)。純関数に切り出してあるのは
+/// **返りの形をテストで固定する**ため — 消したファイルが一覧から消えていることは、
+/// この返りを frontend がそのまま state に写す以上、ここでしか保証できない。
+fn delete_editor_file_view(
+    base: &std::path::Path,
+    rel_path: String,
+    fork: bool,
+) -> Result<EditorListsView, String> {
     let (forked, fork_warning) =
         editor::delete_file(base, &rel_path, fork, update::SOURCE_META_FILES)?;
-    Ok(EditorCreateView { rel_path, files: editor::list_files(base), forked, fork_warning })
+    Ok(EditorListsView {
+        rel_path,
+        files: editor::list_files(base),
+        media: editor::list_media(base),
+        forked,
+        fork_warning,
+    })
 }
 
 /// ファイル名の変更 (spec 28 追補、2026-08-28 ユーザー要望)。同じフォルダの中だけ。
@@ -1645,7 +1663,7 @@ async fn rename_editor_file(
     fork: bool,
     session: tauri::State<'_, SharedSession>,
     editor_root: tauri::State<'_, EditorRoot>,
-) -> Result<EditorRenameView, String> {
+) -> Result<EditorListsView, String> {
     if table_is_active(&session).await {
         return Err("卓の最中は名前を変えられません".into());
     }
@@ -1653,7 +1671,7 @@ async fn rename_editor_file(
     let Some(base) = guard.as_ref() else { return Err("編集モードではありません".into()) };
     let rel_path = editor::rename_file(base, &rel_path, &new_name)?;
     let (forked, fork_warning) = editor::fork_meta(base, fork, update::SOURCE_META_FILES);
-    Ok(EditorRenameView {
+    Ok(EditorListsView {
         rel_path,
         files: editor::list_files(base),
         media: editor::list_media(base),
@@ -1662,10 +1680,12 @@ async fn rename_editor_file(
     })
 }
 
-/// リネームの返り。**files と media を両方**返す (対象がどちらかは呼び出し側が知っている
-/// が、返りを分けると frontend に分岐が増える — 1 往復で両方揃える)。
+/// リネームと削除の返り。**files と media を両方**返す (対象がどちらかは呼び出し側が
+/// 知っているが、返りを分けると frontend に分岐が増える — 1 往復で両方揃える)。
+/// 削除がこの形になったのは 2026-09-04 (ユーザー報告): 作成と同じ `files` だけの返りを
+/// 使い回していたので、メディアを消しても一覧が古いまま残り「無反応」に見えた。
 #[derive(Serialize)]
-struct EditorRenameView {
+struct EditorListsView {
     rel_path: String,
     files: Vec<editor::EditorFileEntry>,
     media: Vec<editor::EditorFileEntry>,
@@ -4850,6 +4870,42 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    /// 【削除の返りは files と media の両方 (2026-09-04 ユーザー報告)】メディアの削除ボタンを
+    /// 押しても一覧が変わらず「無反応」に見えた。真因は返りの形 — 削除は作成と同じ
+    /// `files` だけの返りを使い回しており、frontend は返りをそのまま state に写すので
+    /// `media` 側の一覧が古いまま残った (リネームは両方返していたので差が出た)。
+    /// 削除は YAML にもメディアにも効く経路なので、返りは常に両方揃える。
+    #[test]
+    fn delete_view_reflects_removal_in_both_files_and_media() {
+        use super::delete_editor_file_view;
+        let dir = std::env::temp_dir().join(format!("lorekeel_editor_delview_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("scenarios")).unwrap();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::write(dir.join("package.yaml"), "title: t
+").unwrap();
+        std::fs::write(dir.join("scenarios/a.yaml"), "title: a
+").unwrap();
+        std::fs::write(dir.join("images/a.png"), b"PNGx").unwrap();
+        std::fs::write(dir.join("images/b.png"), b"PNGx").unwrap();
+
+        // メディアを消す → 返りの media から消え、files は無傷で載っている。
+        let v = serde_json::to_value(delete_editor_file_view(&dir, "images/a.png".into(), false).unwrap()).unwrap();
+        let media: Vec<&str> = v["media"].as_array().expect("削除の返りに media が無い")
+            .iter().map(|e| e["rel_path"].as_str().unwrap()).collect();
+        assert_eq!(media, vec!["images/b.png"], "消したメディアが一覧に残っている");
+        let files: Vec<&str> = v["files"].as_array().unwrap().iter().map(|e| e["rel_path"].as_str().unwrap()).collect();
+        assert_eq!(files, vec!["package.yaml", "scenarios/a.yaml"]);
+
+        // YAML を消す → files から消え、media も同じ往復で載っている。
+        let v = serde_json::to_value(delete_editor_file_view(&dir, "scenarios/a.yaml".into(), false).unwrap()).unwrap();
+        let files: Vec<&str> = v["files"].as_array().unwrap().iter().map(|e| e["rel_path"].as_str().unwrap()).collect();
+        assert_eq!(files, vec!["package.yaml"]);
+        assert_eq!(v["media"].as_array().map(|a| a.len()), Some(1));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 【要約タイムアウトの独立性 (2026-09-01)】あらすじの待ち時間 (`SUMMARY_LLM_TIMEOUT_SECS`) を
     /// プロファイル選択 (`set_summary_llm_config`) と**別の command** に分けた理由の固定。
     ///
