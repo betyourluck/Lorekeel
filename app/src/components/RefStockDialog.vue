@@ -33,7 +33,13 @@ async function applyCrop(bytes: Uint8Array) {
   cropping.value = null;
 }
 
-onMounted(() => game.loadRefStock());
+// 読み終わったか (成否を問わず)。失敗すると store の refStock は null のままなので、
+// これが無いと「読み込んでいます」が永久に出続ける (失敗の理由はトーストに出ている)。
+const loaded = ref(false);
+onMounted(async () => {
+  await game.loadRefStock();
+  loaded.value = true;
+});
 
 const slots = computed(() => {
   const stock = game.refStock;
@@ -103,7 +109,11 @@ function onDrop(slot: number, e: DragEvent) {
 
     <input ref="picker" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" class="hidden" @change="onPicked" />
 
-    <div class="grid grid-cols-3 gap-4 px-1">
+    <!-- 一覧が届くまでは枠を描かない (2026-09-04 ユーザーFB)。null のまま既定の 3 枠を空で
+         組むと「参照が無い」という嘘の状態を一瞬見せ、開いてから読み込んでいるように映る。 -->
+    <p v-if="!game.refStock && !loaded" class="py-10 text-center text-[11px] text-parchment/45">{{ t("refStock.loading") }}</p>
+    <p v-else-if="!game.refStock" class="py-10 text-center text-[11px] text-warn/80">{{ t("refStock.loadFailed") }}</p>
+    <div v-else class="grid grid-cols-3 gap-4 px-1">
       <div
         v-for="s in slots"
         :key="s.slot"
