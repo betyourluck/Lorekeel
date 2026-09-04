@@ -306,7 +306,8 @@ impl LlmConfig {
     }
 
     /// 非 fatal の設定警告 (純粋・テスト可)。プレイを止めないが「効いているつもり」を防ぐ:
-    /// - effort 設定時の max_tokens 不足 — Claude 系の max_tokens は **thinking+output の合算上限**
+    /// - effort 設定時の max_tokens 不足 — Claude 系と Gemini の max_tokens は **thinking+output の合算上限**
+    ///   (Gemini は 2026-09-04 probe: 上限 40 で思考だけ使い切り本文空 = 同じ形)
     ///   (combined)。既定 4096 のままだと思考が本文を食い潰し空応答/切断の芽 (spec 12 rev4、
     ///   claude-api リファレンス接地: effort 時 ≥16000 推奨・xhigh/max は 64000 目安)。
     /// - effort + temperature の併用 — effort が効く世代 (Opus 4.7/4.8・Sonnet 5) は
@@ -316,7 +317,7 @@ impl LlmConfig {
         if self.effort.is_some() {
             if self.max_tokens < 16000 {
                 out.push(format!(
-                    "LLM_EFFORT 設定時は LLM_MAX_TOKENS を 16000 以上に推奨 (現在 {} — Claude 系は思考+本文の合算上限のため、思考が本文を食い潰す恐れ。xhigh/max は 64000 目安)",
+                    "LLM_EFFORT 設定時は LLM_MAX_TOKENS を 16000 以上に推奨 (現在 {} — Claude 系と Gemini は思考+本文の合算上限のため、思考が本文を食い潰す恐れ。xhigh/max は 64000 目安)",
                     self.max_tokens
                 ));
             }

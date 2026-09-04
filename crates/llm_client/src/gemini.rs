@@ -88,6 +88,32 @@ pub(crate) struct GenerationConfig {
     /// 明示設定時のみ送る (Gemini は temperature 対応 — 他 adapter と同じ None 既定)。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
+    /// 推論の深さ (2026-09-04、`LLM_EFFORT` を Gemini にも通した)。設定時のみ送る —
+    /// None ならキーごと送らない = Google 既定の動的思考 (3.x flash は medium) のまま、
+    /// 従来の body と byte 一致。**思考は `maxOutputTokens` に含まれる** (probe: 上限 40 で
+    /// 思考だけ使い切り本文が空・MAX_TOKENS) ので、Claude と同じ「16000 以上」警告が効く。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_config: Option<ThinkingConfig>,
+}
+
+/// `generationConfig.thinkingConfig` (Gemini 3 の方言)。欄は**この入れ子**でなければならない —
+/// `generationConfig` 直下に `thinkingLevel` を置くと 400 `Unknown name` (2026-09-04 probe)。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ThinkingConfig {
+    /// low | medium | high (3.x flash が受ける段階。minimal は flash-lite 系だけなので使わない)。
+    pub thinking_level: &'static str,
+}
+
+/// canonical の effort → Gemini の `thinkingLevel` (純粋)。Gemini は 3 段階しか持たないので
+/// xhigh/max は high へ丸める (Grok の `reasoning_effort` と同じ扱い)。None は None = 送らない。
+pub(crate) fn thinking_level(effort: Option<&crate::config::Effort>) -> Option<&'static str> {
+    use crate::config::Effort;
+    effort.map(|e| match e {
+        Effort::Low => "low",
+        Effort::Medium => "medium",
+        Effort::High | Effort::XHigh | Effort::Max => "high",
+    })
 }
 
 /// canonical → Gemini ネイティブリクエスト (encode 純関数)。
@@ -96,7 +122,8 @@ pub(crate) struct GenerationConfig {
 /// - 2 本目以降の leading system (append-only synopsis) と先頭以外の system → user に降格
 ///   (inline contents = 非キャッシュ。cachedContent の再 pin churn を避ける)。
 /// - assistant → role "model"。
-/// - `effort` は送らない (Gemini の thinkingConfig 方言は未実装 — 対象は Claude/Grok のみ)。
+/// - `effort` 設定時のみ `generationConfig.thinkingConfig.thinkingLevel` (low/medium/high、xhigh/max は
+///   high へ丸め)。未設定なら送らない = Google 既定 (2026-09-04、[`thinking_level`])。
 /// - no-tools モード (`use_tools=false`) は Gemini では無視 (functionCallingConfig を
 ///   確実に尊重するため不要 — Anthropic と同じ扱い、spec 12 K4)。
 pub(crate) fn encode(req: &canonical::ChatRequest) -> GenerateContentRequest {
@@ -178,6 +205,8 @@ pub(crate) fn encode_with_cache(
         generation_config: GenerationConfig {
             max_output_tokens: req.max_tokens,
             temperature: req.temperature,
+            thinking_config: thinking_level(req.effort.as_ref())
+                .map(|l| ThinkingConfig { thinking_level: l }),
         },
         cached_content: cached,
     }

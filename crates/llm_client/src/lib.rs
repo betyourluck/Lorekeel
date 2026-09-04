@@ -1354,6 +1354,57 @@ mod tests {
         );
     }
 
+    /// 【Gemini thinkingLevel (2026-09-04、ユーザー指示「LLM_EFFORT を Gemini にも通して」)】
+    /// probe (gemini-3.8-flash) で確定した形を固定: 欄は `generationConfig.thinkingConfig.thinkingLevel`
+    /// (`generationConfig` 直下は 400 Unknown name)、値は low/medium/high で xhigh/max は high へ丸め
+    /// (Grok と同じ)。None なら**キーごと送らない** = 従来 body と byte 一致 (Google 既定の動的思考)。
+    /// cache 参照時も request 側に載る (generationConfig は per-request で cachedContent の対象外)。
+    #[test]
+    fn gemini_encode_maps_effort_to_thinking_level() {
+        use crate::config::Effort;
+        let mk = |effort: Option<Effort>| canonical::ChatRequest {
+            model: "gemini-3.8-flash".into(),
+            messages: user_msgs(),
+            tools: vec![canonical::ToolSpec {
+                name: EMIT_DELTA_TOOL.into(),
+                description: "d".into(),
+                parameters: state_delta_schema(),
+            }],
+            tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
+            temperature: None,
+            max_tokens: 4096,
+            effort,
+        };
+        let body = |effort| serde_json::to_value(gemini::encode(&mk(effort))).unwrap();
+
+        // 未設定 = 送らない (キー自体が無い)。
+        let none = body(None);
+        assert!(none["generationConfig"].get("thinkingConfig").is_none(), "None で thinkingConfig が出た");
+
+        for (effort, want) in [
+            (Effort::Low, "low"),
+            (Effort::Medium, "medium"),
+            (Effort::High, "high"),
+            (Effort::XHigh, "high"),
+            (Effort::Max, "high"),
+        ] {
+            let b = body(Some(effort));
+            assert_eq!(b["generationConfig"]["thinkingConfig"]["thinkingLevel"], want, "{effort:?}");
+            // 入れ子以外の場所には出ない (直下に置くと 400 になる形)。
+            assert!(b["generationConfig"].get("thinkingLevel").is_none());
+        }
+
+        // 明示キャッシュ参照時も per-request 側に載る (静的プレフィックスは cache へ・思考の深さは request へ)。
+        let cached = serde_json::to_value(gemini::encode_with_cache(
+            &mk(Some(Effort::High)),
+            Some("cachedContents/abc".into()),
+        ))
+        .unwrap();
+        assert_eq!(cached["cachedContent"], "cachedContents/abc");
+        assert!(cached.get("systemInstruction").is_none());
+        assert_eq!(cached["generationConfig"]["thinkingConfig"]["thinkingLevel"], "high");
+    }
+
     /// 【Phase C encode】canonical → generateContent。system は systemInstruction (D3)、
     /// assistant は role "model"、単一ツール強制は mode ANY + allowedFunctionNames (K2)、
     /// キーは camelCase。temperature None なら送らない。
