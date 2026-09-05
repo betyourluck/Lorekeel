@@ -919,7 +919,12 @@ export const useGameStore = defineStore("game", {
       const reqId = ++this.imageRequestId;
       this.imageBusy = true;
       try {
-        const view = await invoke<{ data_url: string; prompt: string; mime: string }>("generate_image", {
+        const view = await invoke<{
+          data_url: string;
+          prompt: string;
+          mime: string;
+          dropped_refs: string[];
+        }>("generate_image", {
           config: toBackendConfig(this.imageGen),
           direction: this.imageDirection.trim() || null,
           promptOverride: promptOverride?.trim() || null,
@@ -927,6 +932,14 @@ export const useGameStore = defineStore("game", {
         if (reqId !== this.imageRequestId) return; // 場面が変わった (新規/ロード/遷移)
         this.generatedImage = { dataUrl: view.data_url, prompt: view.prompt };
         this.showGeneratedImage = true;
+        // 合計上限で送らなかった参照があれば告げる (参照ストックの一覧は 1 枚ごとの省略理由しか
+        // 出せず、合計での切り捨ては生成時にしか決まらない。黙ると「参照が効かない」としか見えない)。
+        if (view.dropped_refs.length > 0) {
+          this.logToast = t("store.imageRefsDropped", {
+            count: view.dropped_refs.length,
+            names: view.dropped_refs.join(", "),
+          });
+        }
       } catch (e) {
         if (reqId === this.imageRequestId) this.logToast = t("store.imageFailed", { error: String(e) });
       } finally {
@@ -1705,6 +1718,9 @@ ${body}`, t("rename.ok"), true);
           sha256: expected,
         });
         this.addPackage(installed.path);
+        // 取得は成立したが更新検知が効かない (出所メタが書けなかった) — 黙ると「更新あり」が
+        // 永久に出ないことに気づけない (failures #98 の棚卸し)。
+        if (installed.warning) this.logToast = t("store.packageWarning", { error: installed.warning });
         return installed;
       } catch (e) {
         this.remoteError = String(e);
@@ -1765,11 +1781,13 @@ ${body}`, t("rename.ok"), true);
           force: edited,
         });
         const unknown = t("store.versionUnknown");
-        this.logToast = t("store.packageUpdated", {
+        const updated = t("store.packageUpdated", {
           title: r.title,
           from: r.from_version ?? unknown,
           to: r.to_version ?? unknown,
         });
+        // トーストは 1 枚なので、警告 (出所メタが更新できず次回の検知が無効) は同じ行に併記する。
+        this.logToast = r.warning ? `${updated} / ${t("store.packageWarning", { error: r.warning })}` : updated;
         await this.refreshPackages();
         await this.checkPackageUpdates();
       } catch (e) {

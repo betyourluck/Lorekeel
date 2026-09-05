@@ -1087,6 +1087,11 @@ struct GeneratedImageView {
     /// 「スタイル原文 + プロンプト書きの出力」の合成結果 — UI が「送られた文」を示す。
     prompt: String,
     mime: String,
+    /// 送信合計の上限 (`ref_stock::SEND_TOTAL_MAX_BYTES`) を超えて**送らなかった**参照画像の名前
+    /// (後ろから落とす)。参照ストックの一覧は 1 枚ごとの省略理由を出すが、合計での切り捨ては
+    /// 生成時にしか決まらないので、ここで返して frontend がトーストへ (黙ると「参照が効かない」
+    /// としか見えない = #83 と同じ症状。failures #98 の棚卸し)。
+    dropped_refs: Vec<String>,
 }
 
 /// 挿絵を 1 枚生成する (契約 commands.generate_image)。
@@ -1107,7 +1112,7 @@ async fn generate_image(
     session: tauri::State<'_, SharedSession>,
 ) -> Result<GeneratedImageView, String> {
     // ① 素材を写す (参照ストック spec 27 もここで読む — パッケージのフォルダは session が知る)。
-    let (messages, llm_config, seq, refs) = {
+    let (messages, llm_config, seq, refs, dropped_refs) = {
         let guard = session.lock().await;
         let sess = guard
             .as_ref()
@@ -1141,7 +1146,7 @@ async fn generate_image(
             style,
             refs.len(),
         );
-        (harness::image_prompt_messages(&req), sess.client.config().clone(), sess.scene_seq, refs)
+        (harness::image_prompt_messages(&req), sess.client.config().clone(), sess.scene_seq, refs, dropped)
     };
     // 手書き (prompt_override) があるならプロンプト書きは**呼ばない** — 手書きが最終形なので、
     // LLM を通す意味が無いうえ、待ち時間と課金だけ増える (spec 27 B-3)。
@@ -1188,7 +1193,7 @@ async fn generate_image(
     }
     let data_url = image_gen::data_url(&generated.mime, &generated.bytes);
     sess.last_image = Some((generated.mime.clone(), generated.bytes));
-    Ok(GeneratedImageView { data_url, prompt, mime: generated.mime })
+    Ok(GeneratedImageView { data_url, prompt, mime: generated.mime, dropped_refs })
 }
 
 /// セッションの参照フォルダを返す (無ければ**初回だけ**パッケージの種を写す、spec 27 決定 3)。
@@ -2596,6 +2601,10 @@ async fn fetch_app_update(
 struct InstalledPackage {
     path: String,
     title: String,
+    /// 出所メタ (spec 17) を書けなかったときの理由。パッケージは使えるが**更新検知が効かない**
+    /// (「更新あり」バッジが永久に出ない) ので、eprintln だけで済ませず frontend がトーストへ
+    /// (failures #98 の棚卸し)。正常時は None。
+    warning: Option<String>,
 }
 
 /// DL 受入上限 — サーバのファイル上限 100MB + 余裕 (無限ストリームへの蓋)。
@@ -2702,10 +2711,12 @@ async fn install_from_site(
     let installed = extracted??;
 
     // --- 受領側検証の入口: manifest が読めるか (深い検証は new_game 時の validate) ---
+    let mut warning: Option<String> = None;
     match read_manifest(&installed) {
         Ok(m) => {
             // --- 出所メタ (spec 17 機構①): 更新検知・編集検知の基準をフォルダ自身に記録。
-            // 書けなくてもパッケージは使える (更新だけ効かない) = 非致命の警告どまり。
+            // 書けなくてもパッケージは使える (更新だけ効かない) = 非致命の警告どまり — ただし
+            // 返りの `warning` に載せて frontend が見せる (黙ると更新が来ないことに気づけない)。
             match update::tree_hash(&installed) {
                 Ok(tree) => {
                     let meta = update::SourceMeta {
@@ -2720,14 +2731,21 @@ async fn install_from_site(
                             .unwrap_or(0),
                     };
                     if let Err(e) = update::write_source_meta(&installed, &meta) {
-                        eprintln!("[警告] 出所メタを書けませんでした (更新検知は無効): {e}");
+                        let w = format!("出所メタを書けませんでした (更新検知は無効): {e}");
+                        eprintln!("[警告] {w}");
+                        warning = Some(w);
                     }
                 }
-                Err(e) => eprintln!("[警告] tree_hash を計算できませんでした (更新検知は無効): {e}"),
+                Err(e) => {
+                    let w = format!("tree_hash を計算できませんでした (更新検知は無効): {e}");
+                    eprintln!("[警告] {w}");
+                    warning = Some(w);
+                }
             }
             Ok(InstalledPackage {
                 path: installed.to_string_lossy().into_owned(),
                 title: m.title,
+                warning,
             })
         }
         Err(e) => {
@@ -2763,6 +2781,8 @@ struct UpdateResult {
     title: String,
     from_version: Option<String>,
     to_version: Option<String>,
+    /// 出所メタを更新できなかった理由 (次回の更新検知が無効)。`InstalledPackage.warning` と同じ線。
+    warning: Option<String>,
 }
 
 /// 更新の排他 (rev2 B-10): 同時に 1 件だけ。実行中は検知もスキップする
@@ -3020,11 +3040,14 @@ async fn update_site_package(
             .map(|d| d.as_secs())
             .unwrap_or(0),
     };
-    if let Err(e) = update::write_source_meta(&dir, &new_meta) {
-        eprintln!("[警告] 出所メタを更新できませんでした (次回の更新検知は無効): {e}");
-    }
+    let warning = update::write_source_meta(&dir, &new_meta).err().map(|e| {
+        let w = format!("出所メタを更新できませんでした (次回の更新検知は無効): {e}");
+        eprintln!("[警告] {w}");
+        w
+    });
     Ok(UpdateResult {
         title: new_manifest.title,
+        warning,
         from_version: meta.version,
         to_version,
     })
@@ -3374,17 +3397,28 @@ struct FactsOpView {
     evicted: Option<String>,
 }
 
-/// 既成事実編集後の即時 autosave。失敗は警告のみ (編集自体は成立させる — play_turn の流儀)。
-fn facts_autosave(sess: &GameSession) {
-    if let Some(path) = &sess.save_path {
-        if let Err(e) = save_session(path, &session_save_of(sess)) {
-            eprintln!("[警告] 既成事実編集のオートセーブ失敗: {e}");
-        }
+/// 受理ターン・決断・対決ラウンド・既成事実編集の後の autosave (5 経路の唯一の実体)。
+/// 失敗しても進行は止めない (セーブは救済機構でセッション本体を殺さない) が、**黙らない** —
+/// eprintln はリリースビルドで見えないので `autosave-failed` イベントでトーストへ
+/// (failures #98 の棚卸し、2026-09-06)。黙ると「進めたつもりの進行が次回起動で消える」=
+/// spec 07 が守るはずのものを静かに失う形になる。失敗は受理ターンごとに高々 1 回鳴るので、
+/// トーストの再表示が「まだ失敗している」の合図を兼ねる (`synopsis-failed` と同じ流儀)。
+fn autosave(app: &tauri::AppHandle, sess: &GameSession) {
+    use tauri::Emitter;
+    let Some(path) = sess.save_path.as_ref() else { return };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = save_session(path, &session_save_of(sess)) {
+        let msg = e.to_string();
+        eprintln!("[警告] オートセーブ失敗: {msg}");
+        let _ = app.emit("autosave-failed", msg);
     }
 }
 
 #[tauri::command]
 async fn facts_add(
+    app: tauri::AppHandle,
     text: String,
     session: tauri::State<'_, SharedSession>,
 ) -> Result<FactsOpView, String> {
@@ -3398,12 +3432,13 @@ async fn facts_add(
     if added.is_none() {
         return Err("既成事実が空です".into());
     }
-    facts_autosave(sess);
+    autosave(&app, sess);
     Ok(FactsOpView { facts: fact_views(&sess.facts), evicted: evicted.map(|m| m.text) })
 }
 
 #[tauri::command]
 async fn facts_edit(
+    app: tauri::AppHandle,
     id: u64,
     text: String,
     session: tauri::State<'_, SharedSession>,
@@ -3416,12 +3451,13 @@ async fn facts_edit(
     if harness::apply_user_edit(&mut sess.facts, id, &text).is_none() {
         return Err("既成事実を編集できません (空または対象が見つからない)".into());
     }
-    facts_autosave(sess);
+    autosave(&app, sess);
     Ok(FactsOpView { facts: fact_views(&sess.facts), evicted: None })
 }
 
 #[tauri::command]
 async fn facts_delete(
+    app: tauri::AppHandle,
     id: u64,
     session: tauri::State<'_, SharedSession>,
 ) -> Result<FactsOpView, String> {
@@ -3433,7 +3469,7 @@ async fn facts_delete(
     if !harness::apply_user_delete(&mut sess.facts, id) {
         return Err("対象の既成事実が見つかりません".into());
     }
-    facts_autosave(sess);
+    autosave(&app, sess);
     Ok(FactsOpView { facts: fact_views(&sess.facts), evicted: None })
 }
 
@@ -3635,6 +3671,7 @@ async fn relay_fetch_package(
                 return Ok(InstalledPackage {
                     path: cached.to_string_lossy().into_owned(),
                     title: m.title,
+                    warning: None, // 卓の一時キャッシュは出所メタを持たない (更新検知の対象外)
                 });
             }
         }
@@ -3719,6 +3756,7 @@ async fn relay_fetch_package(
         Ok(m) => Ok(InstalledPackage {
             path: dest.to_string_lossy().into_owned(),
             title: m.title,
+            warning: None, // 同上
         }),
         Err(e) => {
             // 読めない配布物は据え置かない (次の join で壊れたキャッシュに当たらない)。
@@ -4252,15 +4290,7 @@ async fn do_play_turn(
     // オートセーブ (spec 07 Phase C): 受理ターン + campaign 遷移が全て確定したこの地点で書く。
     // 却下では書かない (state 無傷 = セーブも不変)。失敗は警告のみ (救済機構が本体を殺さない)。
     if view.accepted {
-        if let Some(path) = sess.save_path.clone() {
-            let save = session_save_of(sess);
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Err(e) = save_session(&path, &save) {
-                eprintln!("[警告] オートセーブ失敗: {e}");
-            }
-        }
+        autosave(app, sess);
     }
 
     // --- エピローグ (spec 11): 到達 + 終端 + 指示あり ---
@@ -4328,6 +4358,7 @@ struct DecisionResultView {
 /// play_turn が advance する)。エピローグ生成もここでは行わない (goal バナーと結末文のみ)。
 #[tauri::command]
 async fn resolve_dice_decision(
+    app: tauri::AppHandle,
     session: tauri::State<'_, SharedSession>,
     choice: String,
     degree: Option<String>,
@@ -4433,15 +4464,7 @@ async fn resolve_dice_decision(
         .collect();
 
     // 決断で正本が動いた → autosave (受理ターンと同じ流儀。失敗は警告のみ)。
-    if let Some(path) = sess.save_path.clone() {
-        let save = session_save_of(sess);
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Err(e) = save_session(&path, &save) {
-            eprintln!("[警告] オートセーブ失敗: {e}");
-        }
-    }
+    autosave(&app, sess);
 
     let (goal_id, goal_title, goal_narration) = goal_view(&sess.state, &sess.scenario);
     Ok(DecisionResultView {
@@ -4499,6 +4522,7 @@ struct ContestEndView {
 /// 決着時は digest を継続文脈 + 経緯ログへ併記し (次の GM ターンが読む)、autosave する。
 #[tauri::command]
 async fn play_contest_round(
+    app: tauri::AppHandle,
     session: tauri::State<'_, SharedSession>,
 ) -> Result<ContestRoundView, String> {
     let mut guard = session.lock().await;
@@ -4578,15 +4602,7 @@ async fn play_contest_round(
     });
 
     // ラウンドごとに正本が動く → autosave (クラッシュしても交換の途中から再開できる)。
-    if let Some(path) = sess.save_path.clone() {
-        let save = session_save_of(sess);
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Err(e) = save_session(&path, &save) {
-            eprintln!("[警告] オートセーブ失敗: {e}");
-        }
-    }
+    autosave(&app, sess);
 
     let (goal_id, goal_title, goal_narration) = goal_view(&sess.state, &sess.scenario);
     let stat_roll_views = r
@@ -5517,6 +5533,39 @@ mod tests {
                 "backend が emit する `{name}` が transport.ts の GAME_EVENTS に無い = 誰にも届かない"
             );
         }
+    }
+
+    /// 【failures #98 の棚卸し】非致命の失敗を eprintln だけで済ませていた 3 経路の返りに、
+    /// 警告の欄が**常に**載る (None/空でも欄が在る = frontend の型がそのまま読める)。
+    /// 出所メタが書けない (更新検知が無効になる) / 参照画像が合計上限で落ちた、は
+    /// 「動くが期待した効果が出ない」形で沈黙するので、返りに載せて見せる。
+    #[test]
+    fn non_fatal_warnings_ride_on_the_result_dtos() {
+        use super::{GeneratedImageView, InstalledPackage, UpdateResult};
+        let v = serde_json::to_value(InstalledPackage {
+            path: "p".into(),
+            title: "t".into(),
+            warning: None,
+        })
+        .unwrap();
+        assert!(v.as_object().unwrap().contains_key("warning"));
+        assert!(v["warning"].is_null());
+        let v = serde_json::to_value(UpdateResult {
+            title: "t".into(),
+            from_version: None,
+            to_version: None,
+            warning: Some("出所メタを更新できませんでした".into()),
+        })
+        .unwrap();
+        assert_eq!(v["warning"], "出所メタを更新できませんでした");
+        let v = serde_json::to_value(GeneratedImageView {
+            data_url: "data:".into(),
+            prompt: "p".into(),
+            mime: "image/png".into(),
+            dropped_refs: vec!["ref3.webp".into()],
+        })
+        .unwrap();
+        assert_eq!(v["dropped_refs"], serde_json::json!(["ref3.webp"]));
     }
 }
 

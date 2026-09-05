@@ -710,6 +710,10 @@ export const messages = {
       synopsisFailed:
         "⚠ あらすじの生成に失敗しました（プレイは続行・次のターンで自動再試行）: {error}",
       epilogueFailed: "⚠ エピローグの生成に失敗しました（結末文で幕）: {error}",
+      autosaveFailed: "⚠ オートセーブに失敗しました（進行は続行・保存先を確認してください）: {error}",
+      packageWarning: "⚠ {error}",
+      imageRefsDropped:
+        "⚠ 参照画像 {count} 枚は送信合計の上限を超えたため送りませんでした: {names}",
       openFolderFailed: "フォルダを開けません: {error}",
       resumeMarker: "── 続きから (turn {turn}) ──",
       chapterEndNamed: "結末「{goal}」",
@@ -1501,6 +1505,10 @@ export const messages = {
       synopsisFailed:
         "⚠ Synopsis generation failed (play continues; auto-retried next turn): {error}",
       epilogueFailed: "⚠ Epilogue generation failed (the ending text closes the story): {error}",
+      autosaveFailed: "⚠ Autosave failed (play continues; check the save folder): {error}",
+      packageWarning: "⚠ {error}",
+      imageRefsDropped:
+        "⚠ {count} reference image(s) exceeded the total upload limit and were not sent: {names}",
       openFolderFailed: "Couldn't open the folder: {error}",
       resumeMarker: "── Continued (turn {turn}) ──",
       chapterEndNamed: "the ending “{goal}”",

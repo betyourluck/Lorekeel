@@ -189,6 +189,10 @@ onMounted(() => {
       game.logToast = t("store.synopsisFailed", { error: String(payload) });
     } else if (name === "epilogue-failed") {
       game.logToast = t("store.epilogueFailed", { error: String(payload) });
+    } else if (name === "autosave-failed") {
+      // failures #98 の棚卸し: オートセーブの失敗は eprintln だけだった。黙ると「進めたつもりの
+      // 進行が次回起動で消える」= spec 07 が守るはずのものを静かに失う。
+      game.logToast = t("store.autosaveFailed", { error: String(payload) });
     }
   });
 });

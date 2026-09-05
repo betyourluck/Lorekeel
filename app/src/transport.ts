@@ -26,6 +26,7 @@ export const GAME_EVENTS = [
   "synopsis-failed",
   "epilogue-writing",
   "epilogue-failed",
+  "autosave-failed",
 ] as const;
 export type GameEventName = (typeof GAME_EVENTS)[number];
 

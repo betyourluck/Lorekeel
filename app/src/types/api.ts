@@ -455,6 +455,8 @@ export interface UpdateResult {
   title: string;
   from_version: string | null;
   to_version: string | null;
+  /** 出所メタを更新できなかった理由 (次回の更新検知が無効)。正常時 null。 */
+  warning: string | null;
 }
 
 /** 書庫の一覧応答 (items + ページネーション)。 */
@@ -469,4 +471,6 @@ export interface RemoteList {
 export interface InstalledPackage {
   path: string;
   title: string;
+  /** 出所メタを書けなかった理由 (更新検知が効かない)。正常時 null。 */
+  warning: string | null;
 }
