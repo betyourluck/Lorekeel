@@ -709,6 +709,7 @@ export const messages = {
       saveFailed: "保存失敗: {error}",
       synopsisFailed:
         "⚠ あらすじの生成に失敗しました（プレイは続行・次のターンで自動再試行）: {error}",
+      epilogueFailed: "⚠ エピローグの生成に失敗しました（結末文で幕）: {error}",
       openFolderFailed: "フォルダを開けません: {error}",
       resumeMarker: "── 続きから (turn {turn}) ──",
       chapterEndNamed: "結末「{goal}」",
@@ -1499,6 +1500,7 @@ export const messages = {
       saveFailed: "Save failed: {error}",
       synopsisFailed:
         "⚠ Synopsis generation failed (play continues; auto-retried next turn): {error}",
+      epilogueFailed: "⚠ Epilogue generation failed (the ending text closes the story): {error}",
       openFolderFailed: "Couldn't open the folder: {error}",
       resumeMarker: "── Continued (turn {turn}) ──",
       chapterEndNamed: "the ending “{goal}”",

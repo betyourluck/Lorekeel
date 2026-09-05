@@ -4281,7 +4281,14 @@ async fn do_play_turn(
                 let _ = app.emit("epilogue-writing", ());
                 match harness::generate_epilogue(&sess.client, &req).await {
                     Ok(text) => view.epilogue = Some(normalize(&text)),
-                    Err(e) => eprintln!("[警告] エピローグ生成に失敗 (結末文で幕): {e}"),
+                    Err(e) => {
+                        // failures #98: eprintln だけだとリリースビルド (コンソール無し) では
+                        // 結末文だけ出て黙って幕が下り、ユーザーは「生成されない」としか
+                        // 見えない。`synopsis-failed` と同じ経路でトーストへ (理由込み)。
+                        let msg = e.to_string();
+                        eprintln!("[警告] エピローグ生成に失敗 (結末文で幕): {msg}");
+                        let _ = app.emit("epilogue-failed", msg);
+                    }
                 }
             }
         }
@@ -5475,6 +5482,41 @@ mod tests {
         let got = normalize_path(p);
         assert_eq!(got, want, ".. が畳まれ '..' を含まない");
         assert!(!got.to_string_lossy().contains(".."), "結果に '..' が残らない");
+    }
+
+    /// 【failures #98 — 沈黙する失敗の配線】backend が `app.emit("...")` で出すゲーム
+    /// イベントは、frontend の `GAME_EVENTS` (transport.ts の中継表) に**全部**載っていなければ
+    /// ならない。載っていない名前は `LocalTransport.onEvent` が購読せず、ホストがゲストへ
+    /// 中継もしないので、emit しても**誰にも届かず**エラーも出ない — `epilogue-failed` を
+    /// 足すとき frontend を忘れると、この Red で分かる。名前の一覧は両ファイルの本文から
+    /// 機械抽出する (手で写した一覧は写し漏れの側に穴を開ける)。
+    #[test]
+    fn every_emitted_game_event_is_forwarded_by_the_frontend_transport() {
+        let backend = include_str!("lib.rs");
+        let transport = include_str!("../../src/transport.ts");
+        let mut emitted: Vec<&str> = backend
+            .match_indices(".emit(\"")
+            .map(|(i, m)| {
+                let rest = &backend[i + m.len()..];
+                &rest[..rest.find('"').expect("閉じ引用符")]
+            })
+            // イベント名の形 (英小文字とハイフン) だけ残す — このテスト自身の doc comment の
+            // `.emit("...")` のような説明用の書き方を拾わない (本文は自分自身を include する)。
+            .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_lowercase() || c == '-'))
+            .collect();
+        emitted.sort_unstable();
+        emitted.dedup();
+        // 抽出器が実物を捉えていることの自己検査 (0 件で緑になる形を許さない)。
+        assert!(emitted.contains(&"synopsis-failed"), "抽出できていない: {emitted:?}");
+        let table_start = transport.find("export const GAME_EVENTS").expect("GAME_EVENTS がある");
+        let table = &transport[table_start..];
+        let table = &table[..table.find(']').expect("配列の閉じ")];
+        for name in &emitted {
+            assert!(
+                table.contains(&format!("\"{name}\"")),
+                "backend が emit する `{name}` が transport.ts の GAME_EVENTS に無い = 誰にも届かない"
+            );
+        }
     }
 }
 

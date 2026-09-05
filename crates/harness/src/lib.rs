@@ -61,8 +61,8 @@ pub use package::{
     LoadedCampaignPackage, LoadedPackage, PackageManifest, PlayerDef,
 };
 pub use epilogue::{
-    build_epilogue_request, epilogue_messages, generate_epilogue, EpilogueRequest,
-    EPILOGUE_TIMEOUT_SECS,
+    build_epilogue_request, epilogue_messages, epilogue_timeout_secs, generate_epilogue,
+    EpilogueRequest, EPILOGUE_TIMEOUT_SECS,
 };
 pub use error::HarnessError;
 pub use loader::{inject_cast, load_characters};

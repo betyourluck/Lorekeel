@@ -20,9 +20,32 @@ use crate::error::HarnessError;
 use crate::synopsis::SynopsisEntry;
 use crate::turn::TurnLog;
 
-/// エピローグ生成のタイムアウト (秒)。Summarizer (15 秒) より長め = 見せ場、
-/// request_timeout (既定 120 秒) より短い = 終幕を API エラーの人質にしない。
-pub const EPILOGUE_TIMEOUT_SECS: u64 = 30;
+/// エピローグ生成のタイムアウト (秒) の**既定値**。実効値は [`epilogue_timeout_secs`]。
+///
+/// **2026-09-06 に 30 → 120 へ** (ユーザー報告「エピローグが生成されない」、failures #98)。
+/// 30 秒は起草時の Summarizer 15 秒を基準に「見せ場だから長め」と決めた値で、その Summarizer
+/// 側は 2026-08-26 に 60 秒へ上げ 2026-09-01 に UI から 600 秒まで選べるようにしたのに、ここ
+/// だけが取り残されていた。実測 (live_epilogue、Meta muse-spark・908 字の素材・各 3 回) は
+/// **24〜51 秒でばらつき、`LLM_EFFORT` の有無で差が出ない** = 遅いモデルでは素の生成でも
+/// 30 秒を確率的に越え、実プレイの素材量 (あらすじ 2000 + 経緯 2400 字) ならさらに遅い。
+/// 終幕は**次のターンを止めない**ので待ち時間の代償が最も小さい場所 — 一度 2 分払って
+/// 語られる方が、30 秒で必ず落ちて結末文だけで幕が下りるより安い (`SYNOPSIS_TIMEOUT_SECS` の 15→60 と同じ判断)。`LlmConfig.request_timeout`
+/// の既定と同値 = それ以上待っても API 側が先に切るので上限として意味を持つ。
+pub const EPILOGUE_TIMEOUT_SECS: u64 = 120;
+
+/// 実効タイムアウト (秒) = 既定と**あらすじの待ち時間設定** (`SUMMARY_LLM_TIMEOUT_SECS`、
+/// 設定 UI の select) の大きい方。ユーザーが「このモデルは遅いので 300 秒待つ」と決めた
+/// なら、終幕の一度きりの生成をそれより短く切る理由が無い。専用の env は増やさない
+/// (設定の欄が増えるだけで、答えは同じ「どれだけ待てるか」)。
+pub fn epilogue_timeout_secs() -> u64 {
+    epilogue_timeout_for(crate::synopsis::synopsis_timeout_secs())
+}
+
+/// [`epilogue_timeout_secs`] の純粋部 (テスト可)。`summary_secs` はあらすじの実効値。
+fn epilogue_timeout_for(summary_secs: u64) -> u64 {
+    EPILOGUE_TIMEOUT_SECS.max(summary_secs)
+}
+
 /// 素材のあらすじ予算 (文字)。`synopsis_note` と同値 = GM が毎ターン読んでいる量を超えない。
 const SYNOPSIS_BUDGET: usize = 2000;
 /// 素材の経緯予算 (文字)。`history_note` と同値。
@@ -141,18 +164,18 @@ pub fn epilogue_messages(request: &EpilogueRequest) -> Vec<ChatMessage> {
 
 /// エピローグを生成する (ネットワーク経路・単体テスト対象外 = Summarizer 実装と同じ線引き)。
 /// GM の client を使う (SUMMARY_LLM_* は使わない — 見せ場はナレーターの声で語られるべき)。
-/// [`EPILOGUE_TIMEOUT_SECS`] + CoT 除去 (#30) + 空応答 Err。失敗は呼び出し側が skip
-/// (結末文 + バナーの従来表示へフォールバック、非致命)。
+/// [`epilogue_timeout_secs`] + CoT 除去 (#30) + 空応答 Err。失敗は呼び出し側が skip
+/// (結末文 + バナーの従来表示へフォールバック、非致命) — ただし**黙って skip しない**こと
+/// (app は `epilogue-failed` イベントでトーストへ、CLI は println。failures #98)。
 pub async fn generate_epilogue(
     client: &LlmClient,
     request: &EpilogueRequest,
 ) -> Result<String, HarnessError> {
+    let secs = epilogue_timeout_secs();
     let fut = client.generate(epilogue_messages(request));
-    let text = tokio::time::timeout(std::time::Duration::from_secs(EPILOGUE_TIMEOUT_SECS), fut)
+    let text = tokio::time::timeout(std::time::Duration::from_secs(secs), fut)
         .await
-        .map_err(|_| {
-            HarnessError::Summarize(format!("エピローグがタイムアウト ({EPILOGUE_TIMEOUT_SECS} 秒)"))
-        })?
+        .map_err(|_| HarnessError::Summarize(format!("エピローグがタイムアウト ({secs} 秒)")))?
         .map_err(|e| HarnessError::Summarize(e.to_string()))?;
     let text = llm_client::strip_reasoning_blocks(&text).trim().to_string();
     if text.is_empty() {
@@ -243,6 +266,17 @@ locations:
 
     /// 【素材予算】経緯は新しい方優先で 2400 字に収め、溢れた古い方は落ちる
     /// (終端 = コンテキスト最大の瞬間にタイムアウト率を悪化させない)。空 synopsis でも動く。
+    /// 【failures #98】終幕の待ち時間は既定 120 秒で、あらすじの待ち時間設定より短くならない
+    /// (ユーザーが遅いモデルに 300 秒を選んだなら終幕もそれだけ待つ)。あらすじ側が短くても
+    /// 既定を下回らない。
+    #[test]
+    fn epilogue_timeout_is_at_least_default_and_follows_summary_setting() {
+        assert_eq!(EPILOGUE_TIMEOUT_SECS, 120);
+        assert_eq!(epilogue_timeout_for(60), 120, "あらすじ既定 60 でも終幕は 120");
+        assert_eq!(epilogue_timeout_for(300), 300, "あらすじ側を伸ばせば終幕も追随");
+        assert_eq!(epilogue_timeout_for(0), 120);
+    }
+
     #[test]
     fn epilogue_material_respects_budgets_dropping_oldest() {
         let (sc, goal) = scenario_with_goal();

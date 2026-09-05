@@ -18,7 +18,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 /** transport が中継するイベント名 (backend の emit と 1:1)。 */
-export const GAME_EVENTS = ["synopsis-compacting", "synopsis-failed", "epilogue-writing"] as const;
+// backend の emit と 1:1 であることは app backend のテスト
+// `every_emitted_game_event_is_forwarded_by_the_frontend_transport` が固定する (載っていない名前は
+// 誰にも届かない = failures #98 の沈黙)。
+export const GAME_EVENTS = [
+  "synopsis-compacting",
+  "synopsis-failed",
+  "epilogue-writing",
+  "epilogue-failed",
+] as const;
 export type GameEventName = (typeof GAME_EVENTS)[number];
 
 export type GameEventHandler = (name: GameEventName, payload: unknown) => void;

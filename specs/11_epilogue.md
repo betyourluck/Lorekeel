@@ -89,8 +89,17 @@ goals:
   - synopsis 全章（`synopsis_note` と同じ**予算 2000 字**・新しい章優先）
   - 未圧縮 chronicle の tail（`history_note` と同じ**予算 2400 字**・新しい方優先）
   - last_narration（最終場面との接続）
-- **タイムアウト（rev2）**: 専用 30 秒（`EPILOGUE_TIMEOUT_SECS`。Summarizer 15 秒より
-  長め = 見せ場、request_timeout 120 秒より短い = 終幕を人質にしない）。
+- **タイムアウト（rev2 → 2026-09-06 改訂）**: 起草時は専用 30 秒（Summarizer 15 秒より
+  長め = 見せ場、request_timeout 120 秒より短い = 終幕を人質にしない）。**2026-09-06 に既定
+  120 秒へ**（failures #98、ユーザー報告「エピローグが生成されない」）— Summarizer 側は
+  08-26 に 60 秒・09-01 に UI から 600 秒まで選べるようにしたのに、ここだけ 30 秒で取り残され、
+  遅いモデル（Meta muse-spark、素の生成で 24〜51 秒・`LLM_EFFORT` の有無で差なし）で確率的に
+  落ちていた。実効値は `epilogue_timeout_secs()` = 既定 120 とあらすじの待ち時間設定
+  （`SUMMARY_LLM_TIMEOUT_SECS`）の大きい方 — 専用の env は増やさない（問いは同じ「どれだけ
+  待てるか」）。終幕は次のターンを止めないので待ち時間の代償が最も小さい場所。
+  **失敗は黙って skip しない**: app は `epilogue-failed` イベント → トースト（`synopsis-failed`
+  同型、理由込み）。backend の emit 名が frontend の中継表 `GAME_EVENTS` に全部載っていることは
+  app backend のテストが本文から機械抽出して固定する（載っていない名前は誰にも届かない）。
 - **規律（決定 — rev2 で未決から昇格)**: 「**起きたことは記録のとおりに・これから起きること
   （後日談）は自由に**」を既定の system 規律に入れる。エピローグは終幕なので以後のターンを
   汚染しない（#47 の经路なし）が、プレイヤーが読む確定文なので記録との矛盾は禁止。後日談の
@@ -106,7 +115,7 @@ goals:
 // harness (pure・テスト可)
 pub struct EpilogueRequest { /* goal 情報 + synopsis (予算) + chronicle tail (予算) + last_narration + 指示 */ }
 pub fn epilogue_messages(req: &EpilogueRequest) -> Vec<ChatMessage>;  // system=規律 / user=素材
-// 生成 helper (ネットワーク経路・テスト対象外。CoT 除去 #30 + 空応答 Err + 30 秒は Summarizer 同型)
+// 生成 helper (ネットワーク経路・テスト対象外。CoT 除去 #30 + 空応答 Err + タイムアウトは epilogue_timeout_secs() = 既定 120 秒・あらすじ設定に追随、2026-09-06)
 pub async fn generate_epilogue(client: &LlmClient, req: &EpilogueRequest) -> Result<String, HarnessError>;
 ```
 
@@ -137,7 +146,8 @@ pub async fn generate_epilogue(client: &LlmClient, req: &EpilogueRequest) -> Res
   GoalDef 側は既知キーが型から導出されるので追加に自動追従することも同テストで担保）。
   data_contract の Goal 節へ同時に追記（optional 追加なので前倒し不要 — 凍結は同 commit で足りる）。
 - **Phase B（harness）**: `EpilogueRequest` / `epilogue_messages`（規律文言 = 記録矛盾禁止・
-  後日談許可・目安 600 字・本文のみ）/ 素材の予算カット / `generate_epilogue`（30 秒）。
+  後日談許可・目安 600 字・本文のみ）/ 素材の予算カット / `generate_epilogue`（起草時 30 秒 →
+  2026-09-06 に既定 120 秒）。
   PoC: メッセージ形状 + 規律文言 + 予算。
 - **Phase C（app/CLI）**: 終端判定（advance 辺なし）に epilogue 分岐 / `TurnView.epilogue` /
   `epilogue-writing` イベント / frontend 表示（会話ログ）+ CLI println。build green、

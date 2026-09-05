@@ -180,11 +180,15 @@ onMounted(() => {
   // - synopsis-compacting (spec 10): 圧縮中はローディング文言を切り替え (解除は playTurn の finally)。
   // - epilogue-writing (spec 11): 同じ仕組みで文言切り替え。
   // - synopsis-failed (spec 10): リリースビルドはコンソールが無いのでトーストで可視化。
+  // - epilogue-failed (spec 11, failures #98): 同じ理由。結末文だけで幕が下りたとき「生成されて
+  //   いない」でなく「失敗した (理由)」が見える。
   unlistenGameEvents = transport.onEvent((name, payload) => {
     if (name === "synopsis-compacting") game.compacting = true;
     else if (name === "epilogue-writing") game.writingEpilogue = true;
     else if (name === "synopsis-failed") {
       game.logToast = t("store.synopsisFailed", { error: String(payload) });
+    } else if (name === "epilogue-failed") {
+      game.logToast = t("store.epilogueFailed", { error: String(payload) });
     }
   });
 });
