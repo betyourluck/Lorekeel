@@ -425,7 +425,10 @@ Rust 側の `wire_shape_matches_the_frontend_interface` が留める。
    従来は手でフォルダと package.yaml を作ってローカル読み込みしないと編集に入れなかった。
    **package.yaml だけでは作らない** — entry 不在で `load_package` が落ち、一覧で「読込失敗」に
    なる。テンプレート選択（ジャンル別の雛形）はこの先の話で、v1 は空の骨格 1 種だけ。
-3. **AI にパッケージを書かせる / 直させる** — **構造的な制約が一つある**: LLM クライアント
+3. **AI にパッケージを書かせる / 直させる** — **→ 2026-09-06 に `specs/29_ai_edit_assistant.md` として起票**（ユーザー発案:
+   新規作成はさせず**編集のみ**・1 ファイルずつ・仕様は種別ごとの断片・道具は read/grep/sd/diff の
+   4 本を Fuseforks から写経。下の (a) を採り、tool の往復を llm_client canonical に足すのが Phase A）。
+   以下は起票前の検討として残す。 **構造的な制約が一つある**: LLM クライアント
    （`crates/llm_client`）とプロンプト構築（`crates/harness`）は**ゲームのターンループのために
    在る**もので、`GameSession` 前提の経路（`run_turn` / あらすじ / エピローグ / 挿絵の
    プロンプト書き）しか持たない。編集モードは**プレイの外**で動く（ゲーム未開始でも編集できる）
