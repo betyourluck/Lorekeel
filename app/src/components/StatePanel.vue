@@ -823,8 +823,10 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
         class="fixed inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-[2px]"
         @click.self="selectedId = null"
       >
+        <!-- `bg-ink` は不透明な下地。gradient だけだと上端の ash/50 が暗幕越しに本文を透かし、
+             ライトテーマ (薄いクリームの下に暗い文字) で読めなくなる (2026-09-07 ユーザーFB)。 -->
         <div
-          class="profile-card w-[30rem] max-w-[92vw] max-h-[80vh] overflow-y-auto rounded-xl border border-ash bg-gradient-to-b from-ash/50 via-ink to-ink shadow-2xl"
+          class="profile-card w-[30rem] max-w-[92vw] max-h-[80vh] overflow-y-auto rounded-xl border border-ash bg-ink bg-gradient-to-b from-ash/50 via-ink to-ink shadow-2xl"
         >
           <!-- ヘッダ: 顔アイコン (クリックで profile 本文を開閉) + 名前 + 属性チップ -->
           <header class="relative flex items-center gap-3 p-4 pb-3 border-b border-ash/60">
