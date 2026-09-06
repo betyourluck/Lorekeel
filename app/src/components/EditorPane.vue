@@ -114,7 +114,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         :aria-label="t('editAssist.heading')"
         @click="game.toggleEditAssist()"
       >
-        <Icon :name="game.editor.assist.running ? 'spinner' : 'sparkle'" :size="15" />
+        <!-- Icon の spinner は静的な弧 — 回転は使う側が animate-spin を付ける約束 (ImageControls と同じ)。
+             付け忘れると「止まっている」ように見える (ユーザー報告 2026-09-06)。 -->
+        <Icon :name="game.editor.assist.running ? 'spinner' : 'sparkle'" :size="15" :class="{ 'animate-spin': game.editor.assist.running }" />
       </button>
       <!-- 保存: フロッピー (ユーザーFB 2026-08-28 — 文字ボタンからアイコンへ)。
            処理中は spinner に差し替えて、押せない理由を形で見せる。 -->
@@ -125,7 +127,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         :aria-label="t('editor.save')"
         @click="game.saveEditorFile()"
       >
-        <Icon :name="game.editor.saving ? 'spinner' : 'floppy'" :size="15" />
+        <Icon :name="game.editor.saving ? 'spinner' : 'floppy'" :size="15" :class="{ 'animate-spin': game.editor.saving }" />
       </button>
     </div>
 

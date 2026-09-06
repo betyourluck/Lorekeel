@@ -57,7 +57,7 @@ function onKey(e: KeyboardEvent) {
           :disabled="!canRun"
           @click="game.runEditAssist()"
         >
-          <Icon :name="assist.running ? 'spinner' : 'sparkle'" :size="14" />
+          <Icon :name="assist.running ? 'spinner' : 'sparkle'" :size="14" :class="{ 'animate-spin': assist.running }" />
           {{ assist.running ? t("editAssist.running") : t("editAssist.run") }}
         </button>
         <button
@@ -73,10 +73,13 @@ function onKey(e: KeyboardEvent) {
 
       <!-- 進行ログ: 1 呼び出し 1 行。実行中は最後の行が生きている合図。 -->
       <div
-        v-if="assist.log.length"
+        v-if="assist.log.length || assist.running"
         class="max-h-40 overflow-y-auto rounded-lg bg-black/30 p-2 font-mono text-[11px] leading-relaxed text-parchment/70"
       >
         <div v-for="(line, i) in assist.log" :key="i" class="whitespace-pre-wrap break-all">{{ line }}</div>
+        <!-- 道具の呼び出しの合間 (モデルが考えている 5〜20 秒) にも動きを出す — 進行ログは
+             呼び出しのたびにしか増えないので、これが無いと固まったように見える。 -->
+        <div v-if="assist.running" class="animate-pulse text-ember/80">{{ t("editAssist.thinking") }}</div>
       </div>
 
       <p v-if="assist.error" class="text-xs text-red-300 whitespace-pre-wrap">{{ assist.error }}</p>
