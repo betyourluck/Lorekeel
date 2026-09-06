@@ -1,0 +1,1 @@
+{"model":"test-model","input":[{"type":"message","role":"system","content":"あなたは GM です。"},{"type":"message","role":"system","content":"# あらすじ\n第一章。"},{"type":"message","role":"user","content":"プレイヤー: 扉を調べる"},{"type":"message","role":"assistant","content":"扉は固く閉ざされている。"},{"type":"message","role":"user","content":"プレイヤー: 鍵を使う"}],"max_output_tokens":4096,"store":false}

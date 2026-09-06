@@ -31,7 +31,7 @@ use serde_json::Value;
 use crate::canonical::{ChatRequest, ChatResponse, Finish, ToolCall, ToolChoice, Usage};
 use crate::config::Effort;
 use crate::error::LlmError;
-use crate::wire::Role;
+use crate::wire::{ChatMessage, Role};
 
 // --- リクエスト ---------------------------------------------------------------
 
@@ -58,12 +58,62 @@ pub(crate) struct ResponsesRequest {
     pub store: bool,
 }
 
+/// `input` の 1 要素。`Message` は従来と同一バイト (golden)。`FunctionCall` /
+/// `FunctionCallOutput` は tool の往復 (spec 29 Phase A、Fuseforks `responses_input.rs` の写経)。
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct InputItem {
-    #[serde(rename = "type")]
-    pub kind: &'static str, // 常に "message"
-    pub role: &'static str, // system | user | assistant
-    pub content: String,
+#[serde(untagged)]
+pub(crate) enum InputItem {
+    Message {
+        #[serde(rename = "type")]
+        kind: &'static str, // 常に "message"
+        role: &'static str, // system | user | assistant
+        content: String,
+    },
+    /// 履歴として再送する assistant の関数呼び出し (`arguments` は JSON 文字列)。
+    FunctionCall {
+        #[serde(rename = "type")]
+        kind: &'static str, // 常に "function_call"
+        call_id: String,
+        name: String,
+        arguments: String,
+    },
+    /// 関数実行の結果。
+    FunctionCallOutput {
+        #[serde(rename = "type")]
+        kind: &'static str, // 常に "function_call_output"
+        call_id: String,
+        output: String,
+    },
+}
+
+/// canonical の 1 発話 → `input` の要素列 (0〜N 個)。
+fn encode_message(m: &ChatMessage) -> Vec<InputItem> {
+    match m.role {
+        Role::System => vec![InputItem::Message { kind: "message", role: "system", content: m.content.clone() }],
+        Role::User => vec![InputItem::Message { kind: "message", role: "user", content: m.content.clone() }],
+        Role::Assistant => {
+            let mut out = Vec::new();
+            // ツール呼び出しの無い assistant は従来どおり常に出す (空でも = バイト不変)。
+            // 呼び出しつきでは本文が空なら出さない (空発話を積むと次の周が 400 = Fuseforks #29)。
+            if m.tool_calls.is_empty() || !m.content.is_empty() {
+                out.push(InputItem::Message { kind: "message", role: "assistant", content: m.content.clone() });
+            }
+            for c in &m.tool_calls {
+                out.push(InputItem::FunctionCall {
+                    kind: "function_call",
+                    call_id: c.id.clone(),
+                    name: c.name.clone(),
+                    arguments: c.args.to_string(),
+                });
+            }
+            out
+        }
+        Role::Tool => vec![InputItem::FunctionCallOutput {
+            kind: "function_call_output",
+            call_id: m.tool_call_id.clone().unwrap_or_default(),
+            output: m.content.clone(),
+        }],
+    }
 }
 
 /// 関数ツール定義。**flat** — 互換層 (`{type, function:{name,…}}`) と違い `name` 等が
@@ -169,22 +219,7 @@ pub(crate) fn flavor_for(base_url: &str) -> Flavor {
 
 /// canonical → Responses wire (純粋)。
 pub(crate) fn encode(req: &ChatRequest, flavor: Flavor) -> ResponsesRequest {
-    let mut input: Vec<InputItem> = req
-        .messages
-        .iter()
-        .map(|m| InputItem {
-            kind: "message",
-            role: match m.role {
-                Role::System => "system",
-                Role::User => "user",
-                Role::Assistant => "assistant",
-                // Kataribe はツール結果を返さない (単一ツール強制で 1 往復)。
-                // 万一混じっても user に落として壊さない。
-                Role::Tool => "user",
-            },
-            content: m.content.clone(),
-        })
-        .collect();
+    let mut input: Vec<InputItem> = req.messages.iter().flat_map(encode_message).collect();
     let tools: Vec<ToolDef> = req
         .tools
         .iter()
@@ -207,9 +242,11 @@ pub(crate) fn encode(req: &ChatRequest, flavor: Flavor) -> ResponsesRequest {
             ToolChoice::Auto | ToolChoice::None => None,
         }
     };
-    if flavor == Flavor::Meta {
+    // schema を prompt 末尾へ載せるのは**単一ツール強制 (emit_delta) の周だけ** — spec 29 の
+    // 編集ループ (Auto・複数ツール) で tools[0] の schema を「JSON で提出せよ」と言うのは誤り。
+    if flavor == Flavor::Meta && matches!(req.tool_choice, ToolChoice::Specific(_)) {
         if let Some(t) = req.tools.first() {
-            input.push(InputItem {
+            input.push(InputItem::Message {
                 kind: "message",
                 role: "system",
                 content: crate::openai_compat::tool_or_json_instruction(&t.parameters),

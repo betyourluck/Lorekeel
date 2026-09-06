@@ -306,6 +306,21 @@ schema 機械生成（規格=実装の単一真実源）も不変で、canonical
 schemars 出力がそのまま流れる。同人配布の北極星（受領者ゼロ設定）は
 `Provider::detect` の自動判定と opt-in 方言（未設定なら現行と同一の body）で守る。
 
+## 追記 — tool の往復（2026-09-06、spec 29 Phase A）
+
+canonical の `ChatMessage` に **tool の往復欄**（assistant 側 `tool_calls` / `Role::Tool` 側
+`tool_call_id` + `tool_name`）を足し、4 adapter が encode する（Fuseforks `llm/canonical.rs` +
+adapter 4 本の写経。MPL-2.0・同一作者）。v1 の「`Role::Tool` は現状未使用・user へ降格」は
+撤回。`ToolChoice::Auto` も 4 adapter で形になる。**従来のメッセージ列の wire は 1 バイトも
+変わらない**（golden 10 本 = 改修前のコードで採取したフィクスチャに対して固定 — 安定
+プレフィックスのバイト列がキャッシュの鍵なので、`null` 1 つで割れる）。翻訳マトリクスの
+正本は data_contract `UnifiedToolLayer.tool_roundtrip`。設計上の判断 2 つ: ①**Gemini には id を
+送らない**（Kataribe の id は decode で合成した `call_{seq}_{i}` で Google 発行ではない。名前と
+順序で対応づく）②**schema を prompt 末尾へ載せるのは単一ツール強制の周だけ**（互換 Auto
+モードと Meta 方言 — 複数ツールで tools[0] の schema を「JSON で提出せよ」と言うのは誤り。
+既存呼び出しは常に `Specific` なので不変）。公開 API は `LlmClient::chat(messages, tools) ->
+ChatTurn` で、ループ（実行 → `tool_result` を積んで再送）は呼び出し側の責務。
+
 ## 未決
 
 1. **Driver + ToolRegistry の導入時期** — memoria の tool 化 / AITuber 方向が具体化した時。

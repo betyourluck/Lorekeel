@@ -11,6 +11,18 @@ use std::sync::Mutex;
 
 use crate::anthropic;
 use crate::canonical;
+use crate::wire::ToolCall;
+
+/// [`LlmClient::chat`] の 1 往復の結果 (canonical の応答をそのまま公開する薄い形)。
+#[derive(Debug, Clone)]
+pub struct ChatTurn {
+    /// 本文 (ツール呼び出しだけの応答では None)。
+    pub text: Option<String>,
+    /// モデルが呼んだツール (空なら「終わり」= ループの終了条件)。
+    pub tool_calls: Vec<ToolCall>,
+    pub finish: canonical::Finish,
+    pub usage: canonical::Usage,
+}
 use crate::config::{LlmConfig, Provider, ToolMode};
 use crate::error::LlmError;
 use crate::gemini;
@@ -208,6 +220,39 @@ impl LlmClient {
                 );
             }
         }
+    }
+
+    /// ツールつきの 1 往復 (spec 29 Phase A)。`tools` を提示して **モデルに選ばせ**
+    /// (`ToolChoice::Auto`)、本文と呼び出し列をそのまま返す。ループ (呼び出しの実行 →
+    /// [`ChatMessage::tool_result`] を積んで再送) は呼び出し側の責務 — 道具の実体は
+    /// llm_client の外 (app の編集ルート) にあり、ここは wire の翻訳だけを持つ。
+    ///
+    /// 互換経路が [`ToolMode::Off`] (tools を送れないサーバ) のときは `Config` エラー —
+    /// 往復を JSON で偽装する経路は作らない (spec 29「前提の訂正」)。
+    pub async fn chat(
+        &self,
+        messages: Vec<ChatMessage>,
+        tools: Vec<canonical::ToolSpec>,
+    ) -> Result<ChatTurn, LlmError> {
+        if !tools.is_empty()
+            && self.config.provider == Provider::OpenAiCompat
+            && *self.tool_mode.lock().expect("tool_mode lock") == ToolMode::Off
+        {
+            return Err(LlmError::Config(
+                "この接続先はツール呼び出しに対応していません (LLM_TOOL_MODE=off / LLM_USE_TOOLS=false)。ツールを使う機能には EDITOR_LLM_* で別のモデルを指定してください".into(),
+            ));
+        }
+        let req = canonical::ChatRequest {
+            model: self.config.model.clone(),
+            messages,
+            tools,
+            tool_choice: canonical::ToolChoice::Auto,
+            temperature: self.config.temperature,
+            max_tokens: self.config.max_tokens,
+            effort: self.config.effort,
+        };
+        let resp = self.complete(req).await?;
+        Ok(ChatTurn { text: resp.text, tool_calls: resp.tool_calls, finish: resp.finish, usage: resp.usage })
     }
 
     /// プレーンなテキスト生成 (`generate`)。ツール無し。

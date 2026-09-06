@@ -1,0 +1,1 @@
+{"model":"test-model","max_tokens":4096,"system":[{"type":"text","text":"あなたは GM です。","cache_control":{"type":"ephemeral"}},{"type":"text","text":"# あらすじ\n第一章。","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"プレイヤー: 扉を調べる"},{"role":"assistant","content":"扉は固く閉ざされている。"},{"role":"user","content":"プレイヤー: 鍵を使う"}]}

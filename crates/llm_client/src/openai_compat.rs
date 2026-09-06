@@ -7,7 +7,7 @@
 use crate::canonical::{ChatRequest, ChatResponse, Finish, ToolCall, ToolChoice, Usage};
 use crate::config::{Effort, ToolMode};
 use crate::error::LlmError;
-use crate::wire;
+use crate::wire::{self, ChatMessage, Role};
 
 /// canonical → OpenAI 互換 wire。
 ///
@@ -18,6 +18,11 @@ use crate::wire;
 ///   **messages 末尾の system** として積む (#29 さくら AI Engine / ローカル互換)
 pub(crate) fn encode(req: &ChatRequest, mode: ToolMode) -> wire::ChatRequest {
     let mut messages = req.messages.clone();
+    // 単一ツール強制 (emit_delta) の周だけ schema を prompt に載せる。spec 29 の編集ループ
+    // (`ToolChoice::Auto`・複数ツール) では tools[0] の schema を「JSON で提出せよ」と
+    // 言うのは誤りなので出さない。既存呼び出し (generate_structured) は常に Specific =
+    // バイト列不変 (golden)。
+    let single_forced = matches!(req.tool_choice, ToolChoice::Specific(_));
     let (tools, tool_choice) = if req.tools.is_empty() {
         (Vec::new(), None)
     } else if mode == ToolMode::Off {
@@ -47,7 +52,7 @@ pub(crate) fn encode(req: &ChatRequest, mode: ToolMode) -> wire::ChatRequest {
         // prompt に載せる (Off の json_instruction とは**文面が違う** — あちらは
         // 「このサーバはツール非対応」と言い切るので、Auto でそのまま使うとツール利用を
         // 自分で妨げる)。末尾に積むので安定プレフィックスは動かない = キャッシュ影響なし。
-        if mode == ToolMode::Auto {
+        if mode == ToolMode::Auto && single_forced {
             messages.push(wire::ChatMessage::system(tool_or_json_instruction(
                 &req.tools[0].parameters,
             )));
@@ -69,7 +74,7 @@ pub(crate) fn encode(req: &ChatRequest, mode: ToolMode) -> wire::ChatRequest {
     };
     wire::ChatRequest {
         model: req.model.clone(),
-        messages,
+        messages: messages.iter().map(encode_message).collect(),
         temperature: req.temperature,
         max_tokens,
         max_completion_tokens,
@@ -196,6 +201,35 @@ pub(crate) fn blames_tool_choice(body: &str) -> bool {
 
 /// OpenAI 互換 wire → canonical。
 ///
+/// canonical の 1 発話 → OpenAI 互換 wire (spec 29 Phase A、Fuseforks `openai_compat.rs` の写経)。
+/// ツール結果 = `role: "tool"` + `tool_call_id` / ツールを呼んだ assistant = `tool_calls`
+/// (`arguments` は JSON 文字列へ) + 本文は空なら省く / それ以外 = 本文だけ (従来と同一バイト)。
+pub(crate) fn encode_message(m: &ChatMessage) -> wire::OaiMessage {
+    if m.role == Role::Tool {
+        return wire::OaiMessage {
+            role: Role::Tool,
+            content: Some(m.content.clone()),
+            tool_calls: Vec::new(),
+            tool_call_id: m.tool_call_id.clone(),
+        };
+    }
+    let tool_calls: Vec<wire::OaiRequestToolCall> = m
+        .tool_calls
+        .iter()
+        .map(|c| wire::OaiRequestToolCall {
+            id: c.id.clone(),
+            kind: wire::ToolKind::Function,
+            function: wire::OaiFunctionCall { name: c.name.clone(), arguments: c.args.to_string() },
+        })
+        .collect();
+    let content = if tool_calls.is_empty() || !m.content.is_empty() {
+        Some(m.content.clone())
+    } else {
+        None
+    };
+    wire::OaiMessage { role: m.role.clone(), content, tool_calls, tool_call_id: None }
+}
+
 /// tool_calls の arguments (**JSON 文字列**) はここで **1 回だけ** parse して以後は
 /// オブジェクトとして運ぶ (写経元 D2 — 二重エンコード/未パースの取り違えを境界で殺す)。
 /// 壊れた arguments は **raw を保持した** Parse エラー (#34 同型・再生成の燃料)。

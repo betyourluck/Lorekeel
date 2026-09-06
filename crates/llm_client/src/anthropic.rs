@@ -84,7 +84,30 @@ impl CacheControl {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct TurnMessage {
     pub role: &'static str, // "user" | "assistant"
-    pub content: String,
+    pub content: TurnContent,
+}
+
+/// 発話の本文。**tool の往復が無ければ素の文字列** (従来と同一バイト、golden)。
+/// tool_use / tool_result を運ぶときだけブロック列 (spec 29 Phase A、Fuseforks `anthropic.rs` の写経)。
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub(crate) enum TurnContent {
+    Text(String),
+    Blocks(Vec<RequestBlock>),
+}
+
+/// request 側の content ブロック。
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
+pub(crate) enum RequestBlock {
+    #[serde(rename = "text")]
+    Text { text: String },
+    /// assistant がツールを呼んだ履歴 (`input` は最初からオブジェクト)。
+    #[serde(rename = "tool_use")]
+    ToolUse { id: String, name: String, input: Value },
+    /// ツール結果。**Anthropic は `user` ロールに載せる** (OpenAI 互換の `role: "tool"` と構造が違う)。
+    #[serde(rename = "tool_result")]
+    ToolResult { tool_use_id: String, content: String },
 }
 
 /// ネイティブ形のツール定義 (OpenAI 形と違い function 包みが無く、schema キーは `input_schema`)。
@@ -95,12 +118,14 @@ pub(crate) struct ToolDef {
     pub input_schema: Value,
 }
 
-/// 特定ツールの呼び出し強制 (`{"type":"tool","name":...}`)。
+/// ツール選択。`{"type":"tool","name":...}` (特定ツールの強制 = emit_delta) か
+/// `{"type":"auto"}` (spec 29 の編集ループ。モデルが選ぶ)。
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct ToolChoice {
     #[serde(rename = "type")]
-    pub kind: &'static str, // 常に "tool"
-    pub name: String,
+    pub kind: &'static str, // "tool" | "auto"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// canonical → ネイティブ Messages リクエスト (spec 12 Phase A/B の encode 純関数)。
@@ -120,15 +145,39 @@ pub(crate) fn encode(req: &canonical::ChatRequest) -> MessagesRequest {
                 text: m.content.clone(),
                 cache_control: None,
             }),
-            // 先頭以外の system は user へ降格 (壊さない)。Role::Tool は現状未使用だが同様に降格。
-            Role::System | Role::Tool | Role::User => turns.push(TurnMessage {
+            // 先頭以外の system は user へ降格 (壊さない)。
+            Role::System | Role::User => turns.push(TurnMessage {
                 role: "user",
-                content: m.content.clone(),
+                content: TurnContent::Text(m.content.clone()),
             }),
-            Role::Assistant => turns.push(TurnMessage {
+            // ツール結果は user ロールの tool_result ブロック (spec 29 Phase A)。
+            Role::Tool => turns.push(TurnMessage {
+                role: "user",
+                content: TurnContent::Blocks(vec![RequestBlock::ToolResult {
+                    tool_use_id: m.tool_call_id.clone().unwrap_or_default(),
+                    content: m.content.clone(),
+                }]),
+            }),
+            Role::Assistant if m.tool_calls.is_empty() => turns.push(TurnMessage {
                 role: "assistant",
-                content: m.content.clone(),
+                content: TurnContent::Text(m.content.clone()),
             }),
+            // ツールを呼んだ assistant の履歴: 本文 (空なら出さない — 空 text ブロックは 400) +
+            // tool_use ブロック。
+            Role::Assistant => {
+                let mut blocks = Vec::new();
+                if !m.content.is_empty() {
+                    blocks.push(RequestBlock::Text { text: m.content.clone() });
+                }
+                for c in &m.tool_calls {
+                    blocks.push(RequestBlock::ToolUse {
+                        id: c.id.clone(),
+                        name: c.name.clone(),
+                        input: c.args.clone(),
+                    });
+                }
+                turns.push(TurnMessage { role: "assistant", content: TurnContent::Blocks(blocks) });
+            }
         }
     }
     // 安定プレフィックスの多段 breakpoint (spec 14 Phase A): leading system メッセージ毎に
@@ -139,16 +188,29 @@ pub(crate) fn encode(req: &canonical::ChatRequest) -> MessagesRequest {
         block.cache_control = Some(CacheControl::ephemeral());
     }
 
-    let (tools, tool_choice) = match req.tools.first() {
-        Some(t) => (
-            vec![ToolDef {
-                name: t.name.clone(),
-                description: t.description.clone(),
-                input_schema: t.parameters.clone(),
-            }],
-            Some(ToolChoice { kind: "tool", name: t.name.clone() }),
-        ),
-        None => (Vec::new(), None),
+    let tools: Vec<ToolDef> = req
+        .tools
+        .iter()
+        .map(|t| ToolDef {
+            name: t.name.clone(),
+            description: t.description.clone(),
+            input_schema: t.parameters.clone(),
+        })
+        .collect();
+    // Specific = 名指しの強制 (従来と同一バイト) / Auto・Required = モデルが選ぶ (spec 29) /
+    // None = 欄ごと省く。
+    let tool_choice = if tools.is_empty() {
+        None
+    } else {
+        match &req.tool_choice {
+            canonical::ToolChoice::Specific(name) => {
+                Some(ToolChoice { kind: "tool", name: Some(name.clone()) })
+            }
+            canonical::ToolChoice::Auto | canonical::ToolChoice::Required => {
+                Some(ToolChoice { kind: "auto", name: None })
+            }
+            canonical::ToolChoice::None => None,
+        }
     };
 
     // effort は opt-in (None なら thinking/output_config ともキーごと送らない = 現行動作)。

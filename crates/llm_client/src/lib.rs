@@ -18,16 +18,21 @@ mod client;
 mod config;
 mod error;
 mod gemini;
+#[cfg(test)]
+mod golden;
+#[cfg(test)]
+mod tool_roundtrip;
 mod openai_compat;
 mod parse;
 mod responses;
 mod wire;
 
-pub use client::{CachePoint, CacheStat, LlmClient};
+pub use canonical::{Finish, ToolSpec, Usage};
+pub use client::{CachePoint, CacheStat, ChatTurn, LlmClient};
 pub use config::{Effort, LlmConfig, Provider, ToolMode};
 pub use error::LlmError;
 pub use parse::strip_reasoning_blocks;
-pub use wire::{ChatMessage, Role};
+pub use wire::{ChatMessage, Role, ToolCall};
 
 use gm_core::StateDelta;
 
@@ -427,7 +432,7 @@ mod tests {
     fn request_forces_the_emit_delta_tool() {
         let req = ChatRequest {
             model: "m".into(),
-            messages: user_msgs(),
+            messages: user_msgs().iter().map(openai_compat::encode_message).collect(),
             temperature: Some(0.1),
             max_tokens: Some(256),
             max_completion_tokens: None,
@@ -454,7 +459,7 @@ mod tests {
         // ツール無しの generate ではキーごと消える (skip_serializing_if)。
         let plain = ChatRequest {
             model: "m".into(),
-            messages: user_msgs(),
+            messages: user_msgs().iter().map(openai_compat::encode_message).collect(),
             temperature: None,
             max_tokens: Some(256),
             max_completion_tokens: None,
@@ -923,7 +928,7 @@ mod tests {
         assert!(nbody.get("tool_choice").is_none());
         let last = no_tools.messages.last().unwrap();
         assert_eq!(last.role, Role::System, "json_instruction は末尾の system");
-        assert!(last.content.contains("JSON Schema"), "schema を載せた指示を積む");
+        assert!(last.content.as_deref().unwrap_or("").contains("JSON Schema"), "schema を載せた指示を積む");
     }
 
     /// 【Phase B effort】LLM_EFFORT 設定時のみ `thinking: adaptive` + `output_config.effort` を
@@ -1195,7 +1200,7 @@ mod tests {
         // ゆえに Auto では schema も prompt に載せる。ただし Off の文面 (「このサーバは
         // ツール呼び出しに対応していません」) を流用してはならない — ツール利用を自分で妨げる。
         let auto = openai_compat::encode(&compat_req("Llama-4-Maverick"), ToolMode::Auto);
-        let hint = &auto.messages.last().expect("指示文が積まれること").content;
+        let hint = &auto.messages.last().expect("指示文が積まれること").content.clone().unwrap_or_default();
         assert!(hint.contains("JSON Schema") && hint.contains("narration"), "schema を載せる");
         assert!(hint.contains("emit_delta"), "まずツールで提出させる: {hint}");
         assert!(hint.contains("必ず配列"), "実機の崩れ (ops が文字列) を名指しで防ぐ: {hint}");

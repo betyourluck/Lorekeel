@@ -336,20 +336,39 @@ impl LlmConfig {
     /// (「安いモデルだけ差し替える」が SUMMARY_LLM_MODEL 1 行で書ける)。
     /// どちらも無ければ `None` (呼び出し側は GM の client を共用 = 受領者ゼロ設定)。
     pub fn summary_from_env(base: &LlmConfig) -> Result<Option<Self>, LlmError> {
-        Self::summary_overrides(
-            base,
-            env_opt("SUMMARY_LLM_BASE_URL"),
-            env_opt("SUMMARY_LLM_API_KEY"),
-            env_opt("SUMMARY_LLM_MODEL"),
-            env_opt("SUMMARY_LLM_PROVIDER"),
-        )
+        Self::profile_from_env("SUMMARY", base)
     }
 
-    /// [`Self::summary_from_env`] の純粋ロジック (env 非依存・テスト可)。
-    /// provider は明示 > 実効 base_url からの自動判定 (本体の provider を継がない —
-    /// base_url が変われば話すべきプロトコルも変わる)。
+    /// AI 編集用の設定 (spec 29)。`EDITOR_LLM_MODEL` か `EDITOR_LLM_BASE_URL` が設定されて
+    /// いれば `Some`、未指定フィールドは GM 設定から継承 (あらすじと同じ機構)。GM の接続先が
+    /// ツール呼び出しに対応しないとき (`ToolMode::Off`) の逃げ道でもある。
+    pub fn editor_from_env(base: &LlmConfig) -> Result<Option<Self>, LlmError> {
+        Self::profile_from_env("EDITOR", base)
+    }
+
+    /// `{prefix}_LLM_*` の別プロファイル (env 読み)。[`Self::profile_overrides`] へ委譲。
+    pub fn profile_from_env(prefix: &str, base: &LlmConfig) -> Result<Option<Self>, LlmError> {
+        let key = |suffix: &str| env_opt(&format!("{prefix}_LLM_{suffix}"));
+        Self::profile_overrides(base, prefix, key("BASE_URL"), key("API_KEY"), key("MODEL"), key("PROVIDER"))
+    }
+
+    /// [`Self::summary_overrides`] の互換 wrapper (prefix = SUMMARY)。
     pub fn summary_overrides(
         base: &LlmConfig,
+        base_url: Option<String>,
+        api_key: Option<String>,
+        model: Option<String>,
+        provider: Option<String>,
+    ) -> Result<Option<Self>, LlmError> {
+        Self::profile_overrides(base, "SUMMARY", base_url, api_key, model, provider)
+    }
+
+    /// 別プロファイルの純粋ロジック (env 非依存・テスト可)。`prefix` はエラー文言の
+    /// env 名にだけ使う。provider は明示 > 実効 base_url からの自動判定 (本体の provider を
+    /// 継がない — base_url が変われば話すべきプロトコルも変わる)。
+    pub fn profile_overrides(
+        base: &LlmConfig,
+        prefix: &str,
         base_url: Option<String>,
         api_key: Option<String>,
         model: Option<String>,
@@ -361,7 +380,7 @@ impl LlmConfig {
         let effective_url = base_url.unwrap_or_else(|| base.base_url.clone());
         let provider = match provider {
             None => Provider::detect(&effective_url),
-            Some(raw) => Provider::parse_env(&raw, "SUMMARY_LLM_PROVIDER")?,
+            Some(raw) => Provider::parse_env(&raw, &format!("{prefix}_LLM_PROVIDER"))?,
         };
         // tool_mode が答えるのは「**この接続先**は tool_choice をどこまで受けるか」なので、
         // 実効 url が本体と同じなら答えも同じ = そのまま継ぐ (LLM_TOOL_MODE の明示や

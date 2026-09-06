@@ -44,9 +44,39 @@ pub(crate) struct Content {
     pub parts: Vec<Part>,
 }
 
+/// 発話の構成要素。`text` だけなら `{"text":...}` (従来と同一バイト、golden)。tool の往復
+/// (spec 29 Phase A、Fuseforks `gemini.rs` の写経) では `functionCall` / `functionResponse`。
+/// **id は送らない** — Kataribe の呼び出し id は decode で合成した `call_{seq}_{i}` で
+/// Google が発行したものではなく、Gemini は名前 (と順序) で対応づける。
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct Part {
-    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function_call: Option<FunctionCallPart>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function_response: Option<FunctionResponsePart>,
+}
+
+impl Part {
+    fn text(s: &str) -> Self {
+        Part { text: Some(s.to_string()), function_call: None, function_response: None }
+    }
+}
+
+/// 履歴として再送する model のツール呼び出し。
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct FunctionCallPart {
+    pub name: String,
+    pub args: Value,
+}
+
+/// ツール結果。文字列を直に置けないので `{"result": ...}` で包む。
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct FunctionResponsePart {
+    pub name: String,
+    pub response: Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -148,16 +178,42 @@ pub(crate) fn encode_with_cache(
             // inline contents (user) になる — pin すると章追加毎に fingerprint が変わり
             // cachedContent を再作成する storage churn になるため、キャッシュ対象にしない。
             Role::System if contents.is_empty() && system_parts.is_empty() => {
-                system_parts.push(Part { text: m.content.clone() })
+                system_parts.push(Part::text(&m.content))
             }
-            Role::System | Role::Tool | Role::User => contents.push(Content {
+            Role::System | Role::User => contents.push(Content {
                 role: "user",
-                parts: vec![Part { text: m.content.clone() }],
+                parts: vec![Part::text(&m.content)],
             }),
-            Role::Assistant => contents.push(Content {
+            // ツール結果は user ロールの functionResponse (Gemini に tool ロールは無い)。
+            Role::Tool => contents.push(Content {
+                role: "user",
+                parts: vec![Part {
+                    text: None,
+                    function_call: None,
+                    function_response: Some(FunctionResponsePart {
+                        name: m.tool_name.clone().unwrap_or_default(),
+                        response: serde_json::json!({ "result": m.content }),
+                    }),
+                }],
+            }),
+            Role::Assistant if m.tool_calls.is_empty() => contents.push(Content {
                 role: "model",
-                parts: vec![Part { text: m.content.clone() }],
+                parts: vec![Part::text(&m.content)],
             }),
+            Role::Assistant => {
+                let mut parts = Vec::new();
+                if !m.content.is_empty() {
+                    parts.push(Part::text(&m.content));
+                }
+                for c in &m.tool_calls {
+                    parts.push(Part {
+                        text: None,
+                        function_call: Some(FunctionCallPart { name: c.name.clone(), args: c.args.clone() }),
+                        function_response: None,
+                    });
+                }
+                contents.push(Content { role: "model", parts });
+            }
         }
     }
 

@@ -25,9 +25,10 @@ pub(crate) struct ChatRequest {
     pub effort: Option<Effort>,
 }
 
-/// ツール定義。`parameters` は JSON Schema (schemars 機械生成の単一真実源)。
+/// ツール定義。`parameters` は JSON Schema (`emit_delta` は schemars 機械生成の単一真実源、
+/// spec 29 の編集道具は手書き)。
 #[derive(Debug, Clone)]
-pub(crate) struct ToolSpec {
+pub struct ToolSpec {
     pub name: String,
     pub description: String,
     pub parameters: Value,
@@ -47,7 +48,7 @@ pub(crate) enum ToolChoice {
 /// 応答終了理由。`Length` は empty-response 防御 (spec 12 Phase D) の判定材料 —
 /// 推論モデルが budget を思考に使い切った空応答の一次シグナル。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Finish {
+pub enum Finish {
     Stop,
     ToolUse,
     Length,
@@ -58,26 +59,15 @@ pub(crate) enum Finish {
 /// #44/#45 + spec 14 の hit rate 曲線) の一次ソースで、adapter が各 wire の該当フィールド
 /// から正規化する。
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct Usage {
+pub struct Usage {
     pub prompt: u64,
-    #[allow(dead_code)]
     pub completion: u64,
     pub cache_read: u64,
 }
 
-/// ツール呼び出し。`args` は **必ず JSON オブジェクト** (写経元 D2) —
-/// OpenAI 系の「arguments は JSON 文字列」は adapter の decode 境界で 1 回だけ parse する。
-#[derive(Debug, Clone)]
-pub(crate) struct ToolCall {
-    /// プロバイダが返さなければ空文字。Gemini adapter (Phase C) は client 単位の
-    /// 単調カウンタから `call_{seq}_{index}` を合成して埋める (rev4・Must 4)。
-    #[allow(dead_code)]
-    pub id: String,
-    /// 単一ツール強制 (emit_delta) では分岐に使わないが、canonical としては運ぶ。
-    #[allow(dead_code)]
-    pub name: String,
-    pub args: Value,
-}
+/// ツール呼び出し。定義は wire 側 ([`crate::wire::ToolCall`]、pub) — spec 29 で呼び出し側
+/// (編集ループ) が履歴を組むので canonical の外へ出した。`args` は **必ず JSON オブジェクト** (D2)。
+pub(crate) use crate::wire::ToolCall;
 
 /// プロバイダ中立の応答。
 #[derive(Debug, Clone)]

@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// メッセージ役割。`tool` ロールは将来のツール結果返却用 (現状未使用)。
+/// メッセージ役割。`tool` ロールはツール結果の返送 (spec 29 Phase A で往復を実装)。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
@@ -15,23 +15,102 @@ pub enum Role {
     Tool,
 }
 
-/// 送信メッセージ。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// 送信メッセージ (canonical)。
+///
+/// **tool の往復欄 (spec 29 Phase A、Fuseforks `llm/canonical.rs` の写経 — MPL-2.0・同一作者)**:
+/// assistant がツールを呼んだ発話は `tool_calls` を持ち、その結果は `Role::Tool` + `tool_call_id`
+/// (+ `tool_name` = Gemini の `functionResponse` が名前で対応づけるため) で返す。
+/// **呼び出しを履歴へ残さずに結果だけ積むと、プロバイダ側が「対応する呼び出しが無い結果」を
+/// 拒否する** — 必ず対で積む ([`Self::assistant_tool_calls`] → [`Self::tool_result`])。
+/// 3 欄とも空なら `skip_serializing_if` で**出ない** = 従来のメッセージ列のバイト列は不変
+/// (golden で固定)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ChatMessage {
     pub role: Role,
     pub content: String,
+    /// [`Role::Assistant`] がこの発話で呼んだツール。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
+    /// [`Role::Tool`] のとき、どの呼び出しへの結果か。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// [`Role::Tool`] のとき、実行したツール名 (Gemini は id でなく名前で対応づける)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+}
+
+/// ツール呼び出し (canonical)。`args` は **必ず JSON オブジェクト** (spec 12 D2) —
+/// OpenAI 系の「arguments は JSON 文字列」は adapter の境界で 1 回だけ変換する
+/// (decode で parse・encode で `to_string`)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolCall {
+    /// プロバイダが返さなければ空文字。Gemini adapter は client 単位の単調カウンタから
+    /// `call_{seq}_{index}` を合成して埋める (spec 12 rev4・Must 4)。
+    pub id: String,
+    pub name: String,
+    pub args: serde_json::Value,
 }
 
 impl ChatMessage {
+    fn plain(role: Role, content: impl Into<String>) -> Self {
+        Self { role, content: content.into(), tool_calls: Vec::new(), tool_call_id: None, tool_name: None }
+    }
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: Role::System, content: content.into() }
+        Self::plain(Role::System, content)
     }
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: Role::User, content: content.into() }
+        Self::plain(Role::User, content)
     }
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: Role::Assistant, content: content.into() }
+        Self::plain(Role::Assistant, content)
     }
+    /// ツールを呼んだ assistant の発話 (履歴として再送する側)。
+    pub fn assistant_tool_calls(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
+        Self { tool_calls, ..Self::plain(Role::Assistant, content) }
+    }
+    /// ツール実行の結果。`call_id` は対応する [`ToolCall::id`]、`tool_name` は同 `name`。
+    pub fn tool_result(
+        call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        Self {
+            tool_call_id: Some(call_id.into()),
+            tool_name: Some(tool_name.into()),
+            ..Self::plain(Role::Tool, content)
+        }
+    }
+}
+
+/// OpenAI 互換 wire の 1 メッセージ (request 側)。canonical [`ChatMessage`] から
+/// `openai_compat::encode_message` が写す。tool 欄の無い発話は `{"role","content"}` だけ =
+/// 従来の [`ChatMessage`] 直接シリアライズとバイト同一 (golden)。
+#[derive(Debug, Clone, Serialize)]
+pub struct OaiMessage {
+    pub role: Role,
+    /// 本文。**ツール呼び出しだけの assistant では省く** (空文字を送ると拒む互換サーバがある)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<OaiRequestToolCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+/// 履歴として再送する assistant のツール呼び出し (`{id, type:"function", function:{name, arguments}}`)。
+#[derive(Debug, Clone, Serialize)]
+pub struct OaiRequestToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: ToolKind,
+    pub function: OaiFunctionCall,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OaiFunctionCall {
+    pub name: String,
+    /// JSON **文字列** (canonical の `args` オブジェクトを encode 境界で文字列化)。
+    pub arguments: String,
 }
 
 // --- リクエスト ---------------------------------------------------------------
@@ -39,7 +118,7 @@ impl ChatMessage {
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatRequest {
     pub model: String,
-    pub messages: Vec<ChatMessage>,
+    pub messages: Vec<OaiMessage>,
     /// 明示設定時のみ送る。新しめのモデル (例: claude-opus-4-8) は temperature を
     /// 非対応にしており、送ると 400 を返す。未設定 (None) なら provider 既定に委ねる。
     #[serde(skip_serializing_if = "Option::is_none")]

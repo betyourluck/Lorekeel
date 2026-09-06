@@ -1,7 +1,13 @@
 # spec 29: AI 編集 — 編集モードで 1 ファイルずつ、道具で直させる
 
-**Status**: rev2（2026-09-06 起草 → 同日査読 2 本（重大 7 + 曖昧 5 + 軽微 4 / 矛盾 7）を反映。
-実装ゼロ。査読の反映は末尾「査読の反映」節に凍結）。spec 28「次の一手」3 を回収する。
+**Status**: rev2 → **Phase A 実装済（2026-09-06、査読の着手指示どおり）**。2026-09-06 起草 →
+同日査読 2 本（重大 7 + 曖昧 5 + 軽微 4 / 矛盾 7）を反映 → Phase A: canonical に tool の往復欄
++ 4 adapter の encode（Fuseforks 写経）+ `LlmClient::chat` + `EDITOR_LLM_*`（`profile_from_env`
+に一般化）。PoC: **golden 10 本 = 改修前のコードで採取**した wire のバイト列に対する同一性
+（4 adapter × forced/auto/plain）+ 往復 5 本（4 adapter の tool_calls/tool_result の形・Gemini
+id なし・EDITOR プロファイルの継承）。llm_client 68 → 77、workspace 381、clippy clean。
+査読の反映は末尾「査読の反映」節に凍結。spec 28「次の一手」3 を回収する。
+Phase B〜E は未着手。
 
 ---
 
@@ -240,7 +246,7 @@ containment のテスト（app 側）で固定する。
 
 ## Phase 分割
 
-- **Phase A（llm_client: tool の往復）**: canonical に `tool_calls` / `tool_call_id` / `tool_name` +
+- ✅ **Phase A（llm_client: tool の往復、2026-09-06 実装済）**: canonical に `tool_calls` / `tool_call_id` / `tool_name` +
   4 adapter の encode/decode（Fuseforks 写経）+ `EDITOR_LLM_*`（`summary_from_env` の一般化）。
   PoC: 既存経路の encode が byte 一致 / 各 adapter で assistant(tool_calls) → tool(result) の対が
   wire に出る / Gemini の id 合成と `functionResponse` / Responses の `function_call_output` /

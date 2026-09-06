@@ -1,0 +1,1 @@
+{"contents":[{"role":"user","parts":[{"text":"# あらすじ\n第一章。"}]},{"role":"user","parts":[{"text":"プレイヤー: 扉を調べる"}]},{"role":"model","parts":[{"text":"扉は固く閉ざされている。"}]},{"role":"user","parts":[{"text":"プレイヤー: 鍵を使う"}]}],"systemInstruction":{"parts":[{"text":"あなたは GM です。"}]},"generationConfig":{"maxOutputTokens":4096}}
