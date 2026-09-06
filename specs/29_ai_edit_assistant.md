@@ -20,7 +20,16 @@ Fuseforks 写経）+ command `edit_assist_run` / `edit_assist_cancel` + `edit-as
 1 文字語 / 道具の宣言 / 往復の順序と報告 / 反復検知 / 上限 / 修復 1 周 / 直らなくても差し替え /
 キャンセル）+ app 5 本（一覧外の拒否と #39 文言・バッファとディスクの読み分け・grep / sd の
 状態機械と全置換と diff / 診断が返りに載る / spec 道具 / 配線で辿る表）+ live 1 本（ignored）。
-harness 153、app backend 87、workspace 395。Phase D（UI）・E（実測）は未着手。
+harness 153、app backend 87、workspace 395。
+**Phase D 実装済（同日、GUI 目視はユーザー実測待ち）**: エディタヘッダに ✨（開いているファイルが
+あるときだけ・開いていれば熾火・実行中は spinner）→ `EditAssistPanel`（`FloatingPanel` の器・
+動的 import = 3.6 KB の別 chunk）: 指示欄（揮発・Ctrl+Enter）/ 実行・取り消し / 進行ログ
+（`edit-assist-progress` を 1 行ずつ）/ 報告・差し替えの有無・打ち切り理由・残った診断・
+モデルと周回とトークン。実行中は CodeMirror が読み取り専用（`readonly` prop = Compartment）。
+差し替えは store が `editor.text` へ入れる → `CodeEditor` の watch が **1 回の dispatch** で
+全置換 = undo 1 回で戻る（E 節の要件は既存の watch が満たしていた）。実行中にファイルを
+切り替えていたら結果は捨てる（別ファイルの本文を上書きしない）。vue-tsc / vitest 53 / build 緑。
+Phase E（3 モデル × 3 依頼の実測）は未着手。
 
 ---
 
@@ -273,7 +282,7 @@ containment のテスト（app 側）で固定する。
   返す / `diff` が初期 vs 作業 / 診断が結果に載る / 周回上限 + 修復 1 周 / 反復検知が
   preview→apply を止めない / containment。PoC（harness）: 素材の byte 固定 / fake クライアントで
   「read → spec → sd preview → sd apply → 終了」の往復。
-- **Phase D（UI）**: ヘッダのボタン + 浮遊パネル + 進行ログ + 読み取り専用 + 単一
+- ✅ **Phase D（UI、2026-09-06 実装済・目視はユーザー実測待ち）**: ヘッダのボタン + 浮遊パネル + 進行ログ + 読み取り専用 + 単一
   トランザクションの差し替え。目視はユーザー実測（提示層は構造的にユーザーが検出器になる）。
 - **Phase E（実測）**: 同梱 4 パッケージに対して「主人公の hp を 12 にして」「湖畔に SAN 判定の
   challenge を 1 つ足して」「モカの profile に趣味を足して」の 3 依頼を 3 モデル（Claude /

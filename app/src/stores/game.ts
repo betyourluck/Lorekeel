@@ -34,8 +34,7 @@ import type {
   SlotView,
   MapView,
   FactView,
-  FactsOpView,
-} from "../types/api";
+  FactsOpView, EditAssistView } from "../types/api";
 
 // d100 ロールアンダーの成功度 (spec 16) の表示ラベル。内部 id は英語 (ログ検索・セーブ安定)、
 // 表示はこの言語表で差し替え可能。未知 id は素通し (前方互換)。
@@ -253,6 +252,16 @@ export interface EditorState {
    *  CRLF のまま比較すると「開いただけで ●」になる (実機で発覚)。読み込みで覚えて LF 化し、
    *  保存で戻す — ディスクの改行を変えない (変えると tree_hash と diff が荒れる)。 */
   eol: "\n" | "\r\n";
+  /** AI 編集 (spec 29 Phase D)。指示は**揮発** (保存しない)。running の間はエディタが
+   *  読み取り専用 (作業バッファと作者の編集が競合しない = 同時に書く者を一人にする)。 */
+  assist: {
+    open: boolean;
+    running: boolean;
+    instruction: string;
+    log: string[];
+    result: EditAssistView | null;
+    error: string;
+  };
 }
 
 export function freshEditorState(): EditorState {
@@ -272,6 +281,7 @@ export function freshEditorState(): EditorState {
     view: "text",
     mediaRev: 0,
     eol: "\n",
+    assist: { open: false, running: false, instruction: "", log: [], result: null, error: "" },
   };
 }
 
@@ -1423,6 +1433,59 @@ ${body}`, t("rename.ok"), true);
         this.logToast = String(e);
       } finally {
         ed.saving = false;
+      }
+    },
+
+    // --- AI 編集 (spec 29 Phase D) ---
+    toggleEditAssist() {
+      const a = this.editor.assist;
+      if (a.running) {
+        a.open = true; // 実行中は閉じない (進行を見失わない)
+        return;
+      }
+      a.open = !a.open;
+    },
+    /** 1 依頼を回す。初期バッファ = エディタの現在本文 (未保存込み)。返りの text は
+     *  changed のときだけ CodeMirror へ (v-model 経由 = 1 トランザクション = undo 1 回)。
+     *  実行中にファイルを切り替えていたら結果は捨てる (別ファイルの本文を上書きしない)。 */
+    async runEditAssist() {
+      const ed = this.editor;
+      const a = ed.assist;
+      if (!ed.on || !ed.current || a.running || !a.instruction.trim()) return;
+      const target = ed.current;
+      a.running = true;
+      a.open = true;
+      a.log = [];
+      a.result = null;
+      a.error = "";
+      try {
+        const res = await invoke<EditAssistView>("edit_assist_run", {
+          targetRel: target,
+          initialText: ed.text,
+          instruction: a.instruction,
+        });
+        if (ed.current !== target) {
+          a.error = t("editAssist.fileSwitched", { file: target });
+          return;
+        }
+        a.result = res;
+        if (res.changed) {
+          ed.text = res.text; // CodeEditor の watch が 1 回の dispatch で差し替える
+          this.logToast = t("editAssist.replaced");
+        }
+      } catch (e) {
+        a.error = String(e);
+        this.logToast = t("editAssist.failed", { error: String(e) });
+      } finally {
+        a.running = false;
+      }
+    },
+    async cancelEditAssist() {
+      try {
+        await invoke("edit_assist_cancel");
+        this.editor.assist.log.push(t("editAssist.cancelling"));
+      } catch (e) {
+        this.logToast = String(e);
       }
     },
 

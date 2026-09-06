@@ -474,3 +474,18 @@ export interface InstalledPackage {
   /** 出所メタを書けなかった理由 (更新検知が効かない)。正常時 null。 */
   warning: string | null;
 }
+
+/** AI 編集 (spec 29) の返り。`text` は作業バッファ (診断 error が残っても差し替える)。 */
+export interface EditAssistView {
+  text: string;
+  changed: boolean;
+  summary: string;
+  calls: { tool: string; args_brief: string; ok: boolean }[];
+  diagnostics: { severity: string; message: string; line?: number; path?: string }[];
+  iterations: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cache_read: number;
+  stopped: "limit" | "repeat" | "cancel" | null;
+  model: string;
+}

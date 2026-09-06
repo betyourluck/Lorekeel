@@ -5,13 +5,16 @@
  * エディタと保存操作だけを持つ。
  */
 import { invoke } from "@tauri-apps/api/core";
-import { onBeforeUnmount, onMounted } from "vue";
+import { defineAsyncComponent, onBeforeUnmount, onMounted } from "vue";
 
 import { makeCompletionSource } from "../editorCompletion";
 import { t } from "../i18n";
 import { EDITOR_FONT_SIZES, useGameStore } from "../stores/game";
 import CodeEditor, { type EditorLintIssue } from "./CodeEditor.vue";
 import Icon from "./Icon.vue";
+
+// AI 編集のパネル (spec 29 Phase D)。動的 import = 開かないセッションでは読まない。
+const EditAssistPanel = defineAsyncComponent(() => import("./EditAssistPanel.vue"));
 
 const game = useGameStore();
 
@@ -65,7 +68,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 </script>
 
 <template>
-  <div class="flex-1 flex flex-col min-h-0 bg-ink">
+  <div class="relative flex-1 flex flex-col min-h-0 bg-ink">
     <!-- ヘッダ行: 開いているファイル + ● (未保存) + 保存。 -->
     <div class="flex items-center gap-2 px-3 py-1.5 border-b border-ash text-xs">
       <!-- 開いているファイル名。ダブルクリックで改名 (ファイル一覧の行と同じ流儀)。 -->
@@ -101,6 +104,18 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         />
         <span class="text-sm leading-none">A</span>
       </label>
+      <!-- AI に直させる (spec 29 Phase D): 浮遊パネルのトグル。ファイルを開いているときだけ。
+           実行中はエディタが読み取り専用になる (ヘッダの ✨ は熾火で灯る)。 -->
+      <button
+        class="grid h-6 w-6 place-items-center rounded hover:bg-ash/60 disabled:opacity-30"
+        :class="game.editor.assist.open ? 'text-ember' : 'text-parchment/60 hover:text-parchment'"
+        :disabled="!game.editor.current"
+        :title="t('editAssist.toggleTitle')"
+        :aria-label="t('editAssist.heading')"
+        @click="game.toggleEditAssist()"
+      >
+        <Icon :name="game.editor.assist.running ? 'spinner' : 'sparkle'" :size="15" />
+      </button>
       <!-- 保存: フロッピー (ユーザーFB 2026-08-28 — 文字ボタンからアイコンへ)。
            処理中は spinner に差し替えて、押せない理由を形で見せる。 -->
       <button
@@ -128,9 +143,11 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         :lint-provider="lintProvider"
         :completion-source="completionSource"
         :font-size="EDITOR_FONT_SIZES[game.editorFontStep]"
+        :readonly="game.editor.assist.running"
         status
       />
     </div>
+    <EditAssistPanel v-if="game.editor.assist.open" @close="game.editor.assist.open = false" />
     <div v-else class="flex-1 flex items-center justify-center text-parchment/40 px-6 text-center text-sm">
       {{ t("editor.pickHint") }}
     </div>
