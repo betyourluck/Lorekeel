@@ -17,8 +17,13 @@ use serde_json::{json, Value};
 
 use crate::package_spec::{self, Topic};
 
-/// LLM 呼び出しの周回上限 (spec 29 決定 8)。修復 1 周は**この外**。
-pub const MAX_ITERATIONS: u32 = 12;
+/// LLM 呼び出しの周回上限 (spec 29 決定 8)。修復 1 周・まとめ 1 周は**この外**。
+///
+/// **2026-09-06 に 12 → 20 へ** (`play edit` の実測: scenario へ challenge を 1 つ足す依頼が
+/// 置換 3 箇所 = preview + apply で 6 周、read と spec と失敗 1 回を足して 12 周ちょうどで
+/// 打ち切られた。中身は正しく診断ゼロだったのに「打ち切り」と報告された)。1 周の入力は
+/// 履歴の再送で ~27K トークンだが 9 割以上がキャッシュ読みなので、上限を上げる代償は小さい。
+pub const MAX_ITERATIONS: u32 = 20;
 
 /// 道具 5 本の名前 (spec 29 A 節)。
 pub const TOOL_NAMES: [&str; 5] = ["read", "grep", "sd", "diff", "spec"];
@@ -94,7 +99,7 @@ pub fn system_prompt(req: &EditRequest, topics: &[&Topic]) -> String {
     s.push_str(
         "# 道具と手順\n\
          - まず `read` で本文を確かめ、必要なら `grep` で当たりを付ける (対象ファイルは現在の作業本文、他のファイルは保存済みの本文が返る)。\n\
-         - 書き換えは `sd` だけ。**先に preview** (`apply` を省く) で差分と一致数を見て、同じ引数で `apply: true` を呼ぶ。preview を通していない apply は拒否される。\n\
+         - 書き換えは `sd` だけ。**先に preview** (`apply` を省く) で差分と一致数を見て、同じ引数で `apply: true` を呼ぶ。preview を通していない apply は拒否される。**独立した置換が複数あるなら、1 周でまとめて preview し、次の周でまとめて apply してよい** (周回に上限がある)。\n\
          - `sd` の pattern は正規表現 (Rust regex 構文。`$1` でキャプチャ参照、リテラルの `$` は `$$`、`(?m)` で行頭行末、`(?s)` で `.` が改行に当たる)。**一致した箇所は全部置換**される — 一致数を見て意図と違えば pattern を絞る。\n\
          - `sd apply` の結果には診断 (parse エラー / 未知キー) が付く。error を残したまま終えない。\n\
          - `diff` で自分の累積の差分を確かめられる。`spec` で話題の仕様を引ける (下の一覧)。\n\
@@ -376,6 +381,21 @@ pub async fn run_edit_loop<C: ToolChat>(
             out.stopped = Some(Stopped::Cancel);
             break;
         }
+        if it + 1 == MAX_ITERATIONS && !cancel.load(Ordering::Relaxed) {
+            // 上限の最後の 1 周は**道具なしのまとめ** — 途中までの変更を捨てず、やり遂げた分を
+            // 報告させる (実測: 上限に当たった依頼の中身は正しかったのに定型文の「打ち切り」が
+            // 報告に差し替わり、失敗に見えた)。道具を渡さないので呼び出しは起こらない。
+            messages.push(ChatMessage::user(
+                "道具の呼び出しが上限に達しました。これ以上は書き換えられません。ここまでに何をどう直したか (残っていることがあれば何が残っているか) を 2〜3 行で報告してください。",
+            ));
+            progress("まとめの 1 周 (上限)".into());
+            let turn = chat.chat(messages.clone(), Vec::new()).await?;
+            out.iterations += 1;
+            add_usage(&mut out, &turn);
+            out.summary = turn.text.unwrap_or_default();
+            out.stopped = Some(Stopped::Limit);
+            break;
+        }
         let turn = chat.chat(messages.clone(), tools.clone()).await?;
         out.iterations += 1;
         add_usage(&mut out, &turn);
@@ -387,9 +407,6 @@ pub async fn run_edit_loop<C: ToolChat>(
         if execute_round(&turn, exec, &mut messages, &mut out, &mut last_key, progress) {
             out.stopped = Some(Stopped::Repeat);
             break;
-        }
-        if it + 1 == MAX_ITERATIONS {
-            out.stopped = Some(Stopped::Limit);
         }
     }
 
@@ -421,7 +438,7 @@ pub async fn run_edit_loop<C: ToolChat>(
     out.diagnostics = exec.diagnostics();
     if out.summary.trim().is_empty() {
         out.summary = match out.stopped {
-            Some(Stopped::Limit) => format!("道具の呼び出しが上限 ({MAX_ITERATIONS} 周) に達したので打ち切りました。"),
+            Some(Stopped::Limit) => format!("道具の呼び出しが上限 ({MAX_ITERATIONS} 周) に達したので打ち切りました (まとめの報告なし)。"),
             Some(Stopped::Repeat) => "同じ呼び出しが同じ結果で繰り返されたので打ち切りました。".into(),
             Some(Stopped::Cancel) => "取り消されました。".into(),
             None => "(報告なし)".into(),
@@ -630,17 +647,21 @@ mod tests {
         assert!(out.summary.contains("繰り返された"));
     }
 
-    /// 【上限】12 周で打ち切る (13 回目の chat は呼ばれない)。
+    /// 【上限】道具つきの周は MAX−1 回まで、最後の 1 周は**道具なしのまとめ** (報告が summary に
+    /// なる = やり遂げた分が失敗に見えない)。chat は MAX 回で止まり、それ以上は呼ばれない。
     #[test]
-    fn iteration_limit_stops_after_max_calls() {
+    fn iteration_limit_ends_with_a_tool_free_wrap_up() {
         let mut exec = FakeExec { text: "x".into(), log: vec![] };
-        let turns: Vec<ChatTurn> = (0..20)
+        let mut turns: Vec<ChatTurn> = (0..MAX_ITERATIONS - 1)
             .map(|i| call_turn(vec![(&format!("c{i}"), "read", json!({"path": format!("f{i}")}))]))
             .collect();
+        turns.push(text_turn("ここまでで 2 箇所を直しました。"));
+        turns.push(call_turn(vec![("never", "read", json!({}))]));
         let out = run(turns, &mut exec, &AtomicBool::new(false));
         assert_eq!(out.stopped, Some(Stopped::Limit));
         assert_eq!(out.iterations, MAX_ITERATIONS);
-        assert_eq!(exec.log.len(), MAX_ITERATIONS as usize);
+        assert_eq!(exec.log.len(), (MAX_ITERATIONS - 1) as usize, "まとめの周は道具を持たない");
+        assert_eq!(out.summary, "ここまでで 2 箇所を直しました。");
     }
 
     /// 【修復 1 周】正常終了しても error 診断が残れば上限の外で 1 周だけ投げ、直れば diagnostics が空になる。

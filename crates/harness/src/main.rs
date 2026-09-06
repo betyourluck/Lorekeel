@@ -170,6 +170,108 @@ async fn print_epilogue(
     }
 }
 
+/// spec 29 `play edit`: AI 編集を CLI で回す — **GUI と同じ道具・同じループ・同じ素材**
+/// (`harness::edit_tools::EditSession` + `harness::edit_assist::run_edit_loop`)。
+///
+/// ```text
+/// play edit <パッケージのフォルダ> <相対パス> <指示…> [--write]
+/// ```
+/// 既定は**ディスクに書かない** (差分・報告・診断を表示するだけ = GUI の「未保存で差し替える」に
+/// 相当)。`--write` で原子書き込み (改行コードは元のまま)。モデルは `EDITOR_LLM_*` > `LLM_*`。
+/// 終了コード: 0 = 通った / 1 = 診断 error が残った・打ち切られた / 2 = 使い方。
+async fn run_edit(args: &[String]) -> Result<(), Box<dyn Error>> {
+    use harness::edit_assist as ea;
+    let write = args.iter().any(|a| a == "--write");
+    let rest: Vec<&String> = args.iter().filter(|a| a.as_str() != "--write").collect();
+    if rest.len() < 3 {
+        eprintln!("使い方: play edit <パッケージのフォルダ> <相対パス (例 scenarios/main.yaml)> <指示…> [--write]");
+        std::process::exit(2);
+    }
+    let root = PathBuf::from(rest[0]);
+    let rel = rest[1].as_str();
+    let instruction = rest[2..].iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" ");
+    let entries = harness::editor::list_files(&root);
+    let Some(kind) = harness::edit_tools::kind_of(&entries, rel) else {
+        eprintln!("`{rel}` は編集対象の一覧にありません。編集できるのは各フォルダ直下の YAML:");
+        for e in &entries {
+            eprintln!("  - {}", e.rel_path);
+        }
+        std::process::exit(2);
+    };
+    let files: Vec<String> = entries.iter().map(|e| e.rel_path.clone()).collect();
+    let path = harness::editor::resolve_in_root(&root, rel)?;
+    let raw_text = std::fs::read_to_string(&path)?;
+    // GUI と同じく内部は LF (CRLF は書き戻しで戻す)。
+    let crlf = raw_text.contains("\r\n");
+    let initial = raw_text.replace("\r\n", "\n");
+    let vocab = harness::editor_vocab::build_vocabulary(&root);
+    let req = ea::EditRequest {
+        kind: kind.clone(),
+        target_rel: rel.to_string(),
+        files: files.clone(),
+        keys_table: harness::edit_tools::keys_table(&vocab, &kind),
+        ids_table: harness::edit_tools::ids_table(&vocab),
+        instruction,
+        initial_text: initial.clone(),
+    };
+    let base = LlmConfig::from_env()?;
+    let config = LlmConfig::editor_from_env(&base)?.unwrap_or(base);
+    eprintln!("[編集] {} / model={} / 対象={rel} ({kind})", config.base_url, config.model);
+    let client = LlmClient::new(config)?;
+    let mut session = harness::edit_tools::EditSession::new(&root, rel, &kind, files, &initial);
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let t0 = std::time::Instant::now();
+    let out = ea::run_edit_loop(
+        &client,
+        ea::build_messages(&req),
+        ea::tool_specs(),
+        &mut session,
+        &initial,
+        &cancel,
+        &mut |l| eprintln!("  > {l}"),
+    )
+    .await?;
+    if out.changed {
+        println!("{}", harness::edit_tools::unified_diff(rel, &initial, &out.text));
+    } else {
+        println!("(本文は変わっていません)");
+    }
+    println!("報告: {}", out.summary);
+    for d in &out.diagnostics {
+        let at = match (d.line, &d.path) {
+            (Some(l), _) => format!(" (行 {l})"),
+            (None, Some(p)) => format!(" ({p})"),
+            _ => String::new(),
+        };
+        println!("  [{}]{at} {}", d.severity, d.message);
+    }
+    if let Some(s) = out.stopped {
+        println!("打ち切り: {s:?}");
+    }
+    eprintln!(
+        "[編集] {:.1}s / {} 周 / 入力 {} tok (キャッシュ {}) / 出力 {} tok",
+        t0.elapsed().as_secs_f32(),
+        out.iterations,
+        out.prompt_tokens,
+        out.cache_read,
+        out.completion_tokens
+    );
+    if out.changed {
+        if write {
+            let text = if crlf { out.text.replace('\n', "\r\n") } else { out.text.clone() };
+            harness::editor::atomic_write(&path, &text)?;
+            println!("書き込みました: {}", path.display());
+        } else {
+            println!("(ディスクには書いていません。書くなら --write)");
+        }
+    }
+    let failed = out.stopped.is_some() || out.diagnostics.iter().any(|d| d.severity == "error");
+    if failed {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 /// `parent/parent` を repo root とみなす (scenarios/ campaigns/ characters/ memoria/ の親)。
 fn root_of(path: &str) -> PathBuf {
     Path::new(path)
@@ -193,6 +295,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     // spec 29 Phase B: 作者向け仕様の断片から、型で機械生成した Gate / op の列挙 (`spec-vocab`) と
     // サイト版 package_spec.md の連結 (`spec-assemble`) を stdout へ。どちらも LLM 呼び出しゼロ。
+    if raw.first().map(String::as_str) == Some("edit") {
+        return run_edit(&raw[1..]).await;
+    }
     match raw.first().map(String::as_str) {
         Some("spec-vocab") => {
             print!("{}", harness::package_spec::vocab_markdown());

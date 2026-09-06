@@ -23,9 +23,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # spec 28 Phase B: エディタ診断の parse エラー位置 (serde_yaml::Location)。workspace と同版。
 serde_yaml = "0.9"
-# spec 29 Phase C: AI 編集の道具 (sd / grep = Rust regex、diff = unified diff)。Fuseforks と同版系。
-regex = "1"
-similar = "2"
 tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros"] }
 dotenvy = "0.15"
 # spec 05 Phase C: 配布サイトからの一覧 fetch + zip DL (workspace と同版・同 TLS)。

@@ -19,6 +19,9 @@ tokio = { workspace = true, features = ["macros", "rt", "time"] }
 dotenvy.workspace = true
 # spec 20 共有メモの dedup (trim + NFKC 正規化後の完全一致)。
 unicode-normalization = "0.1"
+# spec 29: AI 編集の道具 (sd / grep / diff)。
+regex.workspace = true
+similar.workspace = true
 
 # 実クラウド通しプレイ用の bin (ネットワーク必須、テスト対象外)。
 [[bin]]
