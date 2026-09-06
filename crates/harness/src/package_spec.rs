@@ -153,6 +153,10 @@ pub fn vocab_markdown() -> String {
 
 /// 断片のマーカーを列挙に置き換える (AI 編集の system に載せるときも同じ形)。
 pub fn expand(text: &str) -> String {
+    // 改行は LF に揃える — Windows の CI は CRLF で checkout するので、焼き込んだ断片が CRLF・
+    // 型から生成した表が LF の混在になり、連結が docs/package_spec.md と一致しなかった
+    // (v0.6.3 の CI が Windows だけ落ちた)。出力は常に LF。
+    let text = text.replace("\r\n", "\n");
     let mut out = String::with_capacity(text.len());
     for line in text.split_inclusive('\n') {
         match line.trim_end() {
@@ -256,7 +260,8 @@ mod tests {
             return;
         }
         let have = std::fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("{path} が読めない ({e}) — UPDATE_PACKAGE_SPEC=1 で生成する"));
+            .unwrap_or_else(|e| panic!("{path} が読めない ({e}) — UPDATE_PACKAGE_SPEC=1 で生成する"))
+            .replace("\r\n", "\n"); // CRLF checkout (Windows CI) でも中身で比べる
         assert!(have == want, "docs/package_spec.md が古い — UPDATE_PACKAGE_SPEC=1 cargo test -p harness package_spec で作り直す");
     }
 }

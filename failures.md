@@ -2488,3 +2488,24 @@ CLI からも GUI からも読めなかった**。
 
 **一般化**: **モデルが道具を誤用する形は、道具の返りに理由が書いてあっても、人の見る進行ログに
 出ていなければ診断できない。** 失敗の理由は会話 (モデル向け) と進行ログ (人向け) の両方に出す。
+
+## crates/harness (2026-09-06 v0.6.3 の CI — Windows だけ `assembled_site_spec_is_fresh` が落ちた)
+
+**症状**: 手元 (LF checkout) と Linux / macOS の CI は緑、Windows の runner だけ「docs/package_spec.md が
+古い」で落ちた。タグは打たれ、draft には mac / Linux の 5 アセットだけが載った。
+
+**真因**: GitHub の Windows runner は `core.autocrlf` で **CRLF に checkout** する。`include_str!` で
+焼いた断片は CRLF になる一方、型から生成する Gate / op の表は `
+` で書くので、連結結果が
+CRLF と LF の混在になり、CRLF で checkout された `docs/package_spec.md` と一致しなかった。
+**「連結の写しが古い」を検出する網が、改行コードの違いを「古い」と誤認した。**
+
+**処方**: `expand()` が入力を LF に揃える (出力は常に LF) + 鮮度テストがディスクの本文も LF に
+揃えてから比べる。手元で docs を CRLF に変換して**修正前 Red・修正後 Green** を確認してから
+コミット (CI の条件は手元で再現できる)。
+
+**一般化**: **バイト同一性を主張するテストは、改行コードを主張に含めるか除くかを先に決める。**
+含めるなら `.gitattributes` で checkout の形を固定し、除くなら比較の前に揃える。どちらもしないと、
+「手元で緑・CI で赤」が OS ごとに割れる (Windows だけ落ちる形で出る)。golden (llm_client) が
+落ちなかったのは JSON が 1 行で改行を含まないから = 偶然であって設計ではない。
+
