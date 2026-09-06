@@ -147,9 +147,11 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         status
       />
     </div>
-    <EditAssistPanel v-if="game.editor.assist.open" @close="game.editor.assist.open = false" />
     <div v-else class="flex-1 flex items-center justify-center text-parchment/40 px-6 text-center text-sm">
       {{ t("editor.pickHint") }}
     </div>
+    <!-- AI 編集の浮遊パネル。v-if / v-else の対の**外**に置く — 間に挟むと v-else がこの v-if に
+         付け替わり、パネルを閉じた瞬間に「ファイルを選んでください」が本文の下に出る (実機で発覚)。 -->
+    <EditAssistPanel v-if="game.editor.assist.open" @close="game.editor.assist.open = false" />
   </div>
 </template>
