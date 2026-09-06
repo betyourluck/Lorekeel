@@ -191,6 +191,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if raw.first().map(String::as_str) == Some("lint") {
         return run_lint(&raw[1..]);
     }
+    // spec 29 Phase B: 作者向け仕様の断片から、型で機械生成した Gate / op の列挙 (`spec-vocab`) と
+    // サイト版 package_spec.md の連結 (`spec-assemble`) を stdout へ。どちらも LLM 呼び出しゼロ。
+    match raw.first().map(String::as_str) {
+        Some("spec-vocab") => {
+            print!("{}", harness::package_spec::vocab_markdown());
+            return Ok(());
+        }
+        Some("spec-assemble") => {
+            print!("{}", harness::package_spec::assemble());
+            return Ok(());
+        }
+        _ => {}
+    }
 
     let lang = lang_from_env();
 

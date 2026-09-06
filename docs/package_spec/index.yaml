@@ -1,0 +1,145 @@
+# docs/package_spec/ の索引 (spec 29 Phase B、2026-09-06)。
+#
+# ここが **作者向け仕様の正本** (旧: outcast の package_spec.md。あちらは今後「連結の写し」)。
+# - order  : サイト版 `docs/package_spec.md` の連結順 (`play spec-assemble` が作る)。
+#            30_gate / 40_ops の `<!-- vocab:gate -->` / `<!-- vocab:op -->` は型から機械生成した
+#            列挙 (`play spec-vocab`) に置き換わる。列挙の正本は型 (断片には列挙表を置かない)。
+# - common : AI 編集 (spec 29) が kind を問わず常に渡す断片。
+# - base   : kind ごとに常に渡す断片。
+# - topics : 指示か本文に当たったとき渡す断片 + `spec` 道具で LLM が自分で引ける話題。
+#            keywords は辞書 (最適化)、summary は system に載る 1 行要旨 (`spec` の入口)。
+#            80_conventions / 81_load_errors は LLM に渡さない (診断が機械で返す・作法は作者の領分)。
+order:
+  - 00_header
+  - 01_principles
+  - 10_manifest
+  - 20_scenario
+  - 21_scenario_image_hold
+  - 22_scenario_max_per_turn
+  - 23_scenario_entity_threshold
+  - 24_scenario_percentile
+  - 25_scenario_certain_action
+  - 26_scenario_expr
+  - 27_scenario_push_buy
+  - 28_scenario_contests
+  - 30_gate
+  - 31_gate_wildcard
+  - 32_gate_presence_is
+  - 33_gate_party
+  - 40_ops
+  - 41_ops_volatile_presence
+  - 42_ops_trigger_challenge
+  - 43_ops_trigger_move
+  - 50_visibility
+  - 51_facts_policy
+  - 52_tts
+  - 53_image_style
+  - 60_characters
+  - 61_memoria
+  - 62_campaign
+  - 70_hidden_roles
+  - 80_conventions
+  - 81_load_errors
+common: [01_principles]
+base:
+  manifest: [10_manifest]
+  scenario: [20_scenario, 30_gate, 40_ops]
+  character: [60_characters]
+  memoria: [61_memoria]
+  campaign: [62_campaign]
+topics:
+  - id: facts_policy
+    kind: manifest
+    slice: 51_facts_policy
+    summary: 既成事実 (facts_policy) — プレイヤーが設定を宣言できるかを package.yaml で決める
+    keywords: [既成事実, facts_policy, facts, 宣言, locked, open]
+  - id: image_style
+    kind: manifest
+    slice: 53_image_style
+    summary: 挿絵の画風 (image_style) — プレイヤーが生成する一枚絵への作者の指針
+    keywords: [挿絵, 画風, image_style, 画像生成, イラスト]
+  - id: tts
+    kind: manifest
+    slice: 52_tts
+    summary: 読み上げ — 音声で聴かせる盤面の書き方 (作者側の宣言は無い・旧 use_tts は廃止)
+    keywords: [読み上げ, 音声, TTS, use_tts, ボイス]
+  - id: image_hold
+    kind: scenario
+    slice: 21_scenario_image_hold
+    summary: イベント CG を出しっぱなしにする (trigger の image_hold show/hide)
+    keywords: [image_hold, CG, イベント CG, 出しっぱなし, 背景, 一枚絵]
+  - id: max_per_turn
+    kind: scenario
+    slice: 22_scenario_max_per_turn
+    summary: 同じ挑戦を 1 ターンに何度も選ばせない (challenge の max_per_turn)
+    keywords: [max_per_turn, 回数, 上限, 連打, 何度も]
+  - id: entity_threshold
+    kind: scenario
+    slice: 23_scenario_entity_threshold
+    summary: 判定主体の固定 (challenge の entity) と、幅のある大失敗/大成功 (tier の threshold)
+    keywords: [entity, 主体, 裏判定, NPC の判定, threshold, 大失敗, 大成功, ファンブル, クリティカル, at_most, at_least]
+  - id: percentile
+    kind: scenario
+    slice: 24_scenario_percentile
+    summary: d100 ロールアンダー判定 (resolution percentile、CoC 系の判定様式・技能値・成功度)
+    keywords: [percentile, d100, ロールアンダー, クトゥルフ, CoC, SAN, 正気度, 技能値, 成功度, check_style]
+  - id: certain_action
+    kind: scenario
+    slice: 25_scenario_certain_action
+    summary: 確定行動 (resolution none) — ダイスを振らない「装備する」「使う」を challenge で書く
+    keywords: [確定行動, 装備, 使う, ダイスなし, 判定なし, resolution none, 切替]
+  - id: expr
+    kind: scenario
+    slice: 26_scenario_expr
+    summary: 式修正 (expr) — 判定の修正値/目標値を stat の式で書く
+    keywords: [expr, 式, 修正値, 派生, 計算, CON, SIZ, 合成]
+  - id: push_buy
+    kind: scenario
+    slice: 27_scenario_push_buy
+    summary: 失敗への決断 — プッシュ (振り直し) と差分買い (spend_rules)
+    keywords: [プッシュ, push, 振り直し, 差分買い, spend_rules, 幸運, 消費, pushable]
+  - id: contests
+    kind: scenario
+    slice: 28_scenario_contests
+    summary: 対決 (contests) — 決着まで AI を介さないラウンド戦
+    keywords: [対決, contest, contests, 戦闘, ラウンド, 対抗, 殴り合い, opponent]
+  - id: wildcard
+    kind: scenario
+    slice: 31_gate_wildcard
+    summary: キャラファイルを足すだけで動かす ("*" — cast と present の全員指定)
+    keywords: ["*", ワイルドカード, 全員, ジオラマ, キャラを足す, 環境シナリオ]
+  - id: presence_is
+    kind: scenario
+    slice: 32_gate_presence_is
+    summary: いるかどうかで縛る (presence_is gate — 不在の相手にビートを出させない)
+    keywords: [presence_is, いる, いない, 不在, 居る, この場に]
+  - id: party
+    kind: scenario
+    slice: 33_gate_party
+    summary: パーティ (party) — 「仲間の誰かが持っているか」で問う has_item / has_skill
+    keywords: [party, パーティ, 仲間, 誰かが持って, 同行者, 多人数]
+  - id: volatile_presence
+    kind: scenario
+    slice: 41_ops_volatile_presence
+    summary: 登場のさせ方 — 同行者と来訪者 (set_presence の volatile)
+    keywords: [登場, 退場, 同行者, 来訪者, volatile, set_presence, ついてくる, 消える]
+  - id: trigger_challenge
+    kind: scenario
+    slice: 42_ops_trigger_challenge
+    summary: トリガーから判定を起こす (effects に attempt_challenge — 罠・襲撃判定)
+    keywords: [トリガーから判定, 罠, 襲撃, 回避判定, 自動で判定, attempt_challenge]
+  - id: trigger_move
+    kind: scenario
+    slice: 43_ops_trigger_move
+    summary: トリガーから場所を動かす (effects に move — 落とし穴・転移・場面転換)
+    keywords: [トリガーから移動, 落とし穴, 転移, 場面転換, 運ばれる, 強制移動]
+  - id: visibility
+    kind: scenario
+    slice: 50_visibility
+    summary: 状態の可視性 — hidden / secret / internal で誰に見せるかを決める
+    keywords: [可視性, 秘匿, hidden, secret, internal, 隠す, 見せない, 帳簿]
+  - id: hidden_roles
+    kind: scenario
+    slice: 70_hidden_roles
+    summary: 人狼型の秘匿役職盤面 (role_assignment・投票・開票)
+    keywords: [人狼, 役職, 投票, 開票, role_assignment, cast_vote, resolve_vote, 秘匿役職]

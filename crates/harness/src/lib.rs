@@ -9,6 +9,8 @@
 
 mod asset;
 mod campaign;
+pub mod docs;
+pub mod package_spec;
 mod epilogue;
 mod error;
 mod inspect;

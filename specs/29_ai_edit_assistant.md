@@ -7,7 +7,12 @@
 （4 adapter × forced/auto/plain）+ 往復 5 本（4 adapter の tool_calls/tool_result の形・Gemini
 id なし・EDITOR プロファイルの継承）。llm_client 68 → 77、workspace 381、clippy clean。
 査読の反映は末尾「査読の反映」節に凍結。spec 28「次の一手」3 を回収する。
-Phase B〜E は未着手。
+**Phase B 実装済（同日）**: `docs/package_spec/` 30 断片 + `index.yaml`（連結順・base・話題 19 本 =
+辞書の初期値）+ `harness::package_spec`（include_str! で焼く / 型から機械生成した Gate・op の列挙 /
+連結）+ `play spec-vocab` / `play spec-assemble` + doc 抽出器を app から harness へ移設
+（`harness::docs`）。サイト版 `docs/package_spec.md` は連結の写しで、鮮度はテストが固定。
+PoC 3 本（索引と焼き込みの 1:1 / 列挙が型の全バリアントを含む / 連結の鮮度）。harness 144、
+app backend 82（doc テスト 2 本が harness へ）、workspace 386。Phase C〜E は未着手。
 
 ---
 
@@ -251,7 +256,7 @@ containment のテスト（app 側）で固定する。
   PoC: 既存経路の encode が byte 一致 / 各 adapter で assistant(tool_calls) → tool(result) の対が
   wire に出る / Gemini の id 合成と `functionResponse` / Responses の `function_call_output` /
   `EDITOR_LLM_*` の継承。
-- **Phase B（仕様断片）**: 66 KB を `docs/package_spec/` へ割る（列挙を抜く以外は内容不変）+
+- ✅ **Phase B（仕様断片、2026-09-06 実装済）**: 66 KB を `docs/package_spec/` へ割る（列挙を抜く以外は内容不変）+
   `play spec-vocab` + 連結テスト + 連結済み `docs/package_spec.md` + 辞書の初期値。
   outcast への写しはユーザー作業。
 - **Phase C（道具 + ループ）**: 道具 5 本（app backend、containment は編集ルート再利用）+

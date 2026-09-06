@@ -511,7 +511,12 @@ pub enum StateOp {
         to: EntityId,
         item: ItemId,
     },
+    /// フラグを立てる/下ろす。`flag_rules` の gate 未達、および authored 専権フラグ (トリガー/
+    /// challenge の帰結が書くフラグ) への LLM 提案は真偽どちらの向きも却下 (#50)。
     SetFlag { key: FlagKey, value: bool },
+    /// 現在地から `to` へ移動する。LLM の提案は現在地の `exits` に在り gate を満たす行き先だけ
+    /// 受理 (それ以外は却下)。トリガー効果からは出口も gate も見ずに運ぶ (authored 専権の一貫 —
+    /// 落とし穴・転移・場面転換)。移動で揮発 presence (来訪者) は破棄される。
     Move { to: LocationId },
     /// ダイスを振る要求。**結果は含めない** — エンジンが振って裁く。
     RequestRoll { sides: u32, dc: u32 },

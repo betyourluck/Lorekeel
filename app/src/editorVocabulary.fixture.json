@@ -1552,7 +1552,7 @@
       },
       {
         "name": "turns_since",
-        "doc": "指定キャラの stat に刻まれたターンから turns ターン以上経過している (現在turn - stat >= turns)。StateOp::RecordTurn(crate::StateOp::RecordTurn) と対で 「〇〇から N ターン後に発火」を組む。stat 未設定 (=0) だと turn>=turns で誤発火しうるので、 「〇〇が起きた」フラグと all で束ねるのが定石。entity 省略時は主人公。"
+        "doc": "指定キャラの stat に刻まれたターンから turns ターン以上経過している (現在turn - stat >= turns)。StateOp::RecordTurn と対で 「〇〇から N ターン後に発火」を組む。stat 未設定 (=0) だと turn>=turns で誤発火しうるので、 「〇〇が起きた」フラグと all で束ねるのが定石。entity 省略時は主人公。"
       }
     ],
     "op": [
@@ -1570,7 +1570,7 @@
       },
       {
         "name": "attempt_contest",
-        "doc": "authored contest (対決) の開始 (spec 18 Phase C)。LLM は対決を「開く」だけ — 双方の振り方 (RollSpec)・帰結・決着条件はすべて authored 定義側にある。開始後の ラウンドは LLM を介さず engine とプレイヤーが直接回す (crate::contest_round) = 雑魚戦のトークンを消す一括型 (cadence はこの機構、逐次型は従来の challenge)。"
+        "doc": "authored contest (対決) の開始 (spec 18 Phase C)。LLM は対決を「開く」だけ — 双方の振り方 (RollSpec)・帰結・決着条件はすべて authored 定義側にある。開始後の ラウンドは LLM を介さず engine とプレイヤーが直接回す  = 雑魚戦のトークンを消す一括型 (cadence はこの機構、逐次型は従来の challenge)。"
       },
       {
         "name": "cast_vote",
@@ -1593,7 +1593,8 @@
         "doc": "能力の付与 (開花)。authored トリガーの専権 — LLM が提案すると adjudicate が却下する (メアリー・スー遮断)。trigger effects は apply_ops 直行なので付与できる。entity 省略時は主人公。"
       },
       {
-        "name": "move"
+        "name": "move",
+        "doc": "現在地から to へ移動する。LLM の提案は現在地の exits に在り gate を満たす行き先だけ 受理 (それ以外は却下)。トリガー効果からは出口も gate も見ずに運ぶ (authored 専権の一貫 — 落とし穴・転移・場面転換)。移動で揮発 presence (来訪者) は破棄される。"
       },
       {
         "name": "record_turn",
@@ -1624,7 +1625,8 @@
         "doc": "文字列属性の書き換え (クラス転職 等)。authored トリガーの専権 — LLM が提案すると adjudicate が却下する (クラス捏造 = メアリー・スー遮断、GrantSkill と同型)。trigger effects は apply_ops 直行なので書き換えられる。未宣言キーは load 時 validate で弾く。entity 省略時は主人公。"
       },
       {
-        "name": "set_flag"
+        "name": "set_flag",
+        "doc": "フラグを立てる/下ろす。flag_rules の gate 未達、および authored 専権フラグ (トリガー/ challenge の帰結が書くフラグ) への LLM 提案は真偽どちらの向きも却下 (#50)。"
       },
       {
         "name": "set_presence",
