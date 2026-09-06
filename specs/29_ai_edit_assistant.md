@@ -1,6 +1,6 @@
 # spec 29: AI 編集 — 編集モードで 1 ファイルずつ、道具で直させる
 
-**Status**: rev2 → **Phase A 実装済（2026-09-06、査読の着手指示どおり）**。2026-09-06 起草 →
+**Status**: **Done（2026-09-06、Phase A〜E 全実装・実測。GUI の目視は Phase D の 1 件を回収済み）**。rev2 → Phase A 実装済（査読の着手指示どおり）。2026-09-06 起草 →
 同日査読 2 本（重大 7 + 曖昧 5 + 軽微 4 / 矛盾 7）を反映 → Phase A: canonical に tool の往復欄
 + 4 adapter の encode（Fuseforks 写経）+ `LlmClient::chat` + `EDITOR_LLM_*`（`profile_from_env`
 に一般化）。PoC: **golden 10 本 = 改修前のコードで採取**した wire のバイト列に対する同一性
@@ -284,7 +284,7 @@ containment のテスト（app 側）で固定する。
   「read → spec → sd preview → sd apply → 終了」の往復。
 - ✅ **Phase D（UI、2026-09-06 実装済・目視はユーザー実測待ち）**: ヘッダのボタン + 浮遊パネル + 進行ログ + 読み取り専用 + 単一
   トランザクションの差し替え。目視はユーザー実測（提示層は構造的にユーザーが検出器になる）。
-- **Phase E（実測）**: 同梱 4 パッケージに対して「主人公の hp を 12 にして」「湖畔に SAN 判定の
+- ✅ **Phase E（実測、2026-09-06 = 上の「Phase E 実測」節）**: 同梱 4 パッケージに対して「主人公の hp を 12 にして」「湖畔に SAN 判定の
   challenge を 1 つ足して」「モカの profile に趣味を足して」の 3 依頼を 3 モデル（Claude /
   Gemini / Meta）で回し、**未知キー 0・死んだ参照 0・周回数・トークン・`spec` を引いた回数**を
   測る。核心的未知 = 弱いモデルが `sd` の正規表現を書けるか（書けなければ v2 の第 6 の道具）。
@@ -320,6 +320,47 @@ requires location_is・on_success flag・結末文 2 つ、診断ゼロ、`--wri
 改訂後に同じ依頼を再実測: **10 周・63.1 秒・exit 0**、報告は事実どおり（`listen_hall` を追加し
 `allowed_flags` と `flag_titles` に宣言、診断なし）。入力 281,465 tok のうち 248,825 がキャッシュ読み
 （88%）。muse-spark は preview をまとめず 1 周 1 呼び出しのままだった（まとめるかはモデル次第）。
+
+## Phase E 実測（2026-09-06、`play edit`・3 モデル × 3 依頼・各 n=1・`LLM_EFFORT` なし）
+
+依頼: ①湖畔 package.yaml「主人公の HP を 12 に」（manifest）②湖畔 scenario「SAN を目標値にした
+percentile 判定の challenge を 1 つ、失敗で SAN 1d4 減」③friday_lemmon あかり「profile に趣味を
+1 文」（character）。`--write` した写しを `play lint` で検めた（lint = エラー/警告、診断 = ループの
+最終診断）。Anthropic の鍵が無かったので Claude の代わりに Grok を入れた（adapter は Responses /
+Gemini ネイティブ / OpenAI 互換の 3 経路 = 翻訳の網羅としてはこちらの方が広い）。
+
+| モデル | 依頼 | exit | 秒 | 周 | 入力 tok | うちキャッシュ | 出力 tok | 呼び出し | lint | 診断 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Meta muse-spark-1.3 | HP→12 | 0 | 7.4 | 4 | 19,131 | 13,651 | 371 | read 1 / preview 1 / apply 1 | 0/0 | 0 |
+| Meta | SAN challenge | 0 | 25.1 | 4 | 98,409 | 72,147 | 2,000 | 同上 | 0/0 | 0 |
+| Meta | profile に趣味 | 0 | 10.5 | 4 | 20,942 | 14,931 | 948 | 同上 | 0/0 | 0 |
+| Gemini 3.8 flash | HP→12 | 0 | 10.3 | 5 | 22,422 | 17,405 | 134 | read 1 / preview 1 / apply 1 / diff 1 | 0/0 | 0 |
+| Gemini | SAN challenge | 0 | 18.4 | 5 | 117,032 | 93,455 | 532 | 同上 | 0/0 | 0 |
+| Gemini | profile に趣味 | 0 | 27.5 | 9 | 62,522 | 34,650 | 279 | read 4 / grep 1 / preview 1 / apply 1 / diff 1 | 0/0 | 0 |
+| xAI grok-4.3 | HP→12 | 0 | 4.8 | 4 | 18,021 | 13,120 | 214 | read 1 / preview 1 / apply 1 | 0/0 | 0 |
+| Grok | SAN challenge | 0 | 23.0 | 10 | 278,543 | 246,656 | 1,857 | read 2 / preview 4 / apply 2 / diff 1 | 0/0 | 0 |
+| Grok | profile に趣味 | 0 | 3.7 | 4 | 19,641 | 10,048 | 158 | read 1 / preview 1 / apply 1 | 0/0 | 0 |
+
+**結果**: 9 本とも exit 0・未知キー 0・死んだ参照 0・診断 0。中身も指示どおり（SAN challenge は
+3 モデルとも `resolution: percentile` + `stat: SAN` + `requires: location_is` + `on_failure.effects` の
+`roll_stat 1d4 negate` を正しく組み、宣言済みの場所 id だけを使った）。**核心的未知「弱いモデルが
+`sd` の正規表現を書けるか」は肯定側**: 3 モデルとも `(?m)^…$` や `\{` のエスケープを書け、
+第 6 の道具（行番号 + 挿入）は**要らない**（v2 据え置き）。`spec` 道具の呼び出しは **0 回** — 辞書が
+「SAN」「percentile」で断片を先出ししていたため。辞書の偽陰性は今回の依頼では出ていない。
+
+**Phase E で見つけて直したもの（3 件、いずれも実測でしか出ない層）**:
+1. **Gemini が道具の schema を 400 で拒む** — `additionalProperties` は Gemini の OpenAPI サブセットに
+   無い（`Unknown name`）。`adapt_schema` が入れ子まで剥がす（failures #52 と同族）。
+2. **Gemini 3 が functionCall の履歴に `thoughtSignature` を要求する**（欠くと 400 `Function call is
+   missing a thought_signature`）。Phase A の写経で「使っていない」と落とした部分で、Fuseforks は
+   持っていた。`ToolCall.thought_signature` を足し、decode で拾い encode で同じ part へ返す。
+3. **Grok が長い複数行リテラルをアンカーにして一致せず、同じ失敗を 2 度繰り返して反復検知で
+   停止**。処方 2 つ: 進行ログの ✗ に失敗理由の先頭行を添える（CLI からも GUI からも読める）/
+   system に「追加は短い一意な 1 行をアンカーに（例 `(?m)^goals:$`）」を足す。再実測で 10 周・
+   exit 0（途中で `goals:` を重複させたが、診断が拾って自分で直した = self-repair の輪が効いた）。
+
+**接地の限界**: 各 n=1。時間と周回はモデルの気分でぶれる（Gemini の③は他キャラ 3 人を読んで
+文体を合わせに行き 9 周）。lint の 0/0 は「読める」であって「遊べる」ではない。
 
 ## 未決
 

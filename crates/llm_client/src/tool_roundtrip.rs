@@ -34,8 +34,8 @@ mod tests {
             ChatMessage::assistant_tool_calls(
                 "",
                 vec![
-                    ToolCall { id: ids.0.into(), name: "read".into(), args: json!({"path": "package.yaml"}) },
-                    ToolCall { id: ids.1.into(), name: "sd".into(), args: json!({"pattern": "hp: 10"}) },
+                    ToolCall { id: ids.0.into(), name: "read".into(), args: json!({"path": "package.yaml"}), thought_signature: None },
+                    ToolCall { id: ids.1.into(), name: "sd".into(), args: json!({"pattern": "hp: 10"}), thought_signature: None },
                 ],
             ),
             ChatMessage::tool_result(ids.0, "read", "1: title: x\n2: hp: 10"),
@@ -154,6 +154,49 @@ mod tests {
             assert!(v.get("tool_choice").is_none(), "{flavor:?}");
             assert_eq!(v["tools"].as_array().unwrap().len(), 2);
         }
+    }
+
+    /// 【Phase E 実測】Gemini 3 は functionCall の履歴に `thoughtSignature` を要求する (欠くと 400)。
+    /// 応答の part から拾って ToolCall に保持し、再送で同じ part に戻す。
+    #[test]
+    fn gemini_thought_signature_round_trips_from_response_to_history() {
+        let raw = r#"{"candidates":[{"content":{"parts":[
+          {"functionCall":{"name":"read","args":{"path":"package.yaml"}},"thoughtSignature":"SIG-1"}
+        ]},"finishReason":"STOP"}]}"#;
+        let resp: gemini::GenerateContentResponse = serde_json::from_str(raw).unwrap();
+        let turn = gemini::decode(resp, 7);
+        assert_eq!(turn.tool_calls[0].thought_signature.as_deref(), Some("SIG-1"));
+        let msgs = vec![
+            ChatMessage::user("x"),
+            ChatMessage::assistant_tool_calls("", turn.tool_calls.clone()),
+            ChatMessage::tool_result(&turn.tool_calls[0].id, "read", "1: a"),
+        ];
+        let v = to_value(&gemini::encode(&request(msgs)));
+        let part = &v["contents"][1]["parts"][0];
+        assert_eq!(part["thoughtSignature"], "SIG-1", "{part}");
+        assert_eq!(part["functionCall"]["name"], "read");
+        // 署名の無い呼び出し (他 adapter 由来・古い履歴) にはキーごと出さない。
+        let v2 = to_value(&gemini::encode(&request(roundtrip_messages(("", "")))));
+        assert!(v2["contents"][1]["parts"][0].get("thoughtSignature").is_none());
+    }
+
+    /// 【Phase E 実測】Gemini は `additionalProperties` を functionDeclarations で拒む (400) —
+    /// adapt_schema が入れ子まで剥がす。他のキーと `required` は残る。
+    #[test]
+    fn gemini_strips_additional_properties_from_tool_schemas() {
+        let mut req = request(vec![ChatMessage::user("x")]);
+        req.tools[0].parameters = json!({
+            "type": "object",
+            "properties": { "path": { "type": "string" }, "opts": { "type": "object", "properties": {}, "additionalProperties": false } },
+            "required": ["path"],
+            "additionalProperties": false
+        });
+        let v = to_value(&gemini::encode(&req));
+        let p = &v["tools"][0]["functionDeclarations"][0]["parameters"];
+        assert!(p.get("additionalProperties").is_none(), "{p}");
+        assert!(p["properties"]["opts"].get("additionalProperties").is_none(), "{p}");
+        assert_eq!(p["required"], json!(["path"]));
+        assert_eq!(p["properties"]["path"]["type"], "string");
     }
 
     /// `EDITOR_LLM_*` はあらすじの別指定と同じ継承則: 未指定フィールドは GM 設定を継ぐ。

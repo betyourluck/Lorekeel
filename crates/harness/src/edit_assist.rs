@@ -101,6 +101,7 @@ pub fn system_prompt(req: &EditRequest, topics: &[&Topic]) -> String {
          - まず `read` で本文を確かめ、必要なら `grep` で当たりを付ける (対象ファイルは現在の作業本文、他のファイルは保存済みの本文が返る)。\n\
          - 書き換えは `sd` だけ。**先に preview** (`apply` を省く) で差分と一致数を見て、同じ引数で `apply: true` を呼ぶ。preview を通していない apply は拒否される。**独立した置換が複数あるなら、1 周でまとめて preview し、次の周でまとめて apply してよい** (周回に上限がある)。\n\
          - `sd` の pattern は正規表現 (Rust regex 構文。`$1` でキャプチャ参照、リテラルの `$` は `$$`、`(?m)` で行頭行末、`(?s)` で `.` が改行に当たる)。**一致した箇所は全部置換**される — 一致数を見て意図と違えば pattern を絞る。\n\
+         - **追加 (挿入) は短い一意な 1 行をアンカーにする** — 例: `(?m)^goals:$` を「新しいブロック + `goals:`」に置換する。長い複数行のリテラルを pattern にすると、空白や改行の違いで一致しない。既存の行を直すときも、一致数が 1 になる最短の pattern を選ぶ。\n\
          - `sd apply` の結果には診断 (parse エラー / 未知キー) が付く。error を残したまま終えない。\n\
          - `diff` で自分の累積の差分を確かめられる。`spec` で話題の仕様を引ける (下の一覧)。\n\
          - **新しいファイルは作れない** (作るのは作者)。対象以外のファイルは書き換えられない (読むのは可)。\n\
@@ -364,7 +365,15 @@ pub async fn run_edit_loop<C: ToolChat>(
         for call in &turn.tool_calls {
             let reply = exec.call(&call.name, &call.args);
             let brief = args_brief(&call.name, &call.args);
-            progress(format!("{} {}{}", call.name, brief, if reply.ok { "" } else { " ✗" }));
+            // 失敗は理由の先頭行を添える (Phase E 実測: Grok が同じ失敗を 2 度繰り返して止まったとき、
+            // 進行ログには ✗ しか無く、何に一致しなかったのかが CLI からも GUI からも読めなかった)。
+            let why = if reply.ok {
+                String::new()
+            } else {
+                let first: String = reply.body.lines().next().unwrap_or("").chars().take(80).collect();
+                format!(" ✗ {first}")
+            };
+            progress(format!("{} {}{}", call.name, brief, why));
             out.calls.push(CallLog { tool: call.name.clone(), args_brief: brief, ok: reply.ok });
             let key = (call.name.clone(), call.args.to_string(), reply.body.clone());
             messages.push(ChatMessage::tool_result(&call.id, &call.name, reply.body));
@@ -551,7 +560,7 @@ mod tests {
     fn call_turn(calls: Vec<(&str, &str, Value)>) -> ChatTurn {
         ChatTurn {
             text: None,
-            tool_calls: calls.into_iter().map(|(id, n, a)| ToolCall { id: id.into(), name: n.into(), args: a }).collect(),
+            tool_calls: calls.into_iter().map(|(id, n, a)| ToolCall { id: id.into(), name: n.into(), args: a, thought_signature: None }).collect(),
             finish: Finish::ToolUse,
             usage: Usage { prompt: 100, completion: 5, cache_read: 0 },
         }

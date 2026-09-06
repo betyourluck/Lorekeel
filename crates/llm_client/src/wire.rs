@@ -49,6 +49,12 @@ pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub args: serde_json::Value,
+    /// Gemini 3 系の**思考署名** (`thoughtSignature`)。応答の functionCall part に付いてくるので
+    /// 保持し、履歴として再送するときに同じ part へ返す — 欠くと 400 `Function call is missing a
+    /// thought_signature` (spec 29 Phase E 実測、Fuseforks `gemini.rs` と同じ扱い)。他 adapter は
+    /// 使わない (None のまま・serde skip)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thought_signature: Option<String>,
 }
 
 impl ChatMessage {

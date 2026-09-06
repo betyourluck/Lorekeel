@@ -2441,3 +2441,50 @@ command は**作成と同じ返り** (`files` = YAML の一覧だけ) を使い�
   前者は失敗経路の一覧、後者は意図的な握り潰しの一覧で、**両方を「誰が困るか」で読む**
   (ユーザーが気づけないまま損をする → 見せる / 気づいても対処が無い・既定に倒れるだけ → 据え置き)。
   PoC: app +1 (返り 3 種に警告の欄が常に載る) + 配線テストの Red→Green。
+
+## crates/llm_client (2026-09-06 spec 29 Phase E — Gemini だけが AI 編集で 2 度落ちた)
+
+**症状**: `play edit` の 3 モデル実測で、Meta と Grok は通るのに Gemini 3.8 flash だけが 400 で即死。
+直して回し直すと、また別の 400 で 5 秒後に死んだ。
+
+**真因 2 つ (どちらも wire の癖で、Phase A の PoC は wire の**形**しか固定していなかった)**:
+1. 道具の JSON Schema に書いた `additionalProperties: false` を Gemini の functionDeclarations が
+   知らず `Unknown name` で拒む (5 本全部)。emit_delta の schema (schemars 生成) には無いキーなので
+   今まで踏まなかった。#52 (oneOf を黙って落とす) と同じ「Gemini は JSON Schema の部分集合」族だが、
+   こちらは**黙らず名指しで拒む**側。`adapt_schema` が入れ子まで剥がす。
+2. Gemini 3 は functionCall を履歴として再送するとき、応答の part に付いていた `thoughtSignature` を
+   **同じ part に返す**ことを要求する (欠くと 400 `Function call is missing a thought_signature`)。
+   Phase A で Fuseforks の adapter を写経したとき、`thought_signature` の保持と echo を「Kataribe では
+   使っていない」として落とした — **写経元が実測で足した分岐を、使っていないという理由で落とすと、
+   その機能を初めて使う日に同じ穴を踏む**。`ToolCall.thought_signature` を足し、decode で拾い
+   encode で返す (他 adapter は None・serde skip)。
+
+**処方の位置**: どちらも adapter の中 (llm_client) で、編集ループにも道具にも触れていない。
+PoC 2 本 (schema から剥がれる / 署名が応答→履歴で同じ part に戻る)。
+
+**一般化**: **adapter の PoC は「wire の形」と「相手が受理する形」の 2 段で、前者だけでは相手の
+癖は捕まらない。** 相手の癖は live でしか出ないので、新しい adapter 経路を初めて使う機能には
+必ず 1 本の live を付ける (Phase A の golden は「壊していない」の証明であって「通る」の証明ではない)。
+写経元に在って落とした分岐は、落とした理由 (「使っていない」) ごと doc に残しておくと、初めて使う
+日に探せる。
+
+**接地の限界**: gemini-3.8-flash・n=1。他の Gemini 世代で `thoughtSignature` が必須かは未測
+(無い応答には出さない形にしてあるので、要求しない世代では無害)。
+
+## crates/harness (2026-09-06 spec 29 Phase E — Grok が同じ失敗を 2 度繰り返して止まった)
+
+**症状**: scenario に challenge を足す依頼で、Grok の `sd preview` が ✗ → 同じ引数で ✗ → 反復検知
+(道具・引数・結果が同一) で `Repeat` 停止。進行ログには ✗ しか無く、**何に一致しなかったのかが
+CLI からも GUI からも読めなかった**。
+
+**真因**: pattern に既存 challenge の**長い複数行リテラル** (`  seal_ritual:\n    resolution: …`) を
+使い、空白か改行の違いで一致しなかった。Meta は `(?m)^goals:$` のような短い一意行をアンカーにして
+通っていた = 道具の使い方の癖がモデルで割れる。
+
+**処方**: ①進行ログの ✗ に**失敗理由の先頭行**を添える (道具の返りは会話に積まれるが、人の見る
+ログには出ていなかった = 沈黙の一種) ②system に「追加は短い一意な 1 行をアンカーに」を足す。
+再実測で 10 周・exit 0。途中で `goals:` を重複させたが、apply の診断 (parse エラー) が拾って自分で
+直した。
+
+**一般化**: **モデルが道具を誤用する形は、道具の返りに理由が書いてあっても、人の見る進行ログに
+出ていなければ診断できない。** 失敗の理由は会話 (モデル向け) と進行ログ (人向け) の両方に出す。

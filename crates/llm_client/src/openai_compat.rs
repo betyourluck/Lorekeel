@@ -268,6 +268,7 @@ pub(crate) fn decode(resp: wire::ChatResponse) -> Result<ChatResponse, LlmError>
             id: call.id.unwrap_or_default(),
             name: call.function.name.unwrap_or_default(),
             args,
+            thought_signature: None,
         });
     }
 

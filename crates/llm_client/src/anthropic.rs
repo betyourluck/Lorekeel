@@ -317,6 +317,7 @@ pub(crate) fn decode(resp: MessagesResponse) -> canonical::ChatResponse {
                 id: id.unwrap_or_default(),
                 name: name.unwrap_or_default(),
                 args: input,
+                thought_signature: None,
             }),
             ContentBlock::Other => {}
         }

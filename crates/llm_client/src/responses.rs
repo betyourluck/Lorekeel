@@ -305,6 +305,7 @@ pub(crate) fn decode(resp: ResponsesResponse) -> Result<ChatResponse, LlmError> 
                     id: item.call_id.unwrap_or_default(),
                     name: item.name.unwrap_or_default(),
                     args,
+                    thought_signature: None,
                 });
             }
             _ => {}

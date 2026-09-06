@@ -57,11 +57,14 @@ pub(crate) struct Part {
     pub function_call: Option<FunctionCallPart>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub function_response: Option<FunctionResponsePart>,
+    /// 思考署名の echo (functionCall の part だけ)。無ければ出さない。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thought_signature: Option<String>,
 }
 
 impl Part {
     fn text(s: &str) -> Self {
-        Part { text: Some(s.to_string()), function_call: None, function_response: None }
+        Part { text: Some(s.to_string()), function_call: None, function_response: None, thought_signature: None }
     }
 }
 
@@ -194,6 +197,7 @@ pub(crate) fn encode_with_cache(
                         name: m.tool_name.clone().unwrap_or_default(),
                         response: serde_json::json!({ "result": m.content }),
                     }),
+                    thought_signature: None,
                 }],
             }),
             Role::Assistant if m.tool_calls.is_empty() => contents.push(Content {
@@ -210,6 +214,8 @@ pub(crate) fn encode_with_cache(
                         text: None,
                         function_call: Some(FunctionCallPart { name: c.name.clone(), args: c.args.clone() }),
                         function_response: None,
+                        // 受け取った署名をそのまま返す。欠くと次の周が 400 で落ちる (Gemini 3)。
+                        thought_signature: c.thought_signature.clone(),
                     });
                 }
                 contents.push(Content { role: "model", parts });
@@ -435,6 +441,12 @@ pub(crate) fn adapt_schema(schema: &Value) -> Value {
         Value::Object(map) => {
             let mut out = serde_json::Map::new();
             for (k, v) in map {
+                // `additionalProperties` は Gemini の OpenAPI サブセットに無く 400 `Unknown name`
+                // (spec 29 Phase E 実測、道具の schema 5 本が全部拒まれた。#52 と同族 = 未知キーを
+                // 黙って落とすのではなく名指しで拒む側)。閉世界の意図は description で伝える。
+                if k == "additionalProperties" {
+                    continue;
+                }
                 let key = if k == "oneOf" { "anyOf" } else { k.as_str() };
                 out.insert(key.to_string(), adapt_schema(v));
             }
@@ -490,6 +502,9 @@ pub(crate) struct RespPart {
     pub text: Option<String>,
     #[serde(default)]
     pub function_call: Option<FunctionCall>,
+    /// Gemini 3 系の思考署名。functionCall の part に付く。履歴の再送で同じ part へ返す。
+    #[serde(default)]
+    pub thought_signature: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -574,6 +589,7 @@ pub(crate) fn decode(resp: GenerateContentResponse, seq: u64) -> canonical::Chat
                 id: format!("call_{seq}_{}", tool_calls.len()),
                 name: fc.name,
                 args: fc.args,
+                thought_signature: part.thought_signature,
             });
         }
     }
