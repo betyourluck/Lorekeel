@@ -10,6 +10,7 @@
 mod asset;
 mod campaign;
 pub mod docs;
+pub mod edit_assist;
 pub mod package_spec;
 mod epilogue;
 mod error;

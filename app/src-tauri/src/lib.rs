@@ -9,6 +9,7 @@
 //! - `new_game(scenario_path?)`: シナリオ + characters + 伏線をロードし初期 state を作って session に格納
 //! - `play_turn(action)`: session を lock し run_turn → 発火 recall を pending_lore に持ち越し → view を返す
 
+mod edit_assist;
 mod editor;
 mod editor_lint;
 mod editor_docs;
@@ -762,6 +763,99 @@ type GuestAssetRoot = Mutex<Option<PathBuf>>;
 /// 衝突して**起動時 panic** ("state for type … is already being managed")。テストは
 /// builder を通らないので緑のまま、実機の初回起動だけが落ちる (failures #89)。
 struct EditorRoot(Mutex<Option<PathBuf>>);
+
+/// AI 編集 (spec 29) の取り消しフラグ。`edit_assist_cancel` が立て、ループの周回境界で効く
+/// (飛行中の 1 呼び出しは完走)。実行開始時に下ろす。newtype なのは EditorRoot と同じ理由 (#89)。
+struct EditAssistCancel(std::sync::atomic::AtomicBool);
+
+/// AI 編集の返り (spec 29 B 節)。`text` は作業バッファ (診断 error が残っても差し替える = 決定 9)。
+#[derive(Serialize)]
+struct EditAssistView {
+    text: String,
+    changed: bool,
+    summary: String,
+    calls: Vec<harness::edit_assist::CallLog>,
+    diagnostics: Vec<harness::edit_assist::Diag>,
+    iterations: u32,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    cache_read: u64,
+    stopped: Option<harness::edit_assist::Stopped>,
+    /// 使ったモデル (GM 設定か `EDITOR_LLM_*` か)。
+    model: String,
+}
+
+/// AI 編集を 1 依頼ぶん回す (spec 29 Phase C)。初期バッファは frontend が渡す (エディタの現在本文、
+/// 未保存込み = ディスクから作らない)。LLM はディスクに書かず、返りの `text` を frontend が
+/// CodeMirror へ未保存として入れる。進行は `edit-assist-progress` イベント (1 呼び出し 1 行)。
+#[tauri::command]
+async fn edit_assist_run(
+    app: tauri::AppHandle,
+    target_rel: String,
+    initial_text: String,
+    instruction: String,
+    editor_root: tauri::State<'_, EditorRoot>,
+    cancel: tauri::State<'_, EditAssistCancel>,
+) -> Result<EditAssistView, String> {
+    use harness::edit_assist as ea;
+    use tauri::Emitter;
+    let root = {
+        let guard = editor_root.0.lock().await;
+        guard.clone().ok_or_else(|| "編集モードではありません".to_string())?
+    };
+    if instruction.trim().is_empty() {
+        return Err("指示が空です".into());
+    }
+    let entries = editor::list_files(&root);
+    let Some(kind) = edit_assist::kind_of(&entries, &target_rel) else {
+        return Err(format!("`{target_rel}` は編集対象の一覧にありません"));
+    };
+    let files: Vec<String> = entries.iter().map(|e| e.rel_path.clone()).collect();
+    let vocab = editor_vocab::build_vocabulary(&root);
+    let req = ea::EditRequest {
+        kind: kind.clone(),
+        target_rel: target_rel.clone(),
+        files: files.clone(),
+        keys_table: edit_assist::keys_table(&vocab, &kind),
+        ids_table: edit_assist::ids_table(&vocab),
+        instruction,
+        initial_text: initial_text.clone(),
+    };
+    // モデル: EDITOR_LLM_* があればそれ、無ければ GM の設定 (spec 29 決定 10)。
+    let base = LlmConfig::from_env().map_err(|e| e.to_string())?;
+    let config = LlmConfig::editor_from_env(&base).map_err(|e| e.to_string())?.unwrap_or(base);
+    let model = config.model.clone();
+    let client = LlmClient::new(config).map_err(|e| e.to_string())?;
+    cancel.0.store(false, std::sync::atomic::Ordering::Relaxed);
+    let mut session = edit_assist::EditSession::new(&root, &target_rel, &kind, files, &initial_text);
+    let messages = ea::build_messages(&req);
+    let mut progress = |line: String| {
+        let _ = app.emit("edit-assist-progress", line);
+    };
+    let out = ea::run_edit_loop(&client, messages, ea::tool_specs(), &mut session, &initial_text, &cancel.0, &mut progress)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(EditAssistView {
+        text: out.text,
+        changed: out.changed,
+        summary: out.summary,
+        calls: out.calls,
+        diagnostics: out.diagnostics,
+        iterations: out.iterations,
+        prompt_tokens: out.prompt_tokens,
+        completion_tokens: out.completion_tokens,
+        cache_read: out.cache_read,
+        stopped: out.stopped,
+        model,
+    })
+}
+
+/// 実行中の AI 編集を取り消す (次の周回境界で止まる)。
+#[tauri::command]
+async fn edit_assist_cancel(cancel: tauri::State<'_, EditAssistCancel>) -> Result<(), String> {
+    cancel.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
 
 // =============================================================================
 // 多人数プレイ (spec 23 Phase B) — participants / 入力窓 / 開帳カウンタ
@@ -4795,6 +4889,7 @@ pub fn run() {
         .manage(SharedSession::new(None))
         .manage(GuestAssetRoot::new(None))
         .manage(EditorRoot(Mutex::new(None)))
+        .manage(EditAssistCancel(std::sync::atomic::AtomicBool::new(false)))
         .setup(|app| {
             // 前回 set_llm_config が保存した app_data_dir/.env を読み込む (無ければ何もしない)。
             // **override で読む**: dev では main.rs の dotenvy が repo .env を先に読んでおり、
@@ -4871,6 +4966,8 @@ pub fn run() {
             lint_editor_text,
             inspect_editor_package,
             editor_vocabulary,
+            edit_assist_run,
+            edit_assist_cancel,
             create_editor_file,
             create_local_package,
             delete_editor_file,

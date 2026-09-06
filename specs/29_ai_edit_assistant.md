@@ -12,7 +12,15 @@ id なし・EDITOR プロファイルの継承）。llm_client 68 → 77、works
 連結）+ `play spec-vocab` / `play spec-assemble` + doc 抽出器を app から harness へ移設
 （`harness::docs`）。サイト版 `docs/package_spec.md` は連結の写しで、鮮度はテストが固定。
 PoC 3 本（索引と焼き込みの 1:1 / 列挙が型の全バリアントを含む / 連結の鮮度）。harness 144、
-app backend 82（doc テスト 2 本が harness へ）、workspace 386。Phase C〜E は未着手。
+app backend 82（doc テスト 2 本が harness へ）、workspace 386。
+**Phase C 実装済（同日）**: `harness::edit_assist`（素材の組み立て・話題選択・道具 5 本の宣言・
+ループ = ToolChat / ToolExecutor で依存性逆転）+ app `edit_assist::EditSession`（道具の実体、
+Fuseforks 写経）+ command `edit_assist_run` / `edit_assist_cancel` + `edit-assist-progress`
+イベント（中継表に追加）。PoC: harness 9 本（素材の固定と話題の選択 / 本文キーからの選択と
+1 文字語 / 道具の宣言 / 往復の順序と報告 / 反復検知 / 上限 / 修復 1 周 / 直らなくても差し替え /
+キャンセル）+ app 5 本（一覧外の拒否と #39 文言・バッファとディスクの読み分け・grep / sd の
+状態機械と全置換と diff / 診断が返りに載る / spec 道具 / 配線で辿る表）+ live 1 本（ignored）。
+harness 153、app backend 87、workspace 395。Phase D（UI）・E（実測）は未着手。
 
 ---
 
@@ -259,7 +267,7 @@ containment のテスト（app 側）で固定する。
 - ✅ **Phase B（仕様断片、2026-09-06 実装済）**: 66 KB を `docs/package_spec/` へ割る（列挙を抜く以外は内容不変）+
   `play spec-vocab` + 連結テスト + 連結済み `docs/package_spec.md` + 辞書の初期値。
   outcast への写しはユーザー作業。
-- **Phase C（道具 + ループ）**: 道具 5 本（app backend、containment は編集ルート再利用）+
+- ✅ **Phase C（道具 + ループ、2026-09-06 実装済）**: 道具 5 本（app backend、containment は編集ルート再利用）+
   `harness::edit_assist`（純関数）+ command + 進行イベント。PoC（app）: 一覧外パスの拒否と
   文言 / `sd` の対象限定・preview 前提・全置換と件数・regex 方言 / 対象の `read` がバッファを
   返す / `diff` が初期 vs 作業 / 診断が結果に載る / 周回上限 + 修復 1 周 / 反復検知が
