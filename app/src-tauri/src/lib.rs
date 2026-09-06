@@ -2421,15 +2421,69 @@ fn set_summary_llm_config(
     model: String,
     api_key: String,
 ) -> Result<(), String> {
-    std::env::set_var("SUMMARY_LLM_BASE_URL", &base_url);
-    std::env::set_var("SUMMARY_LLM_MODEL", &model);
-    std::env::set_var("SUMMARY_LLM_API_KEY", &api_key);
-    let updates = [
-        ("SUMMARY_LLM_BASE_URL".to_string(), base_url),
-        ("SUMMARY_LLM_MODEL".to_string(), model),
-        ("SUMMARY_LLM_API_KEY".to_string(), api_key),
-    ];
-    let path = config_env_path(&app).ok_or_else(|| "app_data_dir を解決できない".to_string())?;
+    set_profile_llm_config(&app, "SUMMARY", base_url, model, api_key)
+}
+
+/// AI 編集用 LLM 設定 (`EDITOR_LLM_*`、spec 29 決定 10) の view。あらすじ用と同じ
+/// 「base_url か model のどちらかが設定されていれば有効」判定 (`editor_from_env` と同基準)。
+/// API キーは返さない (画面はプロファイル名で選ぶだけで、生の鍵を表示する欄が無い)。
+#[derive(Serialize)]
+struct ProfileLlmConfigView {
+    base_url: String,
+    model: String,
+    enabled: bool,
+}
+
+/// 現在の AI 編集用設定を返す。設定「AIモデル」タブが、localStorage の選択と `.env` の
+/// 実体 (Phase E までは手書きしか経路が無かった) を突き合わせるために読む。
+#[tauri::command]
+fn get_editor_llm_config() -> ProfileLlmConfigView {
+    let opt = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+    let base_url = opt("EDITOR_LLM_BASE_URL");
+    let model = opt("EDITOR_LLM_MODEL");
+    ProfileLlmConfigView {
+        enabled: base_url.is_some() || model.is_some(),
+        base_url: base_url.unwrap_or_default(),
+        model: model.unwrap_or_default(),
+    }
+}
+
+/// AI 編集用 LLM 設定を更新する。あらすじ用と同じ機構 (`{prefix}_LLM_*` の 3 欄・全て空 =
+/// GM と同じ)。`edit_assist_run` は呼び出しのたびに env を読むので**次の実行から効く**
+/// (あらすじの「次の新しいゲームから」より即時)。
+#[tauri::command]
+fn set_editor_llm_config(
+    app: tauri::AppHandle,
+    base_url: String,
+    model: String,
+    api_key: String,
+) -> Result<(), String> {
+    set_profile_llm_config(&app, "EDITOR", base_url, model, api_key)
+}
+
+/// `{prefix}_LLM_{BASE_URL,MODEL,API_KEY}` の 3 欄だけを返す純関数。書く列を一箇所に固定する
+/// = SUMMARY と EDITOR が互いの欄や `SUMMARY_LLM_TIMEOUT_SECS` に触らないことの根拠。
+fn profile_env_updates(prefix: &str, base_url: String, model: String, api_key: String) -> Vec<(String, String)> {
+    vec![
+        (format!("{prefix}_LLM_BASE_URL"), base_url),
+        (format!("{prefix}_LLM_MODEL"), model),
+        (format!("{prefix}_LLM_API_KEY"), api_key),
+    ]
+}
+
+/// プロファイル別 LLM 設定の書き込み実体 (プロセス env 即時 + app_data/.env 永続)。
+fn set_profile_llm_config(
+    app: &tauri::AppHandle,
+    prefix: &str,
+    base_url: String,
+    model: String,
+    api_key: String,
+) -> Result<(), String> {
+    let updates = profile_env_updates(prefix, base_url, model, api_key);
+    for (k, v) in &updates {
+        std::env::set_var(k, v);
+    }
+    let path = config_env_path(app).ok_or_else(|| "app_data_dir を解決できない".to_string())?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("設定フォルダの作成に失敗: {e}"))?;
     }
@@ -4927,6 +4981,8 @@ pub fn run() {
             set_llm_config,
             get_summary_llm_config,
             set_summary_llm_config,
+            get_editor_llm_config,
+            set_editor_llm_config,
             set_summary_timeout,
             get_dev_mode,
             set_dev_mode,
@@ -5074,6 +5130,33 @@ mod tests {
 ") || body.trim_end().ends_with("SUMMARY_LLM_TIMEOUT_SECS="),
             "0 は空を書く (= harness の既定 SYNOPSIS_TIMEOUT_SECS へ戻る。app 側に既定値を焼かない): {body}"
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 【AI 編集用プロファイルの独立性 (2026-09-07)】`EDITOR_LLM_*` の GUI 化はあらすじ用と
+    /// 同じ書き込み実体を通るので、書く列が prefix の 3 欄だけであること = SUMMARY 側の 3 欄と
+    /// `SUMMARY_LLM_TIMEOUT_SECS` に触らないことを、純関数 `profile_env_updates` と実ファイルの
+    /// 両方で固定する。片方を「GM と同じ」(全欄空) に戻してももう片方は残る。
+    #[test]
+    fn editor_and_summary_profiles_do_not_clobber_each_other() {
+        use super::{profile_env_updates, upsert_env};
+        let ed = profile_env_updates("EDITOR", "https://x/v1".into(), "m".into(), "k".into());
+        let keys: Vec<&str> = ed.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["EDITOR_LLM_BASE_URL", "EDITOR_LLM_MODEL", "EDITOR_LLM_API_KEY"]);
+
+        let dir = std::env::temp_dir().join(format!("lorekeel_env_editor_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".env");
+        let _ = std::fs::remove_file(&path);
+        upsert_env(&path, &[("SUMMARY_LLM_TIMEOUT_SECS".into(), "300".into())]).unwrap();
+        upsert_env(&path, &profile_env_updates("SUMMARY", "".into(), "cheap".into(), "".into())).unwrap();
+        upsert_env(&path, &ed).unwrap();
+        // 編集用を「GM と同じ」へ戻す = 3 欄空。あらすじ側と待ち時間は無傷。
+        upsert_env(&path, &profile_env_updates("EDITOR", "".into(), "".into(), "".into())).unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("SUMMARY_LLM_MODEL=cheap"), "{body}");
+        assert!(body.contains("SUMMARY_LLM_TIMEOUT_SECS=300"), "{body}");
+        assert!(!body.contains("EDITOR_LLM_MODEL=m"), "{body}");
         let _ = std::fs::remove_file(&path);
     }
 

@@ -324,6 +324,12 @@ export const messages = {
           "遅いモデルや長い章では 60 秒で足りないことがあります。あらすじの生成はターンの確定と同時に行われるので、この秒数だけ次の語りが待たされることがあります（失敗したときは毎回その時間を払います）。同じ範囲で 3 回失敗すると、あらすじは機械的にまとめて先へ進みます。",
         summaryNote:
           "長編プレイで自動生成される「あらすじ」（右ペイン第 3 タブ）の要約に使うモデル。安いモデルを選ぶとコストを抑えられます。選択は即保存（次の「新しいゲーム」から有効）。",
+        editorHeading: "AI 編集用モデル",
+        editorSameAsGm: "GM と同じ（既定）",
+        editorNote:
+          "編集モードの「AI に直させる」（✨）が使うモデル。ツール呼び出しに対応した接続先が必要です — GM の接続先がツールを使えない設定（ローカルモデル等）なら、ここで別のモデルを選びます。選択は即保存（次の実行から有効）。",
+        editorEnvHint:
+          ".env に手書きされた設定「{model}」が有効です（登録モデルのどれとも一致しません）。「GM と同じ」を選ぶと消えます。",
       },
       dev: {
         heading: "開発者モード",
@@ -371,6 +377,8 @@ export const messages = {
         profileDeleted: "「{name}」を削除しました",
         summarySameAsGm: "GM と同じモデルで要約します",
         summaryUsing: "「{name}」で要約します（次の「新しいゲーム」から有効）",
+        editorSameAsGm: "GM と同じモデルで AI 編集します",
+        editorUsing: "「{name}」で AI 編集します（次の実行から有効）",
         summaryTimeoutSet: "要約の待ち時間の上限を {secs} 秒にしました",
         summaryTimeoutDefault: "要約の待ち時間の上限を既定（60 秒）に戻しました",
       },
@@ -1147,6 +1155,12 @@ export const messages = {
           "Slow models or long chapters may need more than 60 seconds. The synopsis is written as the turn is committed, so the next passage can be held for up to this long — and a failing summary costs that time on every attempt. After 3 failures on the same range the synopsis is joined mechanically and play moves on.",
         summaryNote:
           "The model used to summarize the auto-generated “synopsis” (3rd tab on the right) in long playthroughs. A cheaper model lowers cost. The choice is saved instantly (applies from the next “New game”).",
+        editorHeading: "AI-edit model",
+        editorSameAsGm: "Same as GM (default)",
+        editorNote:
+          "The model used by “Let the AI fix it” (✨) in edit mode. It needs an endpoint that supports tool calls — if the GM endpoint cannot use tools (e.g. a local model), pick another model here. The choice is saved instantly (applies from the next run).",
+        editorEnvHint:
+          "A hand-written setting “{model}” in .env is active (it matches none of the registered models). Choosing “Same as GM” clears it.",
       },
       dev: {
         heading: "Developer mode",
@@ -1195,6 +1209,8 @@ export const messages = {
         profileDeleted: "Deleted “{name}”",
         summarySameAsGm: "Summarizing with the same model as the GM",
         summaryUsing: "Summarizing with “{name}” (applies from the next “New game”)",
+        editorSameAsGm: "AI edits use the same model as the GM",
+        editorUsing: "AI edits use “{name}” (applies from the next run)",
         summaryTimeoutSet: "Summary time limit set to {secs} s",
         summaryTimeoutDefault: "Summary time limit reset to the default (60 s)",
       },

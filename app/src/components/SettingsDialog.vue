@@ -464,6 +464,65 @@ async function applySummaryTimeout() {
   }
 }
 
+// --- AI 編集用モデル (spec 29 決定 10) ---
+// 実体は env (EDITOR_LLM_*、app_data/.env)。あらすじ用と同じ機構で、選択 = 即保存。
+// 空 = GM と同じ (既定)。edit_assist_run は毎回 env を読むので次の実行から効く。
+const EDITOR_PROFILE_KEY = "kataribe.editorProfileId";
+const editorProfileId = ref(localStorage.getItem(EDITOR_PROFILE_KEY) || "");
+const editorStatus = ref("");
+// .env に手書きされた EDITOR_LLM_* が有効なのに、登録モデルのどれとも一致しないとき
+// (Phase E までは手書きしか経路が無かった) のモデル名。select は「GM と同じ」に見えるが
+// 実体は別モデル、という嘘を画面に出さないための注記。
+const editorEnvModel = ref("");
+async function loadEditorProfile() {
+  try {
+    const v = await invoke<{ base_url: string; model: string; enabled: boolean }>("get_editor_llm_config");
+    editorEnvModel.value = "";
+    if (!v.enabled) {
+      // env は空 = GM と同じ。localStorage の選択が残っていれば古いので捨てる。
+      editorProfileId.value = "";
+      localStorage.removeItem(EDITOR_PROFILE_KEY);
+      return;
+    }
+    const stored = profiles.value.find((x) => x.id === editorProfileId.value);
+    if (stored && stored.model.trim() === v.model && stored.baseUrl.trim() === v.base_url) return;
+    // 選択が無いか食い違う: env の中身と一致する登録モデルを探して選択状態にする (表示のみ・書かない)。
+    const match = profiles.value.find((x) => x.model.trim() === v.model && x.baseUrl.trim() === v.base_url);
+    if (match) {
+      editorProfileId.value = match.id;
+      localStorage.setItem(EDITOR_PROFILE_KEY, match.id);
+    } else {
+      editorProfileId.value = "";
+      editorEnvModel.value = v.model || v.base_url;
+    }
+  } catch {
+    /* Tauri 外 */
+  }
+}
+async function applyEditorProfile() {
+  try {
+    if (!editorProfileId.value) {
+      await invoke("set_editor_llm_config", { baseUrl: "", model: "", apiKey: "" });
+      localStorage.removeItem(EDITOR_PROFILE_KEY);
+      editorEnvModel.value = "";
+      editorStatus.value = t("settings.status.editorSameAsGm");
+      return;
+    }
+    const p = profiles.value.find((x) => x.id === editorProfileId.value);
+    if (!p) return;
+    await invoke("set_editor_llm_config", {
+      baseUrl: p.baseUrl.trim(),
+      model: p.model.trim(),
+      apiKey: p.apiKey.trim(),
+    });
+    localStorage.setItem(EDITOR_PROFILE_KEY, editorProfileId.value);
+    editorEnvModel.value = "";
+    editorStatus.value = t("settings.status.editorUsing", { name: p.name });
+  } catch (e) {
+    editorStatus.value = t("settings.status.saveFailed", { error: String(e) });
+  }
+}
+
 // 選択中の登録モデルがあるか (「登録モデルも更新」の可否)。
 const canUpdateProfile = computed(() => profiles.value.some((p) => p.id === selectedProfileId.value));
 
@@ -511,6 +570,7 @@ async function saveLlmAndProfile() {
   // このモデルをあらすじ要約に使っているなら、そちらの env も追随させる。
   // (追随させないと GM だけ直り、要約は古いキーのまま静かに失敗し続ける)
   if (summaryProfileId.value === p.id) await applySummaryProfile();
+  if (editorProfileId.value === p.id) await applyEditorProfile();
   llmStatus.value = t("settings.status.profileUpdated", { name: p.name });
 }
 
@@ -522,6 +582,7 @@ onMounted(async () => {
   loadDefaultImageDir();
   void loadImageKeys();
   void loadSummaryTimeout();
+  void loadEditorProfile();
   void refreshSheets();
   game.refreshDevMode();
   void refreshMicDevices(); // 開いた時点で候補を出す (権限前は名前が空 = 案内を出す)
@@ -1392,6 +1453,28 @@ onMounted(async () => {
                 {{ t("settings.model.summaryTimeoutNote") }}
               </p>
               <span v-if="summaryStatus" class="text-xs text-parchment/60">{{ summaryStatus }}</span>
+            </div>
+
+            <!-- AI 編集用モデル (spec 29)。編集モードの ✨ と `play edit` が使う。ツール呼び出しが要る。 -->
+            <div class="pt-3 border-t border-ash/60 space-y-2">
+              <h4 class="text-parchment font-bold text-sm">{{ t("settings.model.editorHeading") }}</h4>
+              <select
+                v-model="editorProfileId"
+                @change="applyEditorProfile"
+                class="block w-full rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none"
+              >
+                <option value="">{{ t("settings.model.editorSameAsGm") }}</option>
+                <option v-for="p in profiles" :key="p.id" :value="p.id">
+                  {{ p.name }}（{{ p.model || t("settings.model.modelUnset") }}）
+                </option>
+              </select>
+              <p v-if="editorEnvModel" class="text-warn/90 text-xs">
+                {{ t("settings.model.editorEnvHint", { model: editorEnvModel }) }}
+              </p>
+              <p class="text-parchment/40 text-xs">
+                {{ t("settings.model.editorNote") }}
+              </p>
+              <span v-if="editorStatus" class="text-xs text-parchment/60">{{ editorStatus }}</span>
             </div>
           </section>
 

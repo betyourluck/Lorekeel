@@ -375,7 +375,16 @@ Gemini ネイティブ / OpenAI 互換の 3 経路 = 翻訳の網羅としては
 
 1. 辞書の初期値（`(kind, 語) → 話題`）。実 content 4 本と Phase E の 3 依頼で偽陰性を数え、
    `spec` を引いた回数が多い話題から辞書へ足す（辞書は最適化なので空でも正しく動く）。
-2. `EDITOR_LLM_*` の設定 UI。v1 は `.env`（あらすじの初期形と同じ）。GUI 化は要望が出てから。
+2. ~~`EDITOR_LLM_*` の設定 UI。v1 は `.env`（あらすじの初期形と同じ）。GUI 化は要望が出てから。~~
+   **✅2026-09-07 に GUI 化**（ユーザー指示）。設定「AIモデル」タブのあらすじ節の下に同型の
+   select（`set_editor_llm_config` / `get_editor_llm_config`、書き込み実体はあらすじと共有の
+   `set_profile_llm_config` = `{prefix}_LLM_*` の 3 欄だけを書く）。あらすじとの差は 2 点:
+   ①**次の実行から効く**（`edit_assist_run` は毎回 env を読む。あらすじの「次の新しいゲームから」
+   より即時）②**`.env` の手書きと localStorage の選択を起動時に突き合わせる** — Phase E までは
+   手書きしか経路が無かったので、env が有効なのに select が「GM と同じ」に見える嘘を作らない
+   （中身の一致する登録モデルがあれば選択状態にし、無ければモデル名を注記で出す）。
+   `.env` から消えていれば localStorage の古い選択も捨てる。PoC 1 本（純関数 `profile_env_updates`
+   の列 + 実ファイルで EDITOR / SUMMARY / `SUMMARY_LLM_TIMEOUT_SECS` が互いを消さない）。
 
 ## 査読の反映（2026-09-06、2 本）
 
