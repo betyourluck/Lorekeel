@@ -736,6 +736,11 @@ export const messages = {
       cancelling: "(取り消しを要求しました — 次の区切りで止まります)",
       shortcut: "Ctrl+Enter で実行",
       thinking: "…モデルの応答を待っています",
+      sendIssues: "AI に直させる",
+      sendIssuesTitle: "開いているファイル宛ての指摘 ({n} 件) を AI 編集の指示に入れる",
+      sendIssuesNone: "開いているファイル宛ての指摘はありません (他のファイル宛ての指摘は、そのファイルを開いてから)",
+      fromIssues:
+        "検査で次の指摘が出ています。`{file}` を直して解消してください。原因が他のファイルにあるなら、そのファイルを読んで確かめたうえで、このファイル側でできる直し方を選んでください:",
       replaced: "本文を差し替えました (未保存 — 確認して保存してください)",
       unchanged: "本文は変わっていません",
       failed: "AI 編集に失敗しました: {error}",
@@ -1551,6 +1556,11 @@ export const messages = {
       cancelling: "(cancel requested — stops at the next boundary)",
       shortcut: "Ctrl+Enter to run",
       thinking: "…waiting for the model",
+      sendIssues: "Let AI fix",
+      sendIssuesTitle: "Put the {n} issue(s) for the open file into the AI edit instruction",
+      sendIssuesNone: "No issues for the open file (open the other file first for its issues)",
+      fromIssues:
+        "The inspection reports the following. Fix `{file}` so they are resolved. If the cause lies in another file, read it to confirm, then choose a fix that can be made in this file:",
       replaced: "Text replaced (unsaved — review and save)",
       unchanged: "Text unchanged",
       failed: "AI edit failed: {error}",

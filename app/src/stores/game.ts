@@ -795,6 +795,11 @@ export const useGameStore = defineStore("game", {
     // ゴール到達済みか (入力を締める判断に使う)。
     cleared: (s): boolean => s.state?.goal_reached ?? false,
     // 編集モードで未保存の変更があるか (● マーカー / 4 契機の確認の判定)。
+    /** 開いているファイル宛て (+ パッケージ全体宛て) の層 2 指摘の数 — 「AI に直させる」ボタンの有効条件。 */
+    editorIssuesForCurrent: (s): number =>
+      s.editor.current
+        ? s.editor.issues.filter((i) => i.file === s.editor.current || i.file === null).length
+        : 0,
     editorDirty: (s): boolean =>
       s.editor.on && s.editor.current !== "" && s.editor.text !== s.editor.savedText,
     // 開帳待ちのダイスが残っているか (spec 18 Phase A: 全部開くまで入力欄を締める)。
@@ -1479,6 +1484,23 @@ ${body}`, t("rename.ok"), true);
       } finally {
         a.running = false;
       }
+    },
+    /** 右ペインの検査 (層 2) の指摘を AI 編集の指示に流す (ユーザー要望 2026-09-06)。
+     *  AI 編集は 1 ファイルが対象なので、**開いているファイル宛て + パッケージ全体宛て**の
+     *  指摘だけを拾う (他ファイル宛ては、そのファイルを開いてから押す)。既に指示があれば
+     *  末尾へ足す (打ちかけを消さない)。 */
+    sendIssuesToEditAssist() {
+      const ed = this.editor;
+      if (!ed.on || !ed.current) return;
+      const mine = ed.issues.filter((i) => i.file === ed.current || i.file === null);
+      if (!mine.length) return;
+      const lines = mine.map(
+        (i) => `- [${i.severity}]${i.file ? "" : ` (${t("editor.issueWholePkg")})`} ${i.message}`,
+      );
+      const text = `${t("editAssist.fromIssues", { file: ed.current })}\n${lines.join("\n")}`;
+      const a = ed.assist;
+      a.instruction = a.instruction.trim() ? `${a.instruction.trimEnd()}\n\n${text}` : text;
+      a.open = true;
     },
     async cancelEditAssist() {
       try {

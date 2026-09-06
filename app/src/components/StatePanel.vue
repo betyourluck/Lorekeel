@@ -595,8 +595,24 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
         <!-- 層 2 診断 (spec 28 Phase B): パッケージ全体の inspect。ファイル横断の破れは
              ここにしか出ない。file が引けた行はクリックでそのファイルへ。 -->
         <div v-if="game.editor.issues.length" class="mt-3 border-t border-ash pt-2">
-          <div class="text-parchment/40 mb-1.5 text-xs">
-            {{ t("editor.issuesTitle", { n: String(game.editor.issues.length) }) }}
+          <div class="mb-1.5 flex items-center gap-2 text-xs">
+            <span class="text-parchment/40">{{ t("editor.issuesTitle", { n: String(game.editor.issues.length) }) }}</span>
+            <span class="flex-1" />
+            <!-- 指摘を AI 編集の指示へ (spec 29 追補、ユーザー要望)。対象は開いているファイル宛て
+                 (+ パッケージ全体宛て) だけ = AI 編集が 1 ファイルを対象にする線に揃える。 -->
+            <button
+              class="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-ember/90 hover:bg-ash/60 disabled:opacity-30 disabled:hover:bg-transparent"
+              :disabled="!game.editor.current || game.editorIssuesForCurrent === 0 || game.editor.assist.running"
+              :title="
+                game.editorIssuesForCurrent
+                  ? t('editAssist.sendIssuesTitle', { n: String(game.editorIssuesForCurrent) })
+                  : t('editAssist.sendIssuesNone')
+              "
+              @click="game.sendIssuesToEditAssist()"
+            >
+              <Icon name="sparkle" :size="12" />
+              {{ t("editAssist.sendIssues") }}
+            </button>
           </div>
           <ul class="space-y-1">
             <li v-for="(iss, i) in game.editor.issues" :key="i">
