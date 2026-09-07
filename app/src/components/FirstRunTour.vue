@@ -27,11 +27,20 @@ const total = TOUR_STEPS.length;
 // スポットライトの矩形とカードの置き場。対象が見つからないときは画面中央に小さく置く
 // (要素が無い = レイアウトが変わった、でも案内は続けられる)。
 const spot = ref<Box>({ left: 0, top: 0, width: 0, height: 0 });
-const card = ref<CardPlacement>({ left: 0, top: 0, side: "below" });
+const card = ref<CardPlacement>({ left: 0, top: 0, side: "below", arrow: 18 });
 const cardEl = ref<HTMLElement | null>(null);
 const measured = ref(false);
 
-function measure() {
+/** カードの幅は CSS (22rem / 最大 92vw) から決まるので、実寸を測れない瞬間もこの値で置ける
+ *  (2026-09-07 実機で、既定 352px のまま置いて実寸 396px が右に切れた)。 */
+function cardWidthFromCss(vpWidth: number): number {
+  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+  return Math.min(22 * rem, vpWidth * 0.92);
+}
+
+/** `sizeEl` = 寸法を測るカード要素。Transition の enter 中は ref がまだ新しい要素を
+ *  指していないことがあるので、フックから渡された要素を優先する。 */
+function measure(sizeEl?: HTMLElement | null) {
   const el = document.querySelector<HTMLElement>(`[data-tour="${step.value}"]`);
   const vp = { width: window.innerWidth, height: window.innerHeight };
   if (el) {
@@ -40,9 +49,11 @@ function measure() {
   } else {
     spot.value = { left: vp.width / 2 - 24, top: vp.height / 2 - 24, width: 48, height: 48 };
   }
-  const size = cardEl.value
-    ? { width: cardEl.value.offsetWidth, height: cardEl.value.offsetHeight }
-    : { width: 352, height: 160 };
+  const src = sizeEl ?? cardEl.value;
+  const size =
+    src && src.offsetWidth > 0
+      ? { width: src.offsetWidth, height: src.offsetHeight }
+      : { width: cardWidthFromCss(vp.width), height: 180 };
   card.value = placeCard(spot.value, vp, size, 14);
   measured.value = true;
 }
@@ -92,13 +103,16 @@ function onKey(e: KeyboardEvent) {
   }
 }
 
+function onResize() {
+  measure();
+}
 onMounted(() => {
   window.addEventListener("keydown", onKey);
-  window.addEventListener("resize", measure);
+  window.addEventListener("resize", onResize);
 });
 onUnmounted(() => {
   window.removeEventListener("keydown", onKey);
-  window.removeEventListener("resize", measure);
+  window.removeEventListener("resize", onResize);
 });
 watch(phase, () => void remeasure());
 
@@ -111,6 +125,7 @@ const spotStyle = computed(() => ({
 const cardStyle = computed(() => ({
   left: `${card.value.left}px`,
   top: `${card.value.top}px`,
+  "--arrow": `${card.value.arrow}px`,
 }));
 </script>
 
@@ -155,8 +170,9 @@ const cardStyle = computed(() => ({
       <!-- 暗幕のどこをクリックしても次へ (対象以外は操作させない) -->
       <div class="absolute inset-0" @click="next" />
 
-      <!-- out-in なので新しいカードは古いのが消えてから入る = 入る直前に実寸で置き直す -->
-      <Transition name="tour-card" mode="out-in" @before-enter="measure">
+      <!-- out-in なので新しいカードは古いのが消えてから入る = 入った要素の実寸で置き直す
+           (ref はこの時点でまだ古い要素を指しうるので、フックの要素を渡す) -->
+      <Transition name="tour-card" mode="out-in" @enter="(el) => measure(el as HTMLElement)">
         <div
           :key="step"
           ref="cardEl"
@@ -326,27 +342,28 @@ const cardStyle = computed(() => ({
   border: 1px solid rgb(var(--ash));
   transform: rotate(45deg);
 }
+/* 三角の位置は --arrow (placeCard が対象の中心から計算) */
 .tour-card-below::before {
   top: -7px;
-  left: 22px;
+  left: calc(var(--arrow, 22px) - 6px);
   border-right: 0;
   border-bottom: 0;
 }
 .tour-card-above::before {
   bottom: -7px;
-  left: 22px;
+  left: calc(var(--arrow, 22px) - 6px);
   border-left: 0;
   border-top: 0;
 }
 .tour-card-right::before {
   left: -7px;
-  top: 22px;
+  top: calc(var(--arrow, 22px) - 6px);
   border-right: 0;
   border-top: 0;
 }
 .tour-card-left::before {
   right: -7px;
-  top: 22px;
+  top: calc(var(--arrow, 22px) - 6px);
   border-left: 0;
   border-bottom: 0;
 }

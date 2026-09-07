@@ -40,18 +40,27 @@ describe("placeCard — 下 → 上 → 右 → 左 の順に収まる側へ", (
   const vp = { width: 1000, height: 600 };
   const card = { width: 300, height: 120 };
 
-  it("余裕があれば下に、対象の左端に揃える", () => {
+  it("余裕があれば下に、対象の左端に揃え、三角は対象の中心を指す", () => {
     const p = placeCard({ left: 200, top: 40, width: 30, height: 30 }, vp, card, 12);
-    expect(p).toEqual({ left: 200, top: 82, side: "below" });
+    expect(p).toEqual({ left: 200, top: 82, side: "below", arrow: 18 }); // 中心 215 − 200 = 15 → 内側 18 へ
   });
-  it("右端の対象 (タイトルバーの歯車など) は右へはみ出さないよう左へ寄せる", () => {
-    const p = placeCard({ left: 960, top: 4, width: 30, height: 30 }, vp, card, 12);
+  it("右端の対象 (タイトルバーの一覧など) は右へはみ出さないよう左へ寄せ、三角は対象の中心を指し続ける", () => {
+    // 2026-09-07 実機で切れていた形: 実寸 396px のカードが viewport 1920 の右端の対象に付く。
+    const wide = { width: 1920, height: 1000 };
+    const c = { width: 396, height: 200 };
+    const p = placeCard({ left: 1550, top: 4, width: 60, height: 40 }, wide, c, 14);
     expect(p.side).toBe("below");
-    expect(p.left + card.width).toBeLessThanOrEqual(vp.width - 8);
+    expect(p.left + c.width).toBeLessThanOrEqual(wide.width - 8);
+    // 対象の中心 1580 をカードの左端 (1516) から測ると 64px = 三角がそこにある。
+    expect(p.arrow).toBe(1580 - p.left);
+  });
+  it("三角はカードの角に掛からない (対象がカードの端より外でも 18px 内側に収める)", () => {
+    const p = placeCard({ left: 990, top: 4, width: 10, height: 10 }, vp, card, 12);
+    expect(p.arrow).toBe(card.width - 18);
   });
   it("画面下端の対象 (入力欄) は上に出す", () => {
     const p = placeCard({ left: 100, top: 540, width: 600, height: 50 }, vp, card, 12);
-    expect(p).toEqual({ left: 100, top: 540 - 12 - 120, side: "above" });
+    expect(p).toEqual({ left: 100, top: 540 - 12 - 120, side: "above", arrow: 282 });
   });
   it("上下とも無理なら右へ", () => {
     const tall = { width: 1000, height: 200 };

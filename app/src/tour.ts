@@ -57,6 +57,12 @@ export interface CardPlacement {
   left: number;
   top: number;
   side: CardSide;
+  /**
+   * 対象を指す三角の位置 (カードの辺に沿った px)。下/上なら左端からの x、右/左なら上端からの y。
+   * カードを画面内へ寄せても三角は**対象の中心**を指し続ける (固定位置だと寄せた瞬間に
+   * 何も指さなくなる)。カードの角には掛からないよう 18px 内側に収める。
+   */
+  arrow: number;
 }
 
 /**
@@ -74,22 +80,31 @@ export function placeCard(
 ): CardPlacement {
   const clampX = (x: number) => Math.min(Math.max(8, x), Math.max(8, viewport.width - card.width - 8));
   const clampY = (y: number) => Math.min(Math.max(8, y), Math.max(8, viewport.height - card.height - 8));
+  const cx = spot.left + spot.width / 2;
+  const cy = spot.top + spot.height / 2;
+  const arrowX = (left: number) => Math.min(Math.max(18, cx - left), Math.max(18, card.width - 18));
+  const arrowY = (top: number) => Math.min(Math.max(18, cy - top), Math.max(18, card.height - 18));
 
   const belowTop = spot.top + spot.height + gap;
   if (belowTop + card.height <= viewport.height) {
-    return { left: clampX(spot.left), top: belowTop, side: "below" };
+    const left = clampX(spot.left);
+    return { left, top: belowTop, side: "below", arrow: arrowX(left) };
   }
   const aboveTop = spot.top - gap - card.height;
   if (aboveTop >= 0) {
-    return { left: clampX(spot.left), top: aboveTop, side: "above" };
+    const left = clampX(spot.left);
+    return { left, top: aboveTop, side: "above", arrow: arrowX(left) };
   }
   const rightLeft = spot.left + spot.width + gap;
   if (rightLeft + card.width <= viewport.width) {
-    return { left: rightLeft, top: clampY(spot.top), side: "right" };
+    const top = clampY(spot.top);
+    return { left: rightLeft, top, side: "right", arrow: arrowY(top) };
   }
   const leftLeft = spot.left - gap - card.width;
   if (leftLeft >= 0) {
-    return { left: leftLeft, top: clampY(spot.top), side: "left" };
+    const top = clampY(spot.top);
+    return { left: leftLeft, top, side: "left", arrow: arrowY(top) };
   }
-  return { left: clampX(spot.left), top: clampY(belowTop), side: "below" };
+  const left = clampX(spot.left);
+  return { left, top: clampY(belowTop), side: "below", arrow: arrowX(left) };
 }
