@@ -2290,6 +2290,20 @@ gate 未達の理由は「どの時点の評価か」と「その時点まで誰
 記録しない)。「remove_item 先置き」は、実セーブに対して却下される唯一の自然な形として同定
 したもので、GM の実際の ops を読んだわけではない。
 
+**追補 (2026-09-07、隣の穴 = ユーザー指示)**: 同じ「食べる = 手放す」の意味論で、**NPC が持つ物**を
+主人公が `remove_item` で使おうとする形が残っていた。`remove_item` は主人公専用なので
+`ItemNotHeld` で却下されるが、旧文面は「'焼き魚' を所持していないので手放せない」だけで
+**誰が持っているか**を言わず、state_brief には `moka: 焼き魚` と出ているので LLM には矛盾に
+見える (#95 と同じ「画面と却下理由が食い違う」形、時点のずれでなく主体のずれ)。多人数 (spec 23)
+の `party_note` には「消費 = give_item で仲間から主人公へ渡し remove_item」の idiom が
+あったが**単騎の GM_SYSTEM には無かった**。二層で塞いだ: ①`ItemNotHeld` に `entity` と
+`held_by` (射影時点の持ち主) を足し、文面が「give_item (from: moka, to: player) を先に並べてから
+remove_item」を名指す (#42 の規律・serde default で旧形式も読める) ②GM_SYSTEM に「add_item /
+remove_item は主人公の手元にしか効かない。NPC の物は give_item で戻してから remove_item、
+NPC に拾わせるなら add_item → give_item」。戻す手を先に並べれば spec 09 の逐次射影で同一ターン
+受理 (PoC で固定)。**実プレイでこの形の却下が出たかは未観測** — #95 の解析中に見えた構造上の
+穴で、先回りの処方。
+
 ## crates/harness (2026-09-03 実プレイ — 「画像生成のスタイル指定が、使っているうちに『画像に送るプロンプト』に二重で出る」)
 
 **症状**: 設定のスタイル指定 (タグ列 `Photograph, looking away, full body, …`) が、プロンプト工房の

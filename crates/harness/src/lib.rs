@@ -2257,6 +2257,15 @@ locations:
             s.contains("検証されない"),
             "narration は非検証=GM 自身が一貫性を守る旨を明示する"
         );
+        // 【#95 の隣 (2026-09-07)】NPC が持つ物は主人公へ戻してから使う (remove_item は主人公専用)。
+        assert!(
+            s.contains("add_item / remove_item は主人公の手元にしか効かない"),
+            "add_item / remove_item が主人公専用であることを刷り込む"
+        );
+        assert!(
+            s.contains("from: その NPC, to: player") && s.contains("渡してから remove_item"),
+            "NPC の所持物は give_item で主人公へ戻してから remove_item、の手順を刷り込む"
+        );
     }
 
     /// 【NPC 数値の接地】GM_SYSTEM が「数値変化は adjust_stat で起こす」「NPC 数値は entity 明示」を

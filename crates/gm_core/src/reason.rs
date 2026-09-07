@@ -16,6 +16,10 @@ pub enum Lang {
     En,
 }
 
+fn default_player() -> String {
+    crate::PLAYER.to_string()
+}
+
 /// 却下の構造化理由。表示文字列は [`RejectReason::localize`] で言語ごとに生成する。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "code", rename_all = "snake_case")]
@@ -45,7 +49,17 @@ pub enum RejectReason {
     ItemFixed { item: String },
     /// `take: once` のアイテムを既にこの場所から持ち去っている (再取得=複製の遮断)。
     ItemAlreadyTaken { item: String },
-    ItemNotHeld { item: String },
+    /// `entity` がその物を持っていない (remove_item は主人公専用 / give_item は `from`)。
+    /// `held_by` はその時点で実際に持っている者 — NPC が持つ物を主人公が `remove_item` で
+    /// 使おうとした形 (#95 の隣) では「誰から give_item で戻せば通るか」を文面が名指せる。
+    /// 2026-09-07 追加 (serde default = 旧形式も読める)。
+    ItemNotHeld {
+        item: String,
+        #[serde(default = "default_player")]
+        entity: String,
+        #[serde(default)]
+        held_by: Vec<String>,
+    },
     /// 未宣言フラグ (幻フラグ)。`available` は LLM が set_flag してよい語彙
     /// (`Scenario::usable_flags` = allowed − authored 専権) — self-repair が一発で正しい名前に直せる。
     FlagNotAllowed {
@@ -317,7 +331,17 @@ impl RejectReason {
             RejectReason::ItemAlreadyTaken { item } => {
                 format!("'{item}' は既にここから持ち去られていて、もう無い")
             }
-            RejectReason::ItemNotHeld { item } => format!("'{item}' を所持していないので手放せない"),
+            RejectReason::ItemNotHeld { item, entity, held_by } => {
+                if held_by.is_empty() {
+                    format!("{entity} は '{item}' を所持していないので手放せない")
+                } else {
+                    format!(
+                        "{entity} は '{item}' を所持していない (持っているのは {})。使う・手放すなら、先に give_item (from: {}, to: {entity}) で {entity} の手に渡してから remove_item を並べれば通る",
+                        held_by.join(", "),
+                        held_by[0]
+                    )
+                }
+            }
             RejectReason::FlagNotAllowed { key, available } => {
                 if available.is_empty() {
                     format!("フラグ '{key}' は存在しない (このシナリオに set_flag できるフラグは無い)")
@@ -413,8 +437,16 @@ impl RejectReason {
             RejectReason::ItemAlreadyTaken { item } => {
                 format!("'{item}' has already been taken from here and is gone")
             }
-            RejectReason::ItemNotHeld { item } => {
-                format!("cannot drop '{item}' because you do not hold it")
+            RejectReason::ItemNotHeld { item, entity, held_by } => {
+                if held_by.is_empty() {
+                    format!("{entity} does not hold '{item}', so it cannot be dropped")
+                } else {
+                    format!(
+                        "{entity} does not hold '{item}' (held by {}). To use or drop it, first give_item (from: {}, to: {entity}) and then remove_item in the same ops",
+                        held_by.join(", "),
+                        held_by[0]
+                    )
+                }
             }
             RejectReason::FlagNotAllowed { key, available } => {
                 if available.is_empty() {

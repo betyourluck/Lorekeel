@@ -185,6 +185,19 @@ fn resolve_degree_slot<'a>(
 /// 唯一の裁定者。**`state` を一切変更しない純粋関数**。
 ///
 /// 1つでも不正な op があれば `Reject` を返す (理由は全件収集)。
+/// `ItemNotHeld` を「誰が持っているか」つきで組む (射影中の state を見るので、同じ ops の
+/// 先行 op で渡した/受け取った結果も反映される)。#95 の隣: NPC が持つ物を主人公が
+/// `remove_item` で使おうとしたとき、文面が give_item で戻す手順を名指せる。
+fn item_not_held(state: &GameState, entity: &str, item: &str) -> RejectReason {
+    let held_by: Vec<String> = state
+        .inventory
+        .iter()
+        .filter(|(e, items)| e.as_str() != entity && items.contains(item))
+        .map(|(e, _)| e.clone())
+        .collect();
+    RejectReason::ItemNotHeld { item: item.to_string(), entity: entity.to_string(), held_by }
+}
+
 pub fn adjudicate(state: &GameState, scenario: &Scenario, delta: &StateDelta) -> Verdict {
     if scenario.location(&state.location).is_none() {
         return Verdict::Reject {
@@ -438,13 +451,13 @@ fn validate_op(
             }
             StateOp::RemoveItem { item } => {
                 if !state.has_item(PLAYER, item) {
-                    reasons.push(RejectReason::ItemNotHeld { item: item.clone() });
+                    reasons.push(item_not_held(state, PLAYER, item));
                 }
             }
             StateOp::GiveItem { from, to, item } => {
                 // 持っていない物は渡せない (#23 の engine 側バックストップ)。
                 if !state.has_item(from, item) {
-                    reasons.push(RejectReason::ItemNotHeld { item: item.clone() });
+                    reasons.push(item_not_held(state, from, item));
                 }
                 // 幻のキャラには渡せない (閉世界)。
                 if !scenario.knows_entity(to) {
@@ -5173,11 +5186,62 @@ triggers:
         match adjudicate(&s, &sc, &delta) {
             Verdict::Reject { reasons } => assert!(reasons
                 .iter()
-                .any(|r| matches!(r, RejectReason::ItemNotHeld { item } if item == "flower"))),
+                .any(|r| matches!(r, RejectReason::ItemNotHeld { item, .. } if item == "flower"))),
             Verdict::Accept => panic!("持っていない物の譲渡を受理してはならない"),
         }
         assert!(apply(&mut s, &sc, &delta).is_err());
         assert!(!s.has_item("alice", "flower"), "却下なら誰の手にも渡らない");
+    }
+
+    /// 【#95 の隣 (2026-09-07)】NPC が持つ物を主人公が `remove_item` で使おうとすると
+    /// `ItemNotHeld` になるが、旧文面は「所持していないので手放せない」だけで**誰が持っているか**
+    /// を言わず、LLM には画面 (所持品: alice: flower) と矛盾して見えた。理由が `held_by` を運び、
+    /// 文面が「give_item で戻してから remove_item」を名指す (#42 の規律)。戻す手を先に並べれば
+    /// 同じターンで受理される (spec 09 の逐次射影)。
+    #[test]
+    fn remove_item_held_by_npc_names_the_holder_and_the_fix() {
+        let sc = gift();
+        let mut s = sc.initial_state(1);
+        apply(&mut s, &sc, &d(vec![StateOp::AddItem { item: "flower".into() }])).unwrap();
+        apply(&mut s, &sc, &d(vec![StateOp::GiveItem {
+            from: "player".into(),
+            to: "alice".into(),
+            item: "flower".into(),
+        }]))
+        .unwrap();
+        assert!(s.has_item("alice", "flower"));
+
+        // NPC の手にある物へ直接 remove_item → 却下、理由は持ち主を名指す。
+        let bad = d(vec![StateOp::RemoveItem { item: "flower".into() }]);
+        match adjudicate(&s, &sc, &bad) {
+            Verdict::Reject { reasons } => {
+                let r = reasons
+                    .iter()
+                    .find(|r| matches!(r, RejectReason::ItemNotHeld { .. }))
+                    .expect("ItemNotHeld");
+                match r {
+                    RejectReason::ItemNotHeld { entity, held_by, .. } => {
+                        assert_eq!(entity, "player");
+                        assert_eq!(held_by, &vec!["alice".to_string()]);
+                    }
+                    _ => unreachable!(),
+                }
+                let ja = r.localize(crate::Lang::Ja);
+                assert!(ja.contains("alice") && ja.contains("give_item") && ja.contains("remove_item"), "{ja}");
+                let en = r.localize(crate::Lang::En);
+                assert!(en.contains("alice") && en.contains("give_item"), "{en}");
+            }
+            Verdict::Accept => panic!("NPC が持つ物への remove_item を受理してはならない"),
+        }
+
+        // 文面どおり give_item で戻してから remove_item を並べれば同一ターンで通る。
+        let good = d(vec![
+            StateOp::GiveItem { from: "alice".into(), to: "player".into(), item: "flower".into() },
+            StateOp::RemoveItem { item: "flower".into() },
+        ]);
+        assert!(matches!(adjudicate(&s, &sc, &good), Verdict::Accept));
+        apply(&mut s, &sc, &good).unwrap();
+        assert!(!s.has_item("alice", "flower") && !s.has_item("player", "flower"));
     }
 
     /// 【幻のキャラ遮断】存在しない entity には渡せない (閉世界)。
