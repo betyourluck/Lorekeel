@@ -119,7 +119,7 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
         <path d="M9.5 14.5 12 17l2.5-2.5" />
       </svg>
     </button>
-    <button class="tb-btn" :title="t('titlebar.settings')" :aria-label="t('titlebar.settings')" @click="emit('open-settings')">
+    <button class="tb-btn" data-tour="settings" :title="t('titlebar.settings')" :aria-label="t('titlebar.settings')" @click="emit('open-settings')">
       <!-- Cog -->
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
         <circle cx="12" cy="12" r="3" />
@@ -154,7 +154,7 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
       </svg>
     </button>
 
-    <button class="tb-btn" :title="t('titlebar.packages')" :aria-label="t('titlebar.packages')" @click="emit('open-packages')">
+    <button class="tb-btn" data-tour="packages" :title="t('titlebar.packages')" :aria-label="t('titlebar.packages')" @click="emit('open-packages')">
       <!-- List -->
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
         <line x1="8" y1="6" x2="20" y2="6" />

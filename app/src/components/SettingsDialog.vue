@@ -45,7 +45,7 @@ import {
 // 卓の音声 (mesh)。この file の `voice` は TTS 設定の ref なので別名で取る。
 import { listMicDevices, micDeviceId, voice as voiceMesh } from "../voice";
 
-const emit = defineEmits<{ (e: "close"): void }>();
+const emit = defineEmits<{ (e: "close"): void; (e: "open-tour"): void }>();
 const game = useGameStore();
 
 // --- 卓のマイク選択 (spec 23 Phase D)。複数マイクを挿した端末でどれを使うか ---
@@ -1516,6 +1516,13 @@ onMounted(async () => {
             <p>{{ t("settings.help.line4") }}</p>
             <p>{{ t("settings.help.line5") }}</p>
             <p class="text-parchment/40">{{ t("settings.help.tagline") }}</p>
+            <!-- 初回のナビゲーションをもう一度 (初回に飛ばした人・手順を忘れた人の戻り道) -->
+            <button
+              class="mt-2 rounded border border-ember/60 bg-ember/15 px-3 py-1.5 text-sm text-glow hover:bg-ember/25"
+              @click="emit('open-tour')"
+            >
+              {{ t("settings.help.replayTour") }}
+            </button>
           </section>
         </div>
       </div>

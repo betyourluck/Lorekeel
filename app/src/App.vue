@@ -12,8 +12,9 @@
  */
 import { computed, defineAsyncComponent, ref, watch, onMounted, onUnmounted } from "vue";
 import { transport } from "./transport";
-import { useGameStore } from "./stores/game";
+import { loadAiProfiles, useGameStore } from "./stores/game";
 import { t } from "./i18n";
+import { shouldShowTour, TOUR_DONE_KEY } from "./tour";
 import TitleBar from "./components/TitleBar.vue";
 import PackageDialog from "./components/PackageDialog.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
@@ -31,11 +32,40 @@ import Icon from "./components/Icon.vue";
 // chunk 境界は EditorPane (設定を開かない・編集しないセッションで CodeMirror を起動時に
 // 解析させない、spec 27 Phase C と同じ判断)。
 const EditorPane = defineAsyncComponent(() => import("./components/EditorPane.vue"));
+// 初回起動のナビゲーション (2026-09-07)。初回にしか読まれないので動的 import (chunk 境界)。
+const FirstRunTour = defineAsyncComponent(() => import("./components/FirstRunTour.vue"));
 
 const game = useGameStore();
 const showSettings = ref(false);
 const showPackages = ref(false);
 const showTable = ref(false);
+// 初回起動のナビゲーション。判定は tour.ts の shouldShowTour (純関数)。
+const showTour = ref(false);
+function decideTour() {
+  let done = false;
+  try {
+    done = !!localStorage.getItem(TOUR_DONE_KEY);
+  } catch {
+    return;
+  }
+  if (done) return;
+  const show = shouldShowTour({
+    done,
+    profileCount: loadAiProfiles().length,
+    packageCount: game.packagePaths.length,
+  });
+  if (show) {
+    // レイアウトが落ち着いてから (対象要素の位置を測るので、フォントサイズ適用後)。
+    setTimeout(() => (showTour.value = true), 450);
+  } else {
+    // 既に使っている人 (更新で初めてこの機構が入った) には出さず、印だけ立てる。
+    try {
+      localStorage.setItem(TOUR_DONE_KEY, "1");
+    } catch {
+      /* noop */
+    }
+  }
+}
 // transport.onEvent の購読解除 (onMounted で購読・onUnmounted で解除 = 多重購読を防ぐ)。
 let unlistenGameEvents: (() => void) | null = null;
 // 手動セーブスロットのダイアログ (spec 07 Phase D)。null = 非表示。
@@ -173,6 +203,7 @@ onMounted(() => {
   game.checkAppUpdate(); // 配布サイトに新しいアプリがあれば TitleBar に「最新版があります」
   const px = Number(localStorage.getItem("kataribe.fontScale")) || 18; // 既定 = 標準 18px
   document.documentElement.style.fontSize = `${px}px`;
+  decideTour();
   window.addEventListener("pointerdown", ensureBgmPlaying);
   window.addEventListener("keydown", ensureBgmPlaying);
   // backend の push イベント (spec 23 Phase A: transport seam の onEvent 面。
@@ -291,6 +322,7 @@ onUnmounted(() => {
         <button
           :disabled="game.loading || guestLocked"
           class="grid h-8 w-8 place-items-center rounded text-parchment/60 hover:bg-ash/60 hover:text-parchment disabled:opacity-40"
+          data-tour="start"
           :title="guestLocked ? t('app.guestLocked') : t('app.newGame')"
           :aria-label="t('app.newGame')"
           @click="game.newGame()"
@@ -406,7 +438,27 @@ onUnmounted(() => {
     <!-- ダイアログ (TitleBar のボタンから開く) -->
     <PackageDialog v-if="showPackages" @close="showPackages = false" />
     <TableDialog v-if="showTable" @close="showTable = false" />
-    <SettingsDialog v-if="showSettings" @close="showSettings = false" />
+    <SettingsDialog
+      v-if="showSettings"
+      @close="showSettings = false"
+      @open-tour="
+        showSettings = false;
+        showTour = true;
+      "
+    />
+    <!-- 初回起動のナビゲーション (設定 → ヘルプ からもう一度見られる) -->
+    <FirstRunTour
+      v-if="showTour"
+      @close="showTour = false"
+      @open-settings="
+        showTour = false;
+        showSettings = true;
+      "
+      @open-packages="
+        showTour = false;
+        showPackages = true;
+      "
+    />
     <!-- 手動セーブスロット (ヘッダーのセーブ/ロードボタンから開く。spec 07 Phase D) -->
     <SaveSlotDialog v-if="slotDialog" :mode="slotDialog" @close="slotDialog = null" />
     <!-- 自前の確認ダイアログ (window.confirm 置き換え。store.askConfirm が開く) -->

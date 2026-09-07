@@ -68,6 +68,38 @@ export const messages = {
       ok: "OK",
       cancel: "キャンセル",
     },
+    // 初回起動のナビゲーション (2026-09-07)。4 歩で「始め方」を示す。
+    tour: {
+      welcomeTitle: "ようこそ。4 つの手順で物語が始まります",
+      welcomeLead:
+        "Lorekeel は、AI が語り、ルールエンジンが裁く TRPG です。最初に AI モデルを登録し、シナリオ（パッケージ）を取得すれば、あとは行動を打つだけ。",
+      welcomeStart: "案内をはじめる",
+      skip: "スキップ",
+      next: "次へ",
+      back: "戻る",
+      finish: "はじめる",
+      keys: "Enter / → で次へ、← で戻る、Esc で閉じる。設定 → ヘルプ からいつでも見直せます。",
+      steps: {
+        settings: {
+          title: "AI モデルを登録する",
+          body: "タイトルバーの歯車から「AIモデル」タブを開き、接続先・モデル名・API キーを登録します。語り手になる AI です。",
+          action: "設定を開く",
+        },
+        packages: {
+          title: "パッケージを取得する",
+          body: "タイトルバーの一覧アイコンからパッケージ一覧を開き、「配布サイト」タブで遊びたい TRPG シナリオを取得します。手元のフォルダを追加することもできます。",
+          action: "パッケージ一覧を開く",
+        },
+        start: {
+          title: "パッケージを選んで開始",
+          body: "左の欄でパッケージを選び、この開始ボタンを押すと物語が始まります。途中でやめても、次回は「続きから」で再開できます。",
+        },
+        input: {
+          title: "行動を入力する",
+          body: "ここに主人公の行動を書いて Enter。AI が語り、ルールエンジンが所持品や数値を裁きます。矛盾のない世界で、自由に動いてください。",
+        },
+      },
+    },
     // 改名 (Kataribe → Lorekeel、2026-08-28) の一度きりの告知。旧インストールが在るときだけ出る。
     rename: {
       body:
@@ -347,6 +379,7 @@ export const messages = {
       },
       help: {
         heading: "ヘルプ",
+        replayTour: "はじめかたの案内をもう一度見る",
         line1:
           "・上部のパッケージを選び「新しいゲーム」で開始。下の入力欄に行動を打ち、Enter で送信します。",
         line2Pre: "・タイトルバーの",
@@ -899,6 +932,37 @@ export const messages = {
       ok: "OK",
       cancel: "Cancel",
     },
+    tour: {
+      welcomeTitle: "Welcome. Four steps to your first story",
+      welcomeLead:
+        "Lorekeel is a TRPG where an AI narrates and a rules engine adjudicates. Register an AI model, fetch a scenario (package), and then just type what you do.",
+      welcomeStart: "Show me",
+      skip: "Skip",
+      next: "Next",
+      back: "Back",
+      finish: "Let's begin",
+      keys: "Enter / → next, ← back, Esc close. You can replay this from Settings → Help.",
+      steps: {
+        settings: {
+          title: "Register an AI model",
+          body: "Open the cog in the title bar, go to the “AI Model” tab and register an endpoint, model name and API key. This is your narrator.",
+          action: "Open settings",
+        },
+        packages: {
+          title: "Fetch a package",
+          body: "Open the package list from the list icon in the title bar and fetch a TRPG scenario from the “Site” tab. You can also add a local folder.",
+          action: "Open package list",
+        },
+        start: {
+          title: "Pick a package and start",
+          body: "Choose a package in the box on the left and press this start button. If you stop midway, “Continue” resumes next time.",
+        },
+        input: {
+          title: "Type your action",
+          body: "Write what your character does here and press Enter. The AI narrates; the rules engine adjudicates items and numbers. Act freely in a world that never contradicts itself.",
+        },
+      },
+    },
     rename: {
       body:
         "This app has been renamed from “Kataribe” to “Lorekeel”.\n" +
@@ -1178,6 +1242,7 @@ export const messages = {
       },
       help: {
         heading: "Help",
+        replayTour: "Show the getting-started guide again",
         line1:
           "・Pick a package at the top and press “New game”. Type an action in the input below and press Enter to send.",
         line2Pre: "・In the title bar,",

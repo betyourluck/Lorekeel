@@ -42,6 +42,7 @@ async function send() {
   <div class="border-t border-ash bg-ink px-6 py-3">
     <!-- 入力欄: textarea の中に送信マーク (↵) を浮かせる (Claude Code 風) -->
     <div
+      data-tour="input"
       class="relative rounded-xl bg-ash/40 ring-1 ring-transparent focus-within:ring-ember/50 transition"
       :class="{ 'opacity-40': disabled }"
     >
