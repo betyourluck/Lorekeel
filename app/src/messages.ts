@@ -83,12 +83,10 @@ export const messages = {
         settings: {
           title: "AI モデルを登録する",
           body: "タイトルバーの歯車から「AIモデル」タブを開き、接続先・モデル名・API キーを登録します。語り手になる AI です。",
-          action: "設定を開く",
         },
         packages: {
           title: "パッケージを取得する",
           body: "タイトルバーの一覧アイコンからパッケージ一覧を開き、「配布サイト」タブで遊びたい TRPG シナリオを取得します。手元のフォルダを追加することもできます。",
-          action: "パッケージ一覧を開く",
         },
         start: {
           title: "パッケージを選んで開始",
@@ -946,12 +944,10 @@ export const messages = {
         settings: {
           title: "Register an AI model",
           body: "Open the cog in the title bar, go to the “AI Model” tab and register an endpoint, model name and API key. This is your narrator.",
-          action: "Open settings",
         },
         packages: {
           title: "Fetch a package",
           body: "Open the package list from the list icon in the title bar and fetch a TRPG scenario from the “Site” tab. You can also add a local folder.",
-          action: "Open package list",
         },
         start: {
           title: "Pick a package and start",

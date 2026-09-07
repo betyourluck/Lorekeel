@@ -447,18 +447,7 @@ onUnmounted(() => {
       "
     />
     <!-- 初回起動のナビゲーション (設定 → ヘルプ からもう一度見られる) -->
-    <FirstRunTour
-      v-if="showTour"
-      @close="showTour = false"
-      @open-settings="
-        showTour = false;
-        showSettings = true;
-      "
-      @open-packages="
-        showTour = false;
-        showPackages = true;
-      "
-    />
+    <FirstRunTour v-if="showTour" @close="showTour = false" />
     <!-- 手動セーブスロット (ヘッダーのセーブ/ロードボタンから開く。spec 07 Phase D) -->
     <SaveSlotDialog v-if="slotDialog" :mode="slotDialog" @close="slotDialog = null" />
     <!-- 自前の確認ダイアログ (window.confirm 置き換え。store.askConfirm が開く) -->

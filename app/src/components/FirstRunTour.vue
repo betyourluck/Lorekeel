@@ -10,18 +10,14 @@
  * 軽さの線引き: 依存ゼロ・CSS のトランジションと keyframes だけ・動的 import で初回にしか
  * 読まれない (App.vue)。見たかどうかの印は localStorage (`tour.ts` の TOUR_DONE_KEY)。
  *
- * 手順 1・2 のカードには「いま開く」を置く — 説明を読んで終わりでなく、その場で設定や
- * パッケージ一覧へ行ける (案内はそこで終わる。ダイアログの上に案内が残らない)。
+ * 案内の中から設定やパッケージ一覧を開くボタンは置かない (2026-09-07 ユーザー決定) —
+ * 開いた瞬間に案内は終わるので、案内の中に置く意味が薄い。読み終えてから自分で開く。
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { t } from "../i18n";
 import { placeCard, spotlightBox, TOUR_DONE_KEY, TOUR_STEPS, type Box, type CardPlacement } from "../tour";
 
-const emit = defineEmits<{
-  (e: "close"): void;
-  (e: "open-settings"): void;
-  (e: "open-packages"): void;
-}>();
+const emit = defineEmits<{ (e: "close"): void }>();
 
 const phase = ref<"welcome" | "tour">("welcome");
 const idx = ref(0);
@@ -82,12 +78,6 @@ function finish() {
   }
   emit("close");
 }
-function openNow() {
-  finish();
-  if (step.value === "settings") emit("open-settings");
-  else if (step.value === "packages") emit("open-packages");
-}
-
 function onKey(e: KeyboardEvent) {
   if (e.key === "Escape") {
     e.preventDefault();
@@ -122,7 +112,6 @@ const cardStyle = computed(() => ({
   left: `${card.value.left}px`,
   top: `${card.value.top}px`,
 }));
-const hasAction = computed(() => step.value === "settings" || step.value === "packages");
 </script>
 
 <template>
@@ -183,10 +172,7 @@ const hasAction = computed(() => step.value === "settings" || step.value === "pa
           </div>
           <p class="mt-2 text-sm text-parchment/80 leading-relaxed">{{ t(`tour.steps.${step}.body`) }}</p>
           <div class="mt-4 flex items-center gap-2">
-            <button v-if="hasAction" class="tour-btn-primary" @click="openNow">{{ t(`tour.steps.${step}.action`) }}</button>
-            <button v-if="idx + 1 < total" :class="hasAction ? 'tour-btn-ghost' : 'tour-btn-primary'" @click="next">
-              {{ t("tour.next") }}
-            </button>
+            <button v-if="idx + 1 < total" class="tour-btn-primary" @click="next">{{ t("tour.next") }}</button>
             <button v-else class="tour-btn-primary" @click="finish">{{ t("tour.finish") }}</button>
             <button v-if="idx > 0" class="tour-btn-ghost" @click="back">{{ t("tour.back") }}</button>
             <button class="ml-auto text-[11px] text-parchment/40 hover:text-parchment" @click="finish">{{ t("tour.skip") }}</button>
