@@ -82,18 +82,18 @@ function onKey(e: KeyboardEvent) {
         <div v-if="assist.running" class="animate-pulse text-ember/80">{{ t("editAssist.thinking") }}</div>
       </div>
 
-      <p v-if="assist.error" class="text-xs text-red-300 whitespace-pre-wrap">{{ assist.error }}</p>
+      <p v-if="assist.error" class="text-xs text-warn whitespace-pre-wrap">{{ assist.error }}</p>
 
       <div v-if="assist.result" class="space-y-2 rounded-lg bg-black/20 p-3 text-xs">
         <p class="whitespace-pre-wrap text-parchment/85">{{ assist.result.summary }}</p>
         <p class="text-ember/90" v-if="assist.result.changed">{{ t("editAssist.replaced") }}</p>
         <p class="text-parchment/50" v-else>{{ t("editAssist.unchanged") }}</p>
-        <p v-if="stoppedText" class="text-amber-200/80">{{ stoppedText }}</p>
+        <p v-if="stoppedText" class="text-glow/80">{{ stoppedText }}</p>
         <ul v-if="assist.result.diagnostics.length" class="space-y-0.5">
           <li
             v-for="(d, i) in assist.result.diagnostics"
             :key="i"
-            :class="d.severity === 'error' ? 'text-red-300' : 'text-amber-200/80'"
+            :class="d.severity === 'error' ? 'text-warn' : 'text-glow/80'"
           >
             [{{ d.severity }}]<template v-if="d.line"> L{{ d.line }}</template><template v-else-if="d.path"> {{ d.path }}</template> {{ d.message }}
           </li>

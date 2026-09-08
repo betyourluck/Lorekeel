@@ -224,7 +224,7 @@ const leave = confirmAndLeave;
 
         <h3 class="mb-1 font-bold">{{ t("table.seats") }}</h3>
         <div v-for="s in multi.seats" :key="s.peerId" class="mb-1 flex items-center gap-2 text-sm">
-          <span class="w-2 shrink-0" :class="s.connected ? 'text-green-400' : 'text-parchment/40'">●</span>
+          <span class="w-2 shrink-0" :class="s.connected ? 'text-ok' : 'text-parchment/40'">●</span>
           <span class="min-w-[7rem]">{{ s.displayName }}</span>
           <span
             v-if="s.peerId === 'host'"
@@ -291,7 +291,7 @@ const leave = confirmAndLeave;
       <template v-else>
         <p class="mb-2 text-sm">
           {{ t("table.guestStatus", { host: multi.hostName || "?" }) }}
-          <span :class="multi.connected ? 'text-green-400' : 'text-ember'">●</span>
+          <span :class="multi.connected ? 'text-ok' : 'text-ember'">●</span>
         </p>
         <p v-if="multi.relay === 'downloading'" class="mb-2 text-sm text-parchment/60">
           {{ t("table.relayDownloading") }}

@@ -208,7 +208,7 @@ const cardStyle = computed(() => ({
 .tour-welcome {
   background:
     radial-gradient(ellipse 70% 55% at 50% 110%, rgb(var(--ember) / 0.28), transparent 70%),
-    rgb(21 17 14 / 0.94);
+    rgb(var(--ink) / 0.94);
   animation: tour-breathe 6s ease-in-out infinite alternate;
 }
 @keyframes tour-breathe {
@@ -222,7 +222,7 @@ const cardStyle = computed(() => ({
 .tour-welcome-card {
   border-radius: 1rem;
   border: 1px solid rgb(var(--ash) / 0.7);
-  background: linear-gradient(to bottom, rgb(var(--ash) / 0.35), rgb(21 17 14 / 0.85));
+  background: linear-gradient(to bottom, rgb(var(--ash) / 0.35), rgb(var(--ink) / 0.85));
   box-shadow: 0 30px 80px rgb(0 0 0 / 0.5);
   animation: tour-card-in 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
@@ -266,7 +266,7 @@ const cardStyle = computed(() => ({
   height: 1.5rem;
   border-radius: 9999px;
   background: rgb(var(--ember));
-  color: rgb(21 17 14);
+  color: rgb(var(--ink));
   font-weight: 700;
   font-size: 0.75rem;
   box-shadow: 0 0 10px rgb(var(--ember) / 0.6);
@@ -402,7 +402,7 @@ const cardStyle = computed(() => ({
 .tour-btn-primary {
   border-radius: 0.5rem;
   background: rgb(var(--ember));
-  color: rgb(21 17 14);
+  color: rgb(var(--ink));
   font-weight: 700;
   font-size: 0.85rem;
   padding: 0.4rem 0.9rem;
@@ -424,6 +424,39 @@ const cardStyle = computed(() => ({
 }
 .tour-btn-ghost:hover {
   background: rgb(var(--ash) / 0.5);
+}
+
+/*
+ * ライトテーマ (2026-09-08、ユーザー報告「ナビゲーションの文字がダークと同じで読めない」)。
+ *
+ * 真因は色ではなく**層の食い違い**だった — 幕と札の背景が暗色の直書き (`rgb(21 17 14 / …)`)
+ * で、文字だけが `--parchment` (ライトでは焦げ茶) を引いていた = 暗い幕に暗い字。上で背景を
+ * 変数へ寄せたので字は読めるが、それだけだと**幕も札もクリームで境目が消える** (ダークでは
+ * 半透明の札が暗い幕から浮くという作りだった)。ライトでは浮かせ方を変える:
+ * 札は不透明・罫線をはっきり・影は黒でなく焦げ茶の薄い影。
+ */
+[data-theme="light"] .tour-welcome {
+  /* 熾火は残すが量を落とす (濃い ember を厚く敷くとクリームの上では濁る) */
+  background:
+    radial-gradient(ellipse 70% 55% at 50% 110%, rgb(var(--ember) / 0.16), transparent 70%),
+    rgb(var(--ink) / 0.96);
+}
+[data-theme="light"] .tour-welcome-card {
+  background: linear-gradient(to bottom, rgb(var(--ember) / 0.07), rgb(var(--ink)));
+  border-color: rgb(var(--ash));
+  box-shadow: 0 24px 60px rgb(var(--parchment) / 0.18);
+}
+[data-theme="light"] .tour-mini {
+  /* クリームの札の上にクリームの升だと沈むので、升の側を一段濃くする */
+  background: rgb(var(--ash) / 0.45);
+  border-color: rgb(var(--ash));
+}
+[data-theme="light"] .tour-card {
+  box-shadow: 0 24px 60px rgb(var(--parchment) / 0.28);
+}
+[data-theme="light"] .tour-brand {
+  /* 発光は暗地でしか効かない (明地では滲んで太って見えるだけ) */
+  text-shadow: none;
 }
 
 /* 動きを減らす設定の人には滑走と脈動を止める (位置は即時に決まる) */

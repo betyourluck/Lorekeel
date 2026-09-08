@@ -493,7 +493,7 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
                     <Icon name="scissors" :size="12" />
                   </button>
                   <button
-                    class="shrink-0 px-1.5 py-1 text-xs text-parchment/25 opacity-0 group-hover/media:opacity-100 hover:text-red-400 transition-opacity"
+                    class="shrink-0 px-1.5 py-1 text-xs text-parchment/25 opacity-0 group-hover/media:opacity-100 hover:text-warn transition-opacity"
                     :title="t('editor.deleteTitle', { file: f.relPath })"
                     @click="game.deleteEditorFile(f.relPath)"
                   >
@@ -569,7 +569,7 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
                      (backend も拒否する = 二層)。hover で現れる小さな ×。 -->
                 <button
                   v-if="f.relPath !== 'package.yaml'"
-                  class="shrink-0 px-1.5 py-1 text-xs text-parchment/25 opacity-0 group-hover/file:opacity-100 hover:text-red-400 transition-opacity"
+                  class="shrink-0 px-1.5 py-1 text-xs text-parchment/25 opacity-0 group-hover/file:opacity-100 hover:text-warn transition-opacity"
                   :title="t('editor.deleteTitle', { file: f.relPath })"
                   @click="game.deleteEditorFile(f.relPath)"
                 >
@@ -623,7 +623,7 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
               >
                 <span
                   class="font-mono"
-                  :class="iss.severity === 'error' ? 'text-red-400/90' : 'text-ember/90'"
+                  :class="iss.severity === 'error' ? 'text-warn/90' : 'text-ember/90'"
                 >
                   {{ iss.severity === "error" ? "✗" : "⚠" }}
                   {{ iss.file ?? t("editor.issueWholePkg") }}
@@ -729,7 +729,7 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
             <div v-if="game.state.inventory.length" class="text-parchment">
               {{ game.state.inventory.join(t("state.listSep")) }}
             </div>
-            <div v-else class="text-parchment/30">{{ t("state.none") }}</div>
+            <div v-else class="text-parchment/50">{{ t("state.none") }}</div>
           </div>
 
           <div class="mb-3">
@@ -745,7 +745,7 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
                 {{ f.title || f.key }}
               </span>
             </div>
-            <div v-else class="text-parchment/30">{{ t("state.none") }}</div>
+            <div v-else class="text-parchment/50">{{ t("state.none") }}</div>
           </div>
 
           <!-- シードリセット (プレイヤーの meta 操作)。セーブ地点からやり直しても出目が
@@ -813,7 +813,7 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
         </template>
       </template>
 
-      <p v-else class="text-parchment/30">{{ t("state.notStarted") }}</p>
+      <p v-else class="text-parchment/50">{{ t("state.notStarted") }}</p>
     </div>
 
     <!-- 顔アイコンクリックで開くプロフィールカード -->

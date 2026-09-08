@@ -24,6 +24,11 @@ export default defineConfig(async () => ({
   },
   // rust のエラーを Vite が隠さないように。
   clearScreen: false,
+  // vitest は既定で CSS の取り込みを空に潰す (`test.css = false`)。テーマ配色のテスト
+  // (src/theme.test.ts) は main.css の実値を読んで検算するので、ここだけ本物を通す。
+  test: {
+    css: true,
+  },
   server: {
     port: 1420,
     strictPort: true,

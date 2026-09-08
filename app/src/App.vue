@@ -264,7 +264,7 @@ onUnmounted(() => {
 
     <!-- ヘッダー: 再生パッケージの選択 + 開始 -->
     <header class="flex items-center gap-3 px-6 py-2.5 border-b border-ash bg-ink">
-      <span class="text-parchment/45 text-sm truncate">
+      <span class="text-parchment/60 text-sm truncate">
         {{ game.title || t("app.selectToStart") }}
       </span>
       <!-- 右端は定位置レイアウト: select は固定幅、ボタンはアイコンの固定スロット
@@ -366,7 +366,7 @@ onUnmounted(() => {
         <template v-else>
         <div
           v-if="!game.started"
-          class="flex-1 flex items-center justify-center text-parchment/40 px-6 text-center"
+          class="flex-1 flex items-center justify-center text-parchment/55 px-6 text-center"
         >
           {{ t("app.emptyHint") }}
         </div>

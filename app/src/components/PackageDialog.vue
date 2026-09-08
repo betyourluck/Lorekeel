@@ -163,7 +163,7 @@ function totalPages(): number {
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-2">
                 <span class="font-bold text-parchment truncate">{{ p.error ? p.path : p.title }}</span>
-                <span v-if="p.error" class="shrink-0 rounded bg-red-900/60 px-1.5 text-xs text-red-200">{{ t("packages.loadFailed") }}</span>
+                <span v-if="p.error" class="shrink-0 rounded bg-warn/20 px-1.5 text-xs text-warn">{{ t("packages.loadFailed") }}</span>
                 <!-- spec 17: 書庫の配布物と内容が違う (= 差し替えられた) パッケージ -->
                 <span
                   v-if="game.updateFor(p.path)"
@@ -175,7 +175,7 @@ function totalPages(): number {
               </div>
               <div class="text-xs text-parchment/45 truncate">{{ p.path }}</div>
               <div v-if="p.description && !p.error" class="text-xs text-parchment/60 mt-0.5 desc-clamp">{{ p.description }}</div>
-              <div v-if="p.error" class="text-xs text-red-300/80 mt-0.5">{{ p.error }}</div>
+              <div v-if="p.error" class="text-xs text-warn/80 mt-0.5">{{ p.error }}</div>
             </div>
             <button
               v-if="game.updateFor(p.path)"
@@ -195,7 +195,7 @@ function totalPages(): number {
               {{ t("packages.openFolder") }}
             </button>
             <button
-              class="shrink-0 text-parchment/40 hover:text-red-400 text-sm"
+              class="shrink-0 text-parchment/40 hover:text-warn text-sm"
               :title="t('packages.removeTitle')"
               :aria-label="t('packages.remove')"
               @click="game.removePackage(p.path)"
@@ -323,7 +323,7 @@ function totalPages(): number {
         <!-- 一覧 -->
         <div class="flex-1 overflow-y-auto px-4 py-3 space-y-2">
           <p v-if="game.remoteLoading" class="text-parchment/40 text-sm py-6 text-center">{{ t("packages.loading") }}</p>
-          <p v-else-if="game.remoteError" class="text-red-300/90 text-sm py-6 text-center whitespace-pre-wrap">
+          <p v-else-if="game.remoteError" class="text-warn/90 text-sm py-6 text-center whitespace-pre-wrap">
             {{ game.remoteError }}
           </p>
           <p v-else-if="!game.remote || !game.remote.items.length" class="text-parchment/40 text-sm py-6 text-center">
@@ -348,7 +348,7 @@ function totalPages(): number {
                   </span>
                   <span
                     v-if="p.is_mature"
-                    class="shrink-0 rounded bg-red-900/70 px-1.5 text-xs text-red-200"
+                    class="shrink-0 rounded bg-warn/20 px-1.5 text-xs text-warn"
                     :title="t('packages.matureTitle')"
                   >
                     Mature
