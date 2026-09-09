@@ -348,6 +348,11 @@ pub async fn run_edit_loop<C: ToolChat>(
     };
     let mut last_key: Option<(String, String, String)> = None;
     let mut completed = false;
+    // 反復を検知したとき、**一度だけ**口を出してから続ける (2026-09-10、ユーザー報告
+    // 「高頻度で中断してトークンを浪費する」)。従来は即打ち切りで、**理由を還流していなかった** —
+    // この repo の他の層はすべて「却下 → 理由を積んで再生成」(#42: 何がダメかでなく何をすれば
+    // 通るかを語る) なのに、ここだけ黙って諦めていた。介入は 1 回だけ = 費用の上限も保つ。
+    let mut nudged = false;
 
     // 1 周: 呼び出し列を実行して積む。反復を検知したら true を返す。
     fn execute_round(
@@ -414,8 +419,20 @@ pub async fn run_edit_loop<C: ToolChat>(
             break;
         }
         if execute_round(&turn, exec, &mut messages, &mut out, &mut last_key, progress) {
-            out.stopped = Some(Stopped::Repeat);
-            break;
+            if nudged {
+                out.stopped = Some(Stopped::Repeat);
+                break;
+            }
+            nudged = true;
+            let what = last_key.as_ref().map(|(tool, _, _)| tool.clone()).unwrap_or_default();
+            messages.push(ChatMessage::user(format!(
+                "同じ `{what}` を同じ引数で繰り返しています。**同じ結果しか返りません** — 別の手を取ってください:
+                 - 対象を `read` し直し、**本文にある字面をそのまま**アンカーにする (インデント・全角と半角・語尾の差を疑う)
+                 - アンカーは短い一意な 1 行にする (長い複数行のリテラルは一致しにくい)
+                 - 直せる見込みが無いなら、**何がどう違って直せなかったか**を報告して終えてください (無理に繰り返さない)"
+            )));
+            progress("同じ呼び出しの繰り返しを指摘 (残り 1 度)".into());
+            continue;
         }
     }
 
@@ -446,10 +463,14 @@ pub async fn run_edit_loop<C: ToolChat>(
     out.changed = out.text != initial_text;
     out.diagnostics = exec.diagnostics();
     if out.summary.trim().is_empty() {
+        // 打ち切りでも**適用済みの本文は返している**ので、そう言う (2026-09-10 ユーザー懸念
+        // 「中断されると今までの編集がすべて無駄になる」— 機構はそうなっていないが、
+        // 文面が黙っていると無駄になったように読める)。
+        let kept = if out.changed { " ここまでに適用した分は本文に残っています。" } else { "" };
         out.summary = match out.stopped {
-            Some(Stopped::Limit) => format!("道具の呼び出しが上限 ({MAX_ITERATIONS} 周) に達したので打ち切りました (まとめの報告なし)。"),
-            Some(Stopped::Repeat) => "同じ呼び出しが同じ結果で繰り返されたので打ち切りました。".into(),
-            Some(Stopped::Cancel) => "取り消されました。".into(),
+            Some(Stopped::Limit) => format!("道具の呼び出しが上限 ({MAX_ITERATIONS} 周) に達したので打ち切りました (まとめの報告なし)。{kept}"),
+            Some(Stopped::Repeat) => format!("同じ呼び出しが同じ結果で繰り返されたので打ち切りました。{kept}"),
+            Some(Stopped::Cancel) => format!("取り消されました。{kept}"),
             None => "(報告なし)".into(),
         };
     }
@@ -638,22 +659,73 @@ mod tests {
         assert!(out.diagnostics.is_empty());
     }
 
-    /// 【反復検知】同じ (道具, 引数, 結果) が続いたら止める。preview → apply は引数が違うので止めない。
+    /// 【反復検知】同じ (道具, 引数, 結果) が続いたら **一度だけ指摘して続ける**。
+    /// それでも繰り返したら打ち切る。preview → apply は引数が違うので止めない。
+    ///
+    /// 2026-09-10 に即打ち切りから変えた (ユーザー報告「高頻度で中断してトークンを浪費する」)。
+    /// 従来は**理由を還流していなかった** — 他の層はすべて「却下 → 理由を積んで再生成」なのに、
+    /// ここだけ黙って諦めており、モデルには直す手がかりが渡っていなかった。
     #[test]
-    fn repeat_of_identical_call_and_result_stops_the_loop() {
+    fn repeat_is_pointed_out_once_before_the_loop_gives_up() {
         let mut exec = FakeExec { text: "x".into(), log: vec![] };
         let out = run(
             vec![
                 call_turn(vec![("1", "read", json!({}))]),
-                call_turn(vec![("2", "read", json!({}))]),
+                call_turn(vec![("2", "read", json!({}))]), // 1 度目の反復 → 指摘して続行
+                call_turn(vec![("3", "read", json!({}))]), // 2 度目 → 打ち切り
                 text_turn("never"),
             ],
             &mut exec,
             &AtomicBool::new(false),
         );
         assert_eq!(out.stopped, Some(Stopped::Repeat));
-        assert_eq!(exec.log.len(), 2);
+        assert_eq!(exec.log.len(), 3, "指摘の周でもう一度だけ試させる");
         assert!(out.summary.contains("繰り返された"));
+    }
+
+    /// 【回復】指摘のあとに手を変えれば完走する — 打ち切りは最後の手段であって既定ではない。
+    #[test]
+    fn a_nudged_model_that_changes_tack_finishes_normally() {
+        let mut exec = FakeExec { text: "hp: 10".into(), log: vec![] };
+        let out = run(
+            vec![
+                call_turn(vec![("1", "read", json!({}))]),
+                call_turn(vec![("2", "read", json!({}))]), // 反復 → 指摘
+                call_turn(vec![("3", "sd", json!({"pattern": "hp: 10", "replacement": "hp: 12"}))]),
+                call_turn(vec![("4", "sd", json!({"pattern": "hp: 10", "replacement": "hp: 12", "apply": true}))]),
+                text_turn("hp を 12 にしました。"),
+            ],
+            &mut exec,
+            &AtomicBool::new(false),
+        );
+        assert!(out.stopped.is_none(), "指摘は打ち切りではない");
+        assert_eq!(out.text, "hp: 12");
+        assert!(out.changed);
+        assert_eq!(out.summary, "hp を 12 にしました。");
+    }
+
+    /// 【打ち切っても捨てない】反復で止めても、**そこまでに適用した本文は返る**
+    /// (ユーザー懸念「中断されると今までの編集がすべて無駄になる」の機械的な否定)。
+    /// `out.text = exec.text()` は停止理由に依らないので、呼び出し側は changed を見て差し替える。
+    #[test]
+    fn a_stopped_run_still_returns_the_edits_it_managed_to_apply() {
+        let mut exec = FakeExec { text: "hp: 10".into(), log: vec![] };
+        let out = run(
+            vec![
+                call_turn(vec![("1", "sd", json!({"pattern": "hp: 10", "replacement": "hp: 12"}))]),
+                call_turn(vec![("2", "sd", json!({"pattern": "hp: 10", "replacement": "hp: 12", "apply": true}))]),
+                // ここから同じ read を 2 度繰り返して行き詰まる。
+                call_turn(vec![("3", "read", json!({}))]),
+                call_turn(vec![("4", "read", json!({}))]), // 指摘
+                call_turn(vec![("5", "read", json!({}))]), // 打ち切り
+                text_turn("never"),
+            ],
+            &mut exec,
+            &AtomicBool::new(false),
+        );
+        assert_eq!(out.stopped, Some(Stopped::Repeat), "打ち切られてはいる");
+        assert_eq!(out.text, "hp: 12", "適用済みの本文は残る");
+        assert!(out.changed, "呼び出し側が差し替える判断に使う");
     }
 
     /// 【上限】道具つきの周は MAX−1 回まで、最後の 1 周は**道具なしのまとめ** (報告が summary に

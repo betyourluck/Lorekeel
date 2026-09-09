@@ -191,6 +191,53 @@ impl EditSession {
         }
     }
 
+    /// 一致 0 件のときの手がかり — パターンから**リテラル部分**を抜き、それを含む実際の行を
+    /// 行番号つきで返す。インデントの差・全角半角の差・語尾の差は、**本文の字面を見れば**
+    /// 一目で分かる (「read で確かめて」ではモデルは同じ手がかりしか得られない)。
+    ///
+    /// リテラルの抜き方は素朴で十分 — 正規表現のメタ文字で切って**最長の断片**を取る。
+    /// 断片が短すぎる (2 文字未満) か、含む行が無ければ手がかりなし (捏造しない)。
+    fn near_miss_hint(&self, pattern: &str) -> String {
+        // `(?m)` のようなフラグ群を落としてからメタ文字で切る。
+        let mut body = pattern.to_string();
+        while let Some(i) = body.find("(?") {
+            match body[i..].find(')') {
+                Some(j) => body.replace_range(i..i + j + 1, " "),
+                None => break,
+            }
+        }
+        let literal = body
+            .split(|c: char| "^$.|?*+()[]{}\\/".contains(c))
+            .map(str::trim)
+            .max_by_key(|f| f.chars().count())
+            .unwrap_or("")
+            .trim_matches(|c: char| c == '-' || c.is_whitespace())
+            .to_string();
+        if literal.chars().count() < 2 {
+            return String::new();
+        }
+        let near: Vec<String> = self
+            .buffer
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.contains(&literal))
+            .take(3)
+            .map(|(i, l)| format!("{}:{}: {l}", self.target_rel, i + 1))
+            .collect();
+        if near.is_empty() {
+            format!(
+                " 本文に `{literal}` を含む行もありません — 語そのものが違う可能性があります (`grep` で探すか `read` で確かめてください)。"
+            )
+        } else {
+            format!(
+                " ただし `{literal}` を含む行はあります。**この字面をそのまま**アンカーにしてください (インデント・全角半角・語尾の差に注意):
+{}",
+                near.join("
+")
+            )
+        }
+    }
+
     fn tool_grep(&self, args: &Value) -> ToolReply {
         let Some(pattern) = args.get("pattern").and_then(Value::as_str) else {
             return ToolReply { body: "引数 `pattern` が必要です。".into(), ok: false };
@@ -282,7 +329,19 @@ impl EditSession {
         };
         let match_count = regex.find_iter(&self.buffer).count();
         if match_count == 0 {
-            return ToolReply { body: format!("`{}` に一致はありません (`read` で現在の本文を確かめてください)。書き込みは行っていません。", self.target_rel), ok: false };
+            // **近い行を実際の字面で返す** (2026-09-10、ユーザー報告「高頻度で中断してトークンを
+            // 浪費する」)。従来は「`read` で確かめてください」としか言わず、既に read 済みの
+            // モデルは同じ手がかりしか得られないので**同じパターンを再試行する**しかなかった
+            // (実測: 同一 preview が 3 回並んで反復検知で打ち切り)。却下は「何がダメか」でなく
+            // 「何をすれば通るか」を語る (#42 の規律を道具の返りへ適用)。
+            let hint = self.near_miss_hint(pattern);
+            return ToolReply {
+                body: format!(
+                    "`{}` に一致はありません。書き込みは行っていません。{hint}",
+                    self.target_rel
+                ),
+                ok: false,
+            };
         }
         let replaced = regex.replace_all(&self.buffer, replacement).into_owned();
         if replaced == self.buffer {
@@ -450,6 +509,54 @@ mod tests {
         assert!(ctx.body.contains("scenarios/main.yaml-1- title: T") && ctx.body.contains("scenarios/main.yaml:2: start: hall"));
         assert!(!s.call("grep", &json!({"pattern": "x", "context": 9})).ok);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 【一致 0 件の手がかり】アンカーが一致しないとき、**本文にある実際の字面**を返す。
+    ///
+    /// 2026-09-10 のユーザー報告 (「高頻度で中断してトークンを浪費する」) の実データがこの形
+    /// だった — モデルが `(?m)^  - ういが帰宅する$` (2 空白) を出し、本文は別のインデントで、
+    /// 従来の返りは「`read` で確かめてください」だけ。**既に read 済みのモデルには新しい情報が
+    /// 何も無い**ので同じパターンを再試行し、反復検知で打ち切られてトークンだけが消えた。
+    #[test]
+    fn a_zero_match_preview_shows_the_real_line_it_almost_matched() {
+        let dir = scratch("nearmiss");
+        let text = "triggers:
+  t1:
+    effects:
+    - ういが帰宅する
+";
+        let mut s = EditSession::new(
+            &dir,
+            "scenarios/main.yaml",
+            "scenario",
+            vec!["scenarios/main.yaml".into()],
+            text,
+        );
+
+        // 本文は 4 空白、モデルのアンカーは 2 空白 → 一致しない。
+        let miss = s.call("sd", &json!({"pattern": "(?m)^  - ういが帰宅する$", "replacement": "x"}));
+        assert!(!miss.ok, "一致 0 件は失敗のまま");
+        assert!(
+            miss.body.contains("    - ういが帰宅する"),
+            "本文にある実際の字面 (4 空白) を見せる: {}",
+            miss.body
+        );
+        assert!(miss.body.contains("scenarios/main.yaml:4"), "行番号も出す: {}", miss.body);
+
+        // 手がかりが効いていることの対照 — 見せた字面をそのままアンカーにすれば通る。
+        let hit = s.call("sd", &json!({"pattern": "(?m)^    - ういが帰宅する$", "replacement": "    - ういが出勤する"}));
+        assert!(hit.ok && hit.body.contains("1 件"), "実際の字面なら一致する: {}", hit.body);
+    }
+
+    /// 【手がかりが無いときは捏造しない】語そのものが本文に無ければ、その旨だけを言う。
+    #[test]
+    fn a_zero_match_without_any_near_line_says_so_instead_of_inventing_one() {
+        let dir = scratch("nearmiss2");
+        let mut s = session(&dir);
+        let miss = s.call("sd", &json!({"pattern": "(?m)^存在しない見出し$", "replacement": "x"}));
+        assert!(!miss.ok);
+        assert!(miss.body.contains("存在しない見出し"), "探した語を名指す: {}", miss.body);
+        assert!(miss.body.contains("含む行もありません"), "近い行が無いことを言う: {}", miss.body);
     }
 
     /// 【sd の状態機械】preview 無しの apply は拒否、引数が違う apply も拒否、同引数なら通る。
