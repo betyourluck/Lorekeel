@@ -332,9 +332,22 @@ interface LlmConfigView {
   model: string;
   api_key: string;
   use_tools: boolean;
+  /** LLM_EFFORT ("" = 未設定 = 送らない)。**GM だけに効く** (要約・編集には継がない)。 */
+  effort: string;
+  /** LLM_MAX_TOKENS ("" = llm_client の既定 4096)。思考は**この上限を食う**。 */
+  max_tokens: string;
 }
-const llm = ref<LlmConfigView>({ base_url: "", model: "", api_key: "", use_tools: true });
+const llm = ref<LlmConfigView>({
+  base_url: "",
+  model: "",
+  api_key: "",
+  use_tools: true,
+  effort: "",
+  max_tokens: "",
+});
 const llmStatus = ref("");
+/** 保存時に backend (`LlmConfig::warnings`) が返す組み合わせの警告。 */
+const llmWarnings = ref<string[]>([]);
 async function loadLlm() {
   try {
     llm.value = await invoke<LlmConfigView>("get_llm_config");
@@ -367,7 +380,10 @@ function onSelectProfile() {
     model: p.model,
     api_key: p.apiKey,
     use_tools: p.useTools,
+    effort: p.effort,
+    max_tokens: p.maxTokens,
   };
+  llmWarnings.value = []; // 表示を替えただけ = まだ書いていないので前の警告は当たらない
   llmStatus.value = t("settings.status.profileShowing", { name: p.name });
 }
 
@@ -393,6 +409,8 @@ function saveDraft() {
     baseUrl: llm.value.base_url.trim(),
     apiKey: llm.value.api_key.trim(),
     useTools: llm.value.use_tools,
+    effort: llm.value.effort.trim(),
+    maxTokens: llm.value.max_tokens.trim(),
   };
   profiles.value = [...profiles.value, profile];
   saveAiProfiles(profiles.value);
@@ -529,17 +547,20 @@ const canUpdateProfile = computed(() => profiles.value.some((p) => p.id === sele
 async function saveLlm(): Promise<boolean> {
   llmStatus.value = t("settings.status.saving");
   try {
-    await invoke("set_llm_config", {
+    llmWarnings.value = await invoke<string[]>("set_llm_config", {
       baseUrl: llm.value.base_url.trim(),
       model: llm.value.model.trim(),
       apiKey: llm.value.api_key.trim(),
       useTools: llm.value.use_tools,
+      effort: llm.value.effort.trim(),
+      maxTokens: llm.value.max_tokens.trim(),
     });
     llmStatus.value = t("settings.status.llmSaved");
     syncSelectionToConfig(); // 直接編集が登録済みと一致すればコンボの選択に反映
     game.refreshLlmModel(); // TitleBar のバッジ + ウィンドウタイトルへ即時反映
     return true;
   } catch (e) {
+    llmWarnings.value = []; // 書けていないので前回の警告は嘘になる
     llmStatus.value = t("settings.status.saveFailed", { error: String(e) });
     return false;
   }
@@ -563,6 +584,8 @@ async function saveLlmAndProfile() {
     baseUrl: llm.value.base_url.trim(),
     apiKey: llm.value.api_key.trim(),
     useTools: llm.value.use_tools,
+    effort: llm.value.effort.trim(),
+    maxTokens: llm.value.max_tokens.trim(),
   };
   profiles.value = profiles.value.map((x) => (x.id === p.id ? updated : x));
   saveAiProfiles(profiles.value);
@@ -1402,6 +1425,34 @@ onMounted(async () => {
             <p class="text-parchment/40 text-xs -mt-1">
               {{ t("settings.model.useToolsNote") }}
             </p>
+            <!-- 思考の深さと出力上限 (2026-09-10 ユーザー要望「他のモデルでは効かせて Opus では
+                 効かせない」)。**登録モデルごとの値**で、保存でこのモデルの .env に書かれる。
+                 対にしてあるのは、思考が出力上限を食うため — 深さだけ選べると上限 4096 の
+                 まま本文が空になる経路を UI から作れてしまう。 -->
+            <div class="grid grid-cols-2 gap-2">
+              <label class="block text-sm text-parchment/70">
+                {{ t("settings.model.effort") }}
+                <select v-model="llm.effort"
+                  class="mt-1 block w-full min-w-0 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none">
+                  <option value="">{{ t("settings.model.effortOff") }}</option>
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                  <option value="xhigh">xhigh</option>
+                  <option value="max">max</option>
+                </select>
+              </label>
+              <label class="block text-sm text-parchment/70">
+                {{ t("settings.model.maxTokens") }}
+                <input v-model="llm.max_tokens" inputmode="numeric"
+                  :placeholder="t('settings.model.maxTokensPlaceholder')"
+                  class="mt-1 block w-full min-w-0 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none" />
+              </label>
+            </div>
+            <p class="text-parchment/40 text-xs -mt-1">
+              {{ t("settings.model.effortNote") }}
+            </p>
+            <p v-for="(w, i) in llmWarnings" :key="i" class="text-warn/90 text-xs">⚠ {{ w }}</p>
             <!-- 保存は 2 種類 (2026-08-26): .env だけ / .env と登録モデルの両方。
                  後者は選択中の登録が無ければ押せない (書き換える先が無い)。 -->
             <div class="flex flex-wrap items-center gap-2 pt-1">

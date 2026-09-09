@@ -421,62 +421,15 @@ function initialPackagePath(paths: string[]): string {
 
 // --- AI モデルプロファイル (複数の LLM 設定を登録・切替。localStorage 永続) ---
 // 動機: ヘビーユーザーは複数モデルを試す。従来は .env を手で書き換えていたのを、登録済み
-// プロファイルから選んで「決定」で .env へ反映する形にする。**.env の書き込みは決定時のみ**
-// (選択変更だけでは書かない)。API キーは平文で localStorage に入る (BYO-key・ローカル app)。
-const AI_PROFILES_KEY = "kataribe.aiModelProfiles";
-export interface AiModelProfile {
-  id: string; // アプリ生成の主キー (name 重複を許すため)
-  name: string; // 表示名 (重複可)
-  model: string; // LLM_MODEL
-  baseUrl: string; // LLM_BASE_URL
-  apiKey: string; // LLM_API_KEY (平文・表示時マスク)
-  useTools: boolean; // LLM_USE_TOOLS (ツール呼び出し)
-}
-// localStorage から読む (壊れていれば空)。全項目を型で検査し、欠けは既定で補う (前方互換)。
-export function loadAiProfiles(): AiModelProfile[] {
-  try {
-    const raw = localStorage.getItem(AI_PROFILES_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((p) => p && typeof p.id === "string" && typeof p.name === "string")
-      .map((p) => ({
-        id: p.id,
-        name: p.name,
-        model: typeof p.model === "string" ? p.model : "",
-        baseUrl: typeof p.baseUrl === "string" ? p.baseUrl : "",
-        apiKey: typeof p.apiKey === "string" ? p.apiKey : "",
-        useTools: p.useTools !== false, // 既定 true
-      }));
-  } catch {
-    return [];
-  }
-}
-export function saveAiProfiles(list: AiModelProfile[]) {
-  localStorage.setItem(AI_PROFILES_KEY, JSON.stringify(list));
-}
-// アプリ側の主キー生成 (name 重複を許すため)。WebView2 は crypto.randomUUID 対応。
-export function newProfileId(): string {
-  try {
-    return crypto.randomUUID();
-  } catch {
-    return `p_${Date.now()}_${Math.floor(Math.random() * 1e9)}`;
-  }
-}
-// プロファイルが現在の .env 設定と一致するか (初期表示で選択状態を復元する判定)。
-// name/id は .env に無いので接続を決める 4 項目 (trim 済) で突き合わせる。
-export function profileMatchesConfig(
-  p: AiModelProfile,
-  cfg: { base_url: string; model: string; api_key: string; use_tools: boolean },
-): boolean {
-  return (
-    p.baseUrl.trim() === cfg.base_url.trim() &&
-    p.model.trim() === cfg.model.trim() &&
-    p.apiKey.trim() === cfg.api_key.trim() &&
-    p.useTools === cfg.use_tools
-  );
-}
+// 登録モデル (AiModelProfile) は `../aiProfiles` に純関数として出してある。
+// ストアの公開面は変えないので、既存の呼び出し (`from "../stores/game"`) はそのまま動く。
+export {
+  loadAiProfiles,
+  saveAiProfiles,
+  newProfileId,
+  profileMatchesConfig,
+  type AiModelProfile,
+} from "../aiProfiles";
 
 // --- 配布サイト「Kataribe 書庫」(spec 05 Phase C) ---
 // サイト URL は設定項目 (既定 = 公式)。自前サーバも指せる = Outcasts 固有ロックインを避ける。

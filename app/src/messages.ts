@@ -342,6 +342,12 @@ export const messages = {
         useTools: "ツール呼び出し (function calling) を使う",
         useToolsNote:
           "基本は ON のままで大丈夫です。tool_choice の対応範囲はサーバごとに違いますが、接続先から自動判定し、拒否されたら自動で一段下げます（Meta のように「auto しか通らない」口も ON のまま動きます）。tools 自体を受け付けないサーバ（さくら AI Engine やローカル OpenAI 互換の一部）だけ OFF にしてください（プロンプトで JSON 出力を指示する経路に切替）。",
+        effort: "思考の深さ",
+        effortOff: "使わない",
+        maxTokens: "出力上限",
+        maxTokensPlaceholder: "既定 4096",
+        effortNote:
+          "どちらも**この登録モデルごと**の値で、保存すると .env に書かれます。「思考の深さ」は GM の語りにだけ効きます（あらすじ要約と AI 編集には継がれません）。思考は出力の一部として上限を食うので、深さを使うときは出力上限を 16000 以上にしてください（xhigh / max は 64000 目安）。深く考えるほど出力トークンが増える＝費用も増えます。高価なモデルでは「使わない」、安いモデルでは深く、という使い分けができます。",
         save: "保存",
         saveWithProfile: "保存 + 登録モデルを更新",
         saveWithProfileTitle: "選択中の登録モデルの中身を、いまのフォーム値で書き換えます（表示名はそのまま）",
@@ -1205,6 +1211,12 @@ export const messages = {
         useTools: "Use tool calls (function calling)",
         useToolsNote:
           "Leave this ON in most cases. How much of tool_choice a server implements varies, but Kataribe detects it from the endpoint and steps down automatically if the server refuses (endpoints that only accept \"auto\", such as Meta, work with this ON). Turn it OFF only for servers that reject tools entirely, such as Sakura AI Engine or some local OpenAI-compatible servers (switches to instructing JSON output via the prompt).",
+        effort: "Thinking depth",
+        effortOff: "Off",
+        maxTokens: "Output limit",
+        maxTokensPlaceholder: "default 4096",
+        effortNote:
+          "Both are **per saved model** and are written to .env when you save. Thinking depth applies only to the GM's narration (it is not inherited by synopsis summarisation or AI editing). Thinking counts against the output limit, so raise the limit to 16000 or more when you use a depth (64000 for xhigh / max). Deeper thinking means more output tokens, which costs more — you can leave it Off for an expensive model and turn it up for a cheap one.",
         save: "Save",
         saveWithProfile: "Save + update saved model",
         saveWithProfileTitle: "Also rewrite the selected saved model with the current form values (its name is kept)",

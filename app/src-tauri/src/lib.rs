@@ -2308,6 +2308,12 @@ struct LlmConfigView {
     api_key: String,
     /// tool-use (function calling) を使うか。さくら等 tool_choice 非対応サーバはオフにする。
     use_tools: bool,
+    /// 思考の深さ (`LLM_EFFORT`)。**空 = 未設定 = 送らない**。値は low|medium|high|xhigh|max。
+    /// GM だけに効く (要約・編集のプロファイルは `profile_overrides` が effort:None を明示)。
+    effort: String,
+    /// 出力上限 (`LLM_MAX_TOKENS`)。**空 = 未設定 = llm_client の既定 4096**。
+    /// 既定値を frontend に焼かない (`timeout_secs` の「0 は既定」と同じ流儀)。
+    max_tokens: String,
 }
 
 /// `LLM_USE_TOOLS` を解釈する (既定 true。"false"/"0"/"no"/"off" のみ false)。config.rs と同基準。
@@ -2330,7 +2336,32 @@ fn get_llm_config() -> LlmConfigView {
         model: opt("LLM_MODEL").unwrap_or_default(),
         api_key: std::env::var("LLM_API_KEY").unwrap_or_default(),
         use_tools: parse_use_tools(),
+        effort: opt("LLM_EFFORT").unwrap_or_default(),
+        max_tokens: opt("LLM_MAX_TOKENS").unwrap_or_default(),
     }
+}
+
+/// 保存前に `LLM_EFFORT` / `LLM_MAX_TOKENS` の値を検める (純粋・テスト可)。
+///
+/// **書く前に弾くのが要点** — 不正な effort を .env に書くと `LlmConfig::from_env` が
+/// Config エラーを返し、**次にゲームを始めようとした人が「設定できたのに始められない」**
+/// に落ちる。設定 UI から自分の首を絞められる経路を作らない。空文字はどちらも「未設定」
+/// (`env_opt` が空を None に落とすので、行を消さずに『送らない』を表せる)。
+fn validate_llm_tuning(effort: &str, max_tokens: &str) -> Result<(), String> {
+    let e = effort.trim();
+    // 語彙は **llm_client の parser に委ねる** — 表をこちらへ写すと必ずずれる
+    // (`x-high` の別名のような差が、UI だけ弾く形で静かに出る)。
+    if !e.is_empty() {
+        llm_client::Effort::parse(e).map_err(|err| err.to_string())?;
+    }
+    let m = max_tokens.trim();
+    if !m.is_empty() {
+        match m.parse::<u32>() {
+            Ok(n) if n > 0 => {}
+            _ => return Err(format!("出力上限 '{m}' を解釈できません (1 以上の整数)")),
+        }
+    }
+    Ok(())
 }
 
 /// LLM 設定を更新する: プロセス env を即時差し替え (次の new_game の from_env が反映) +
@@ -2343,25 +2374,42 @@ fn set_llm_config(
     model: String,
     api_key: String,
     use_tools: bool,
-) -> Result<(), String> {
+    effort: String,
+    max_tokens: String,
+) -> Result<Vec<String>, String> {
+    // 0) 値を検めてから書く (不正値を .env に置くと次の new_game が Config エラーで落ちる)。
+    validate_llm_tuning(&effort, &max_tokens)?;
+    let effort = effort.trim().to_string();
+    let max_tokens = max_tokens.trim().to_string();
     // 1) プロセス env を更新 (この後の new_game が拾う)。edition 2021 ゆえ set_var は safe。
     let use_tools_s = if use_tools { "true" } else { "false" };
     std::env::set_var("LLM_BASE_URL", &base_url);
     std::env::set_var("LLM_MODEL", &model);
     std::env::set_var("LLM_API_KEY", &api_key);
     std::env::set_var("LLM_USE_TOOLS", use_tools_s);
+    // **空文字で上書きするのが「未設定」の表し方** — env_opt が空を None に落とすので、
+    // .env の行を消さずに「送らない」を表せる (upsert_env に行削除の機能は無い)。
+    std::env::set_var("LLM_EFFORT", &effort);
+    std::env::set_var("LLM_MAX_TOKENS", &max_tokens);
     // 2) app_data_dir/.env に永続化 (再起動後も効く)。親フォルダは初回に作る。
     let updates = [
         ("LLM_BASE_URL".to_string(), base_url),
         ("LLM_MODEL".to_string(), model),
         ("LLM_API_KEY".to_string(), api_key),
         ("LLM_USE_TOOLS".to_string(), use_tools_s.to_string()),
+        ("LLM_EFFORT".to_string(), effort),
+        ("LLM_MAX_TOKENS".to_string(), max_tokens),
     ];
     let path = config_env_path(&app).ok_or_else(|| "app_data_dir を解決できない".to_string())?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("設定フォルダの作成に失敗: {e}"))?;
     }
-    upsert_env(&path, &updates).map_err(|e| format!(".env の保存に失敗: {e}"))
+    upsert_env(&path, &updates).map_err(|e| format!(".env の保存に失敗: {e}"))?;
+    // 3) 組み合わせの警告を返す (`LlmConfig::warnings`)。**この呼び出しが production 初**
+    //    — 守り自体は spec 12 Phase B から在ったのにテストからしか呼ばれておらず、
+    //    「思考が本文を食い潰す」も「effort + temperature で 400」も人に届いていなかった。
+    //    設定を書き換えた直後がこれを見せる唯一の適時。
+    Ok(llm_client::LlmConfig::from_env().map(|c| c.warnings()).unwrap_or_default())
 }
 
 /// あらすじ要約用 LLM 設定の view (spec 10)。enabled=false なら GM と同じ client を共用する。
@@ -5668,6 +5716,47 @@ mod tests {
         let e = m.edges.iter().find(|e| e.from == "a" && e.to == "b").expect("a→b がある");
         assert!(e.locked, "gate (flag open=true) 未達なので locked (🔒)");
         assert!(m.nodes.iter().find(|n| n.id == "a").unwrap().current, "a が現在地");
+    }
+
+    /// 【思考の深さと出力上限 — 保存前の検め】不正値を .env に書くと `LlmConfig::from_env` が
+    /// Config エラーになり、**設定できたのにゲームが始められない**という形で跳ね返る。
+    /// 設定 UI から自分の首を絞められる経路を作らないための門番。語彙は llm_client の
+    /// parser に委ねているので、あちらに値が増えればここも自動で通る (表を写さない)。
+    #[test]
+    fn llm_tuning_is_validated_before_it_reaches_the_env_file() {
+        // 空 = 未設定 (env_opt が空を None に落とすので「送らない」を表せる)。
+        assert!(super::validate_llm_tuning("", "").is_ok(), "両方とも未設定は通る");
+        assert!(super::validate_llm_tuning("  ", " ").is_ok(), "空白だけも未設定");
+        for ok in ["low", "medium", "high", "xhigh", "max", "HIGH", " x-high "] {
+            assert!(super::validate_llm_tuning(ok, "").is_ok(), "{ok} は llm_client の語彙");
+        }
+        assert!(super::validate_llm_tuning("", "16000").is_ok(), "上限は正の整数");
+
+        // 不正値は**書く前に**弾く。
+        assert!(super::validate_llm_tuning("ultra", "").is_err(), "語彙に無い深さ");
+        assert!(super::validate_llm_tuning("", "0").is_err(), "上限 0 は何も生成できない");
+        assert!(super::validate_llm_tuning("", "-1").is_err(), "負の上限");
+        assert!(super::validate_llm_tuning("", "16k").is_err(), "整数でない上限");
+
+        // 文言は次の一手を含む (何が受理されるかを言う)。
+        let msg = super::validate_llm_tuning("ultra", "").unwrap_err();
+        assert!(msg.contains("low") && msg.contains("max"), "受理される語彙を名指す: {msg}");
+    }
+
+    /// 【failures #98 の一族 — 守りが人に届いていなかった】`LlmConfig::warnings` は spec 12
+    /// Phase B から在るのに **production から一度も呼ばれておらず**、テストだけが触っていた。
+    /// 設定 UI から effort を選べるようにする以上、「思考が本文を食い潰す」「effort と
+    /// temperature の併用は 400」は保存した本人に届かなければ意味がない。
+    #[test]
+    fn effort_warnings_have_a_production_caller() {
+        let src = include_str!("lib.rs");
+        assert!(
+            src.contains("c.warnings()"),
+            "set_llm_config が LlmConfig::warnings を呼んで返すこと (呼ばなければ守りは誰にも届かない)"
+        );
+        // 警告そのものの中身は llm_client 側の PoC が固めている (ここは配線の表明)。
+        let cfg = llm_client::LlmConfig::new("https://api.anthropic.com", "k", "claude-opus-5");
+        assert!(cfg.warnings().is_empty(), "effort 未設定なら無音");
     }
 
     /// 【`..` 畳み】asset protocol が拒否する `..` をパスから除去する (403 の原因対策)。

@@ -161,7 +161,10 @@ pub enum Effort {
 impl Effort {
     /// `LLM_EFFORT` の値をパースする (純粋・テスト可)。不正値は None でなく Err —
     /// 黙って無視すると「効いているつもり」の静かな漏出になる (#44 の教訓)。
-    pub(crate) fn parse(raw: &str) -> Result<Self, LlmError> {
+    ///
+    /// **`pub`** — 設定 UI (app) が保存前に同じ語彙で検めるため (2026-09-10)。表を app 側へ
+    /// 写すと必ずずれる (`x-high` の別名のような差が、UI だけ弾く形で静かに出る)。
+    pub fn parse(raw: &str) -> Result<Self, LlmError> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "low" => Ok(Effort::Low),
             "medium" => Ok(Effort::Medium),
