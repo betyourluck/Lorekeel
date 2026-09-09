@@ -219,14 +219,15 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
   justify-content: center;
   background: transparent;
   border: none;
-  /* テーマ対応 (本文色の減光)。ライト背景でもアイコンが見える。 */
-  color: rgb(var(--parchment) / 0.5);
+  /* テーマ対応 (本文色の減光)。**@apply で通す** — 手書きの `rgb(var(--parchment) / 0.5)` は
+     2026-09-08 の減光カーブ (textColor スケール) を通らず、ライトだけ薄いまま残る。 */
+  @apply text-parchment/50;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
 .tb-btn:hover {
   background: rgb(var(--parchment) / 0.1);
-  color: rgb(var(--parchment) / 0.95);
+  @apply text-parchment/95;
 }
 /* disable の減光 (共用)。 */
 .tb-btn:disabled {

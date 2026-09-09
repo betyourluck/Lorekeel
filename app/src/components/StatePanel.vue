@@ -10,7 +10,7 @@ import FactsPanel from "./FactsPanel.vue";
 const game = useGameStore();
 
 // 右ペインは縦タブ 5 枚 (progress=進行: ターン/目標/この場 ・ world=状態: 現在地/所持品/フラグ
-// ・ map=マップ: 訪問済み+1歩先の有向グラフ、spec 15 ・ synopsis=あらすじ: 圧縮済み章 +
+// ・ map=マップ: 現在地と、そこから行ける場所のリスト、spec 15 rev2 ・ synopsis=あらすじ: 圧縮済み章 +
 // 最近の出来事、spec 10 ・ facts=既成事実: GM とユーザーの覚え書き、spec 20)。
 // 既成事実は末尾 (ユーザーFB 2026-07-21)。
 const TABS = ["progress", "world", "map", "synopsis", "facts", "files"] as const;
@@ -763,7 +763,7 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
           </div>
         </template>
 
-        <!-- 3枚め「マップ」(spec 15): 訪問済み+1歩先の有向グラフ。 -->
+        <!-- 3枚め「マップ」(spec 15 rev2): 現在地と、そこから行ける場所のリスト -->
         <template v-else-if="activeTab === 'map'">
           <MapPanel />
         </template>

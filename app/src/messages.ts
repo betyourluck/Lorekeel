@@ -118,11 +118,13 @@ export const messages = {
     map: {
       empty: "まだ地図がありません（プレイを始めると現在地と行ける先が出ます）",
       legendCurrent: "現在地",
-      legendVisited: "訪問済み",
-      legendFrontier: "未踏（1歩先）",
+      exits: "ここから行ける場所",
+      noExits: "ここから出られる道はありません",
+      legendFrontier: "まだ行ったことのない場所",
+      legendFrontierHint: "薄い名前 = まだ行っていない",
       legendLocked: "今は行けない",
       undiscovered: "まだここには到達していません",
-      selectHint: "丸をクリックすると、その場所の説明が出ます",
+      noDescription: "この場所の説明はまだありません",
       dragToRef: "参照画像の枠へドラッグすると、この場所の絵を参照にできます",
     },
     action: {
@@ -978,11 +980,13 @@ export const messages = {
     map: {
       empty: "No map yet (your location and reachable exits appear once you start playing).",
       legendCurrent: "You are here",
-      legendVisited: "Visited",
-      legendFrontier: "Unvisited (one step away)",
+      exits: "Where you can go",
+      noExits: "No way out from here.",
+      legendFrontier: "Somewhere you haven't been",
+      legendFrontierHint: "Faded name = not visited yet",
       legendLocked: "Locked for now",
       undiscovered: "You haven't reached this place yet.",
-      selectHint: "Click a circle to see that place's details.",
+      noDescription: "No description for this place yet.",
       dragToRef: "Drag into a reference slot to use this place's image as a reference.",
     },
     action: {

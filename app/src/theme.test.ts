@@ -131,6 +131,23 @@ describe("ライトのアクセント色", () => {
   });
 });
 
+describe("減光の書き方", () => {
+  it("scoped CSS に文字色の alpha を直書きしない (カーブを通らない側へ逃げない)", () => {
+    // 2026-09-08 のカーブは **tailwind の textColor スケール**に掛かっている。`<style scoped>` に
+    // `color: rgb(var(--parchment) / 0.5)` と手で書くとそこだけ素の alpha になり、**ライトでだけ
+    // 薄い**という同じ穴が一箇所ずつ生える (2026-09-09 に自分で 1 件作り、既存 3 件も見つかった)。
+    // 書き方は 2 つ: template で `text-parchment/50` を当てるか、scoped CSS なら `@apply` で通す。
+    const offenders: string[] = [];
+    for (const [path, src] of Object.entries(vueSources)) {
+      const styles = src.slice(src.indexOf("<style"));
+      for (const m of styles.matchAll(/(?:^|[;{\s])color:\s*rgb\(var\(--(parchment|ember|glow|warn)\)\s*\/\s*0?\.\d+/g)) {
+        offenders.push(`${path}: ${m[0].trim()}`);
+      }
+    }
+    expect(offenders, "@apply か template のクラスで書く").toEqual([]);
+  });
+});
+
 describe("初回ナビゲーション", () => {
   it("幕と札に暗色の直書きが残っていない", () => {
     const tour = vueSources["./components/FirstRunTour.vue"];

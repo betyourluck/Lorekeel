@@ -266,13 +266,13 @@ export interface LogLineView {
   summary: string;
 }
 
-/** マップの 1 ノード (spec 15)。visited=false は frontier (未踏)。
- *  frontier は title/description/image を伏せる (「？」表示・ネタバレ回避)。 */
+/** マップの 1 ノード (spec 15)。visited=false は frontier (未踏の1歩先)。
+ *  **名前は未踏でも出す**が、中身 (description/image) は訪問済みだけ (2026-09-09)。 */
 export interface MapNode {
   id: string;
-  /** 表示名 (Location.title、空なら id へフォールバック)。frontier は空。 */
+  /** 表示名 (Location.title、空なら id へフォールバック)。未踏でも出す。 */
   title: string;
-  /** 場所の説明 (クリックで詳細に出す)。frontier は空。 */
+  /** 場所の説明 (クリックで詳細に出す)。未踏は空 = 中身は伏せる。 */
   description: string;
   /** 場所の画像の絶対パス (frontend が convertFileSrc で URL 化)。無ければ null。 */
   image: string | null;

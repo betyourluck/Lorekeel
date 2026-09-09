@@ -418,7 +418,8 @@ const cardStyle = computed(() => ({
 .tour-btn-ghost {
   border-radius: 0.5rem;
   border: 1px solid rgb(var(--ash));
-  color: rgb(var(--parchment) / 0.8);
+  /* 減光は @apply で通す (手書きの alpha はテーマ間で同じ強さにならない)。 */
+  @apply text-parchment/80;
   font-size: 0.85rem;
   padding: 0.4rem 0.9rem;
 }

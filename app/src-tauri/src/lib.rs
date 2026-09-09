@@ -566,20 +566,22 @@ fn goal_view(
 // =============================================================================
 
 /// マップの 1 ノード (ロケーション)。`visited=false` は frontier (未踏の1歩先)。
-/// **frontier はネタバレ回避で title/description/image を伏せる** (frontend が「？」表示)。
+/// **名前は未踏でも出す** (2026-09-09 ユーザー決定 — リスト表示では「行ける場所が在る」ことを
+/// 示すのが主目的で、名前が「？」だと何が在るのか分からない)。**中身 (description/image) は
+/// 伏せたまま** = 名前は道しるべ、説明はその場所の内容そのものでネタバレの重さが違う。
 #[derive(Serialize)]
 struct MapNode {
     id: String,
-    /// 表示名 (Location.title、空なら frontend が id へフォールバック)。frontier は空。
+    /// 表示名 (Location.title、空なら frontend が id へフォールバック)。**未踏でも出す**。
     title: String,
-    /// 場所の説明 (クリックで詳細パネルに出す)。frontier は空 (未踏)。
+    /// 場所の説明 (クリックで詳細に出す)。frontier は空 = 中身は伏せる (未踏)。
     description: String,
     /// 場所のイベント CG/背景画像の絶対パス (frontend が convertFileSrc で URL 化)。
     /// visited かつ Location.image があるときのみ。frontier は None。
     image: Option<String>,
     /// 現在地か。
     current: bool,
-    /// 訪問済みか (false = frontier = 未踏の1歩先。丸だけ描き「？」で示す)。
+    /// 訪問済みか (false = frontier = 未踏の1歩先。frontend は名前を薄く描く)。
     visited: bool,
 }
 
@@ -605,7 +607,7 @@ struct MapView {
 ///
 /// - visited = {start, 現在地} ∪ {history の location}、現 scenario の location に限定
 ///   (campaign 遷移で前モジュールの location が history に残るのを除外)。
-/// - frontier = visited の各出口先 (1歩先・未訪問でも名前を出す)。奥は霧 = 出さない。
+/// - frontier = visited の各出口先 (1歩先・**未訪問でも名前を出す**・中身は伏せる)。奥は霧。
 /// - edges = visited ノードの exits のみ (frontier からの辺は描かない = その先は霧)。
 fn map_view(scenario: &Scenario, state: &GameState, history: &[TurnLog]) -> MapView {
     use std::collections::BTreeSet;
@@ -644,20 +646,22 @@ fn map_view(scenario: &Scenario, state: &GameState, history: &[TurnLog]) -> MapV
         }
     }
     // ノード = visited ∪ frontier (両者は互いに素)。決定論順 (visited→frontier、各キー昇順)。
-    // visited は名前/説明/画像を載せる (クリックで詳細パネルへ)。frontier は伏せる
-    // (「？」+「まだ到達していない」= ネタバレ回避、可視範囲=霧の一貫)。
+    // **名前は未踏でも載せ、中身 (説明・画像) は訪問済みだけ** (2026-09-09 ユーザー決定)。
+    // 霧の境界は変わらない — 2 歩以上先はそもそも nodes に入らない。ここで開けたのは
+    // 「隣に何という場所が在るか」だけで、「そこに何が在るか」は依然として伏せている。
     let node = |id: &String, is_visited: bool| {
         let loc = scenario.location(id);
-        let (title, description, image) = if is_visited {
+        let title = loc
+            .map(|l| if l.title.is_empty() { id.clone() } else { l.title.clone() })
+            .unwrap_or_else(|| id.clone());
+        let (description, image) = if is_visited {
             (
-                loc.map(|l| if l.title.is_empty() { id.clone() } else { l.title.clone() })
-                    .unwrap_or_else(|| id.clone()),
                 loc.map(|l| normalize(&l.description)).unwrap_or_default(),
                 // spec 23 Phase A: アセット ID をそのまま運ぶ (解決は frontend)。
                 loc.and_then(|l| l.image.clone()),
             )
         } else {
-            (String::new(), String::new(), None)
+            (String::new(), None)
         };
         MapNode {
             id: id.clone(),
@@ -5632,9 +5636,12 @@ mod tests {
         assert!(a.current && a.visited, "a は現在地かつ訪問済み");
         let c = m.nodes.iter().find(|n| n.id == "c").unwrap();
         assert!(!c.visited && !c.current, "c は未踏 (frontier)");
+        // 2026-09-09 ユーザー決定: 未踏でも**名前は出す** (リストで「行ける場所が在る」を示す)。
+        // 伏せるのは中身 (説明・画像) だけ — 名前は道しるべ、説明はネタバレの重さが違う。
+        assert_eq!(c.title, "c", "未踏でも名前は出す (title 空なら id へフォールバック)");
         assert!(
-            c.title.is_empty() && c.description.is_empty(),
-            "frontier は名前・説明を伏せる (「？」表示 = ネタバレ回避)"
+            c.description.is_empty() && c.image.is_none(),
+            "未踏の中身 (説明・画像) は伏せたまま"
         );
         assert!(!a.title.is_empty() && a.description == "d", "訪問済みは名前と説明を持つ");
 
