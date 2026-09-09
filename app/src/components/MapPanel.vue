@@ -11,6 +11,10 @@
  * 中身 (説明・画像) は訪問済みだけ = backend が伏せている。
  *
  * engine 無改修の派生表示 — 状態の真実は backend。ここは game.map を描くだけ。
+ *
+ * **自前のスクロール枠は持たない** — 中身をそのまま流し、スクロールは右ペイン側に任せる
+ * (他のタブと同じ位置にバーが出る)。rev1 は掴んでパンするために高さを持っていたが、
+ * リストにその必要はない。2026-09-10 にユーザーが「マップだけ位置が違う」と気づいた。
  */
 import { computed, ref } from "vue";
 // spec 23 Phase A: MapNode.image はアセット ID — store の prefetch 済みキャッシュから引く。
@@ -43,7 +47,7 @@ function onImageDragStart(e: DragEvent, n: MapNode) {
 </script>
 
 <template>
-  <div class="h-full flex flex-col overflow-y-auto">
+  <div>
     <p v-if="!list.current" class="text-parchment/50 text-xs py-4">{{ t("map.empty") }}</p>
 
     <template v-else>
@@ -127,7 +131,7 @@ function onImageDragStart(e: DragEvent, n: MapNode) {
 
       <!-- 凡例 (薄い = 未踏 / 🔒 = いまは行けない) -->
       <div
-        class="mt-auto pt-2 border-t border-ash/50 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-parchment/50"
+        class="mt-4 pt-2 border-t border-ash/50 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-parchment/50"
       >
         <span>{{ t("map.legendFrontierHint") }}</span>
         <span>🔒 {{ t("map.legendLocked") }}</span>

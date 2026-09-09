@@ -404,7 +404,7 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
       </button>
     </nav>
 
-    <div class="flex-1 min-w-0 p-4 overflow-y-auto flex flex-col">
+    <div class="flex-1 min-w-0 p-4 overflow-y-auto scroll-hairline flex flex-col">
       <!-- ファイル一覧 (spec 28)。**game.state に依存しない** — 編集はプレイしていなくてもできる。 -->
       <template v-if="activeTab === 'files'">
         <!-- テキスト / メディアの切替 (2026-08-28 ユーザーFB)。編集できるのはテキストだけで、
@@ -653,7 +653,7 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
                ガター幅を確保し、出現/消滅による横のカクつきを防ぐ。 -->
           <div v-if="game.state.goals.length" class="mb-3 flex-1 min-h-0 flex flex-col">
             <div class="text-parchment/40 mb-2 flex items-center gap-1.5"><Icon name="target" />{{ t("state.goals") }}</div>
-            <ul class="goal-list space-y-1.5 flex-1 min-h-0 overflow-y-scroll pr-1">
+            <ul class="goal-list space-y-1.5 flex-1 min-h-0 overflow-y-scroll scroll-hairline pr-1">
               <li
                 v-for="g in game.state.goals"
                 :key="g.id"

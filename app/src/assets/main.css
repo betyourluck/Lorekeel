@@ -98,12 +98,35 @@
   }
 }
 
-/* 控えめなスクロールバー (暖炉テーマ) */
+/* 控えめなスクロールバー (暖炉テーマ)。既定は従来どおり 8px。 */
 ::-webkit-scrollbar {
   width: 8px;
 }
 ::-webkit-scrollbar-thumb {
   @apply bg-ash rounded-full;
+}
+
+/*
+ * 髪の毛の線のスクロールバー (2026-09-10 ユーザー決定)。
+ *
+ * 「このくらいの短さでスクロールバーを掴む人はいない。たぶんホイールを使う」 —
+ * つまり**掴む道具ではなく「いまどこか」の目印**なので、幅は要らないが見えは要る。
+ * **会話ペインには当てない** (ユーザー指示。あちらは長く、掴んで動かす人がいる)。
+ *
+ * つまみを ash から parchment/30 へ替えたのは太さを削ったから — ash はライトで
+ * 地との比 1.39 しかなく (実測)、8px では見えていたものが 4px では消える。
+ * parchment は明暗で役割が入れ替わる唯一のトークンなので、両テーマで線が残る
+ * (2.29 / 1.85)。**面の色なので減光カーブは掛からない** (掛けるのは文字だけ)。
+ */
+.scroll-hairline::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+.scroll-hairline::-webkit-scrollbar-thumb {
+  @apply bg-parchment/30 rounded-full;
+}
+.scroll-hairline::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 /* ネイティブ <select> のドロップリストを暗色テーマに揃える。
