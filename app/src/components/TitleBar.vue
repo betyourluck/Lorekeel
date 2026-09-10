@@ -7,8 +7,19 @@
  * - 設定(Cog) / パッケージ一覧(List) ボタンは親 (App.vue) にダイアログ表示を emit する。
  * - 最小化/最大化トグル/閉じるは @tauri-apps/api/window を動的 import で叩く
  *   (ブラウザ環境=Tauri 外でも crash しない)。
+ *
+ * **macOS だけ並びを変える** (2026-09-10 ユーザー要望「手間をかけていると思わせるように」):
+ * ウィンドウ操作を**左**へ移して信号ボタンの形にし、ブランド名を**中央**へ、シナリオ名は
+ * 出さない (mac のタイトルバーは書類名だけを中央に置く作法で、副題を並べない)。
+ * 判定は `IS_MAC` (UA・同期) — command で聞くと 1 往復ぶん Windows 風が見えてから入れ替わる。
+ *
+ * **ここで描いているのは本物ではなく似姿**。ネイティブの信号機を出す道 (`decorations: true` +
+ * `titleBarStyle: "Overlay"`) のほうが忠実 (hover の記号も緑のフルスクリーンも本物) だが、
+ * tauri.conf.json を触るうえ **Mac の実機でしか壊れ方が出ない** ので、実機で確かめられる時まで
+ * 採らない (2026-08-28 の「未確認と申告することは免責ではない」)。
  */
 import { computed } from "vue";
+import { IS_MAC } from "../platform";
 import { theme, toggleTheme } from "../theme";
 import { t } from "../i18n";
 import { useGameStore } from "../stores/game";
@@ -83,9 +94,34 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
 <template>
   <div
     data-tauri-drag-region
-    class="flex items-center h-8 shrink-0 bg-ink border-b border-ash select-none"
+    class="relative flex items-center h-8 shrink-0 bg-ink border-b border-ash select-none"
   >
-    <div data-tauri-drag-region class="px-3 text-xs font-bold tracking-widest text-glow pointer-events-none">
+    <!-- macOS: ウィンドウ操作は**左**の信号ボタン (赤=閉じる / 黄=最小化 / 緑=最大化)。
+         記号は群れに hover したとき出る = 実物と同じ振る舞い。 -->
+    <div v-if="IS_MAC" class="tl-group flex items-center gap-2 pl-3 pr-2">
+      <button class="tl tl-close" :title="t('titlebar.close')" :aria-label="t('titlebar.close')" @click="win('close')">
+        <svg viewBox="0 0 10 10" aria-hidden="true">
+          <line x1="2.6" y1="2.6" x2="7.4" y2="7.4" /><line x1="7.4" y1="2.6" x2="2.6" y2="7.4" />
+        </svg>
+      </button>
+      <button class="tl tl-min" :title="t('titlebar.minimize')" :aria-label="t('titlebar.minimize')" @click="win('minimize')">
+        <svg viewBox="0 0 10 10" aria-hidden="true"><line x1="2.3" y1="5" x2="7.7" y2="5" /></svg>
+      </button>
+      <button class="tl tl-max" :title="t('titlebar.maximize')" :aria-label="t('titlebar.maximize')" @click="win('toggleMaximize')">
+        <svg viewBox="0 0 10 10" aria-hidden="true"><line x1="2.3" y1="5" x2="7.7" y2="5" /><line x1="5" y1="2.3" x2="5" y2="7.7" /></svg>
+      </button>
+    </div>
+
+    <!-- macOS: ブランド名は**中央**・シナリオ名は出さない (mac の作法)。
+         絶対配置なので左右の中身の幅に依らず窓の真ん中に来る。 -->
+    <div
+      v-if="IS_MAC"
+      data-tauri-drag-region
+      class="absolute left-1/2 -translate-x-1/2 text-xs font-bold tracking-widest text-glow pointer-events-none whitespace-nowrap"
+    >
+<span class="outcasts-word">{{ t("titlebar.brandPrefix") }}</span> {{ t("titlebar.brand") }}<span v-if="version" class="ml-1.5 text-[10px] font-normal tracking-normal text-parchment/40">{{ version }}</span>
+    </div>
+    <div v-else data-tauri-drag-region class="px-3 text-xs font-bold tracking-widest text-glow pointer-events-none">
 <span class="outcasts-word">{{ t("titlebar.brandPrefix") }}</span> {{ t("titlebar.brand") }}<span v-if="version" class="ml-1.5 text-[10px] font-normal tracking-normal text-parchment/40">{{ version }}</span><span v-if="title" class="text-parchment/40 font-normal"> — {{ title }}</span>
     </div>
 
@@ -192,16 +228,16 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
       {{ model }}
     </span>
 
-    <div class="w-px h-4 mx-1 bg-ash"></div>
+    <div v-if="!IS_MAC" class="w-px h-4 mx-1 bg-ash"></div>
 
-    <!-- ウィンドウ操作 -->
-    <button class="tb-btn" :title="t('titlebar.minimize')" :aria-label="t('titlebar.minimize')" @click="win('minimize')">
+    <!-- ウィンドウ操作 (macOS では左の信号ボタンが担う) -->
+    <button v-if="!IS_MAC" class="tb-btn" :title="t('titlebar.minimize')" :aria-label="t('titlebar.minimize')" @click="win('minimize')">
       <svg width="11" height="11" viewBox="0 0 10 10"><line x1="0" y1="5" x2="10" y2="5" stroke="currentColor" stroke-width="1.2" /></svg>
     </button>
-    <button class="tb-btn" :title="t('titlebar.maximize')" :aria-label="t('titlebar.maximize')" @click="win('toggleMaximize')">
+    <button v-if="!IS_MAC" class="tb-btn" :title="t('titlebar.maximize')" :aria-label="t('titlebar.maximize')" @click="win('toggleMaximize')">
       <svg width="11" height="11" viewBox="0 0 10 10"><rect x="0.6" y="0.6" width="8.8" height="8.8" fill="none" stroke="currentColor" stroke-width="1.2" /></svg>
     </button>
-    <button class="tb-btn tb-close" :title="t('titlebar.close')" :aria-label="t('titlebar.close')" @click="win('close')">
+    <button v-if="!IS_MAC" class="tb-btn tb-close" :title="t('titlebar.close')" :aria-label="t('titlebar.close')" @click="win('close')">
       <svg width="11" height="11" viewBox="0 0 10 10">
         <line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" stroke-width="1.2" />
         <line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" stroke-width="1.2" />
@@ -211,6 +247,44 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
 </template>
 
 <style scoped>
+/*
+ * macOS の信号ボタン。**色は実物の値をそのまま置く** — テーマトークンに寄せると
+ * 「Mac に合わせる」という目的そのものが消える (ここは意図的にテーマの外)。
+ * 記号は群れに hover したときだけ出る = 実物の振る舞い。
+ */
+.tl {
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  display: grid;
+  place-items: center;
+  /* 明るい地でも輪郭が消えないように、実物と同じくごく薄い内側の縁を敷く。 */
+  box-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 0.18);
+}
+.tl-close {
+  background: #ff5f57;
+}
+.tl-min {
+  background: #febc2e;
+}
+.tl-max {
+  background: #28c840;
+}
+.tl svg {
+  width: 10px;
+  height: 10px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.tl svg line {
+  stroke: rgb(0 0 0 / 0.55);
+  stroke-width: 1.3;
+  stroke-linecap: round;
+}
+.tl-group:hover .tl svg {
+  opacity: 1;
+}
+
 .tb-btn {
   width: 44px;
   height: 32px;
