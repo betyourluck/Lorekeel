@@ -434,8 +434,12 @@ const draftName = ref("");
 // 現在の .env と一致するプロファイルを選択状態にする (初期表示・保存後の同期)。
 function syncSelectionToConfig() {
   const hit = profiles.value.find((p) => profileMatchesConfig(p, llm.value));
+  // 単価のフォームは**選択が別の登録へ移ったときだけ**差し替える。同じ登録のままここを通る
+  // 経路 (saveLlm → 同期) で毎回上書きすると、打ったばかりでまだ書いていない単価が
+  // 登録の古い値 (初回は空) に戻る = 「保存 + 登録モデルを更新」で単価が消えた (ユーザー実機 2026-09-13)。
+  const changed = (hit?.id ?? "") !== selectedProfileId.value;
   selectedProfileId.value = hit ? hit.id : "";
-  pricingForm.value = pricingToForm(hit?.pricing);
+  if (changed) pricingForm.value = pricingToForm(hit?.pricing);
 }
 
 // コンボで選んだら、下のフォームへ即反映する (表示のみ・.env には書かない)。
@@ -485,7 +489,11 @@ function saveDraft() {
   saveAiProfiles(profiles.value);
   selectedProfileId.value = profile.id;
   showAddForm.value = false;
-  llmStatus.value = t("settings.status.profileAdded", { name });
+  const typed = [pricingForm.value.input, pricingForm.value.cacheRead, pricingForm.value.output].some((s) => s.trim() !== "");
+  llmStatus.value =
+    typed && !profile.pricing
+      ? t("settings.status.profileAddedPricingIncomplete", { name })
+      : t("settings.status.profileAdded", { name });
 }
 
 // [🗑] 選択中プロファイルを削除する (確認あり)。.env には触れない。
@@ -665,6 +673,9 @@ async function saveLlmAndProfile() {
     llmStatus.value = t("settings.status.selectToUpdate");
     return;
   }
+  // 単価は .env を書く**前**にフォームから取る (saveLlm の中の同期がフォームに触りうるため)。
+  const pricing = parsePricing(pricingForm.value);
+  const pricingTyped = [pricingForm.value.input, pricingForm.value.cacheRead, pricingForm.value.output].some((s) => s.trim() !== "");
   // **.env を先に書き、成功したときだけ登録を書き換える** — 失敗したのに登録簿だけ新しくすると、
   // 一度も適用されていない値が「登録済み」として残る。
   if (!(await saveLlm())) return;
@@ -676,7 +687,7 @@ async function saveLlmAndProfile() {
     useTools: llm.value.use_tools,
     effort: llm.value.effort.trim(),
     maxTokens: llm.value.max_tokens.trim(),
-    pricing: parsePricing(pricingForm.value),
+    pricing,
   };
   profiles.value = profiles.value.map((x) => (x.id === p.id ? updated : x));
   saveAiProfiles(profiles.value);
@@ -685,7 +696,11 @@ async function saveLlmAndProfile() {
   // (追随させないと GM だけ直り、要約は古いキーのまま静かに失敗し続ける)
   if (summaryProfileId.value === p.id) await applySummaryProfile();
   if (editorProfileId.value === p.id) await applyEditorProfile();
-  llmStatus.value = t("settings.status.profileUpdated", { name: p.name });
+  // 3 欄揃っていない単価は保存されない (部分見積もりを作らない)。黙って落とさず告げる。
+  llmStatus.value =
+    pricingTyped && !pricing
+      ? t("settings.status.profileUpdatedPricingIncomplete", { name: p.name })
+      : t("settings.status.profileUpdated", { name: p.name });
 }
 
 onMounted(async () => {
