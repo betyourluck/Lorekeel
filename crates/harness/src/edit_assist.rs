@@ -576,14 +576,14 @@ mod tests {
         }
     }
     fn text_turn(t: &str) -> ChatTurn {
-        ChatTurn { text: Some(t.into()), tool_calls: vec![], finish: Finish::Stop, usage: Usage { prompt: 10, completion: 2, cache_read: 4 } }
+        ChatTurn { text: Some(t.into()), tool_calls: vec![], finish: Finish::Stop, usage: Usage { prompt: 10, completion: 2, cache_read: 4, cost_usd: None } }
     }
     fn call_turn(calls: Vec<(&str, &str, Value)>) -> ChatTurn {
         ChatTurn {
             text: None,
             tool_calls: calls.into_iter().map(|(id, n, a)| ToolCall { id: id.into(), name: n.into(), args: a, thought_signature: None }).collect(),
             finish: Finish::ToolUse,
-            usage: Usage { prompt: 100, completion: 5, cache_read: 0 },
+            usage: Usage { prompt: 100, completion: 5, cache_read: 0, cost_usd: None },
         }
     }
     /// 道具の fake: sd apply で本文を書き換え、診断は本文に "broken" が在れば error。

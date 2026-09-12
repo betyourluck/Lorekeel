@@ -836,7 +836,7 @@ async fn edit_assist_run(
     let base = LlmConfig::from_env().map_err(|e| e.to_string())?;
     let config = LlmConfig::editor_from_env(&base).map_err(|e| e.to_string())?.unwrap_or(base);
     let model = config.model.clone();
-    let client = LlmClient::new(config).map_err(|e| e.to_string())?;
+    let client = LlmClient::new(config).map_err(|e| e.to_string())?.with_role("editor");
     cancel.0.store(false, std::sync::atomic::Ordering::Relaxed);
     let mut session = edit_assist::EditSession::new(&root, &target_rel, &kind, files, &initial_text);
     let messages = ea::build_messages(&req);
@@ -1257,7 +1257,7 @@ async fn generate_image(
     // LLM を通す意味が無いうえ、待ち時間と課金だけ増える (spec 27 B-3)。
     let override_text = prompt_override.unwrap_or_default();
     let prompt = if override_text.trim().is_empty() {
-        let writer = LlmClient::new(llm_config).map_err(|e| e.to_string())?;
+        let writer = LlmClient::new(llm_config).map_err(|e| e.to_string())?.with_role("image_prompt");
         let scene =
             tokio::time::timeout(std::time::Duration::from_secs(60), writer.generate(messages))
                 .await
@@ -3364,10 +3364,10 @@ async fn new_game(
     // あらすじ要約用の専用 client (SUMMARY_LLM_*、spec 10)。未設定なら GM の client 共用。
     let summarizer = LlmConfig::summary_from_env(&config)
         .map_err(|e| e.to_string())?
-        .map(LlmClient::new)
+        .map(|c| LlmClient::new(c).map(|c| c.with_role("summary")))
         .transpose()
         .map_err(|e| e.to_string())?;
-    let mut client = LlmClient::new(config).map_err(|e| e.to_string())?;
+    let mut client = LlmClient::new(config).map_err(|e| e.to_string())?.with_role("gm");
     // 判定様式 (spec 16): 盤面が使わない判定 op を schema から落とす (percentile → check を
     // 隠し check_under を出す / additive (既定) → 逆)。セッション開始時に一度だけ確定。
     client.set_excluded_ops(harness::excluded_check_ops(&scenario));
@@ -3505,10 +3505,10 @@ async fn restore_session(
     let config = LlmConfig::from_env().map_err(|e| e.to_string())?;
     let summarizer = LlmConfig::summary_from_env(&config)
         .map_err(|e| e.to_string())?
-        .map(LlmClient::new)
+        .map(|c| LlmClient::new(c).map(|c| c.with_role("summary")))
         .transpose()
         .map_err(|e| e.to_string())?;
-    let mut client = LlmClient::new(config).map_err(|e| e.to_string())?;
+    let mut client = LlmClient::new(config).map_err(|e| e.to_string())?.with_role("gm");
     // 判定様式 (spec 16): new_game と同じくセッション開始時に確定。
     client.set_excluded_ops(harness::excluded_check_ops(&scenario));
 

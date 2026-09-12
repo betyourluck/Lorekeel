@@ -23,7 +23,9 @@ pub struct ChatTurn {
     pub finish: canonical::Finish,
     pub usage: canonical::Usage,
 }
+use crate::canonical::Usage;
 use crate::config::{LlmConfig, Provider, ToolMode};
+use crate::usage::{UsageEvent, UsageLedger, UsageSink};
 use crate::error::LlmError;
 use crate::gemini;
 use crate::openai_compat;
@@ -142,6 +144,13 @@ pub struct LlmClient {
     /// セッションで高々 2 回 (Forced→Auto→Off)。名前指定が通るサーバでは 400 が来ないので
     /// **一度も発火しない**。`gemini_cache` と同じ interior mutability の流儀。
     tool_mode: Mutex<ToolMode>,
+    /// spec 30: この client の役割 (`gm` / `summary` / `editor` / `image_prompt`)。集計と
+    /// `[LLM_USAGE]` 行・[`UsageEvent::Llm`] に載る。未設定は空 (CLI の一部・テスト)。
+    role: String,
+    /// spec 30: 累計 (プロセス内揮発)。記録点は [`Self::complete`] の単一点。
+    usage: Mutex<UsageLedger>,
+    /// spec 30: app が配る受け口 (jsonl 追記)。llm_client は呼ぶだけ。
+    usage_sink: Option<UsageSink>,
 }
 
 impl LlmClient {
@@ -158,6 +167,9 @@ impl LlmClient {
             cache_stat: Mutex::new(CacheStat { floor, ..CacheStat::default() }),
             call_seq: std::sync::atomic::AtomicU64::new(0),
             gemini_cache: Mutex::new(None),
+            role: String::new(),
+            usage: Mutex::new(UsageLedger::default()),
+            usage_sink: None,
             tool_mode: Mutex::new(config_tool_mode),
             // 既定 = additive 盤面 (従来どおり)。percentile 判定 op は隠す。
             excluded_ops: vec!["check_under".to_string()],
@@ -183,6 +195,62 @@ impl LlmClient {
     /// セッション識別子 (x-grok-conv-id に載せる値)。
     pub fn conv_id(&self) -> &str {
         &self.conv_id
+    }
+
+    /// spec 30: 役割を付ける (builder)。app は `gm` / `summary` / `editor` / `image_prompt`。
+    pub fn with_role(mut self, role: impl Into<String>) -> Self {
+        self.role = role.into();
+        self
+    }
+
+    /// spec 30: 1 リクエスト 1 イベントの受け口 (builder)。
+    pub fn with_usage_sink(mut self, sink: UsageSink) -> Self {
+        self.usage_sink = Some(sink);
+        self
+    }
+
+    pub fn role(&self) -> &str {
+        &self.role
+    }
+
+    /// spec 30: 累計のスナップショット。lock 毒化時は既定値。
+    pub fn usage_ledger(&self) -> UsageLedger {
+        self.usage.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    /// spec 30: 1 リクエスト分の usage を**単一点**で記録する — cache 計測 (従来) → 累計 →
+    /// `LLM_CACHE_DEBUG=1` で `[LLM_USAGE]` 行 (`[LLM_CACHE_STAT]` の隣・スイッチは増やさない)
+    /// → sink。`chat` / `generate` / `generate_structured` / 4 adapter / 再送・降格の全経路が
+    /// [`Self::complete`] を通るのでここ 1 箇所で網羅する。
+    pub(crate) fn record_usage(&self, u: &Usage) {
+        self.record_cache(u.cache_read, u.prompt);
+        let req = if let Ok(mut g) = self.usage.lock() {
+            g.record(u);
+            g.requests
+        } else {
+            0
+        };
+        if std::env::var("LLM_CACHE_DEBUG").is_ok() {
+            eprintln!(
+                "[LLM_USAGE] conv={} role={} model={} req={} prompt={} cache_read={} completion={} cost={}",
+                self.conv_id,
+                self.role,
+                self.config.model,
+                req,
+                u.prompt,
+                u.cache_read,
+                u.completion,
+                u.cost_usd.map(|c| format!("{c:.6}")).unwrap_or_else(|| "-".into()),
+            );
+        }
+        if let Some(sink) = &self.usage_sink {
+            sink(&UsageEvent::Llm {
+                role: self.role.clone(),
+                model_id: self.config.model.clone(),
+                usage: *u,
+                cost_usd: u.cost_usd,
+            });
+        }
     }
 
     /// キャッシュ健全性のスナップショット (GUI の警告判定用)。lock 毒化時は既定値。
@@ -336,7 +404,7 @@ impl LlmClient {
                 self.responses_with_retry(&wire_req, req.max_tokens).await?
             }
         };
-        self.record_cache(resp.usage.cache_read, resp.usage.prompt);
+        self.record_usage(&resp.usage);
         Ok(resp)
     }
 

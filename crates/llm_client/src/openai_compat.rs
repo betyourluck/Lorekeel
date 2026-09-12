@@ -238,6 +238,7 @@ pub(crate) fn decode(resp: wire::ChatResponse) -> Result<ChatResponse, LlmError>
         .usage
         .as_ref()
         .map(|u| Usage {
+            cost_usd: None,
             prompt: u.prompt_tokens,
             completion: u.completion_tokens,
             cache_read: u

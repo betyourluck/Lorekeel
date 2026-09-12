@@ -19,7 +19,7 @@
 //! - 応答は `output` の混在列 (`function_call` / `message` / `search_results` …)。
 //!   `function_call.arguments` は **JSON 文字列** (decode 境界で 1 回だけ parse = 写経元 D2)
 //! - usage は `input_tokens` / `output_tokens` / `input_tokens_details.cached_tokens`
-//!   (+ Perplexity 固有の `cost` USD。読むが使わない)
+//!   (+ Perplexity 固有の `cost` USD → `Usage.cost_usd`、spec 30)
 //!
 //! 写経元は Fuseforks `crates/fuseforks-core/src/llm/openai_responses.rs` (Spec 34) — ただし
 //! Kataribe には web 検索も思考の要約も要らないので、**送るのは Kataribe が使う欄だけ**
@@ -179,6 +179,15 @@ pub(crate) struct ResponsesUsage {
     pub output_tokens: u64,
     #[serde(default)]
     pub input_tokens_details: Option<InputTokensDetails>,
+    /// Perplexity 固有: `{"currency":"USD","total_cost":0.00032}`。spec 30 で ledger へ載せる。
+    #[serde(default)]
+    pub cost: Option<ResponsesCost>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct ResponsesCost {
+    #[serde(default)]
+    pub total_cost: f64,
 }
 
 /// キャッシュ計数。実ワイヤは `cached_tokens` (probe 実測)、文書は
@@ -320,7 +329,12 @@ pub(crate) fn decode(resp: ResponsesResponse) -> Result<ChatResponse, LlmError> 
                 .as_ref()
                 .map(|d| d.cached_tokens.max(d.cache_read_input_tokens))
                 .unwrap_or(0);
-            Usage { prompt: u.input_tokens, completion: u.output_tokens, cache_read }
+            Usage {
+                prompt: u.input_tokens,
+                completion: u.output_tokens,
+                cache_read,
+                cost_usd: u.cost.as_ref().map(|c| c.total_cost),
+            }
         })
         .unwrap_or_default();
     let finish = if !tool_calls.is_empty() {

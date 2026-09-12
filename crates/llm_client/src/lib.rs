@@ -25,9 +25,11 @@ mod tool_roundtrip;
 mod openai_compat;
 mod parse;
 mod responses;
+mod usage;
 mod wire;
 
 pub use canonical::{Finish, ToolSpec, Usage};
+pub use usage::{UsageEvent, UsageLedger, UsageSink};
 pub use client::{CachePoint, CacheStat, ChatTurn, LlmClient};
 pub use config::{Effort, LlmConfig, Provider, ToolMode};
 pub use error::LlmError;
@@ -1770,6 +1772,75 @@ mod tests {
         assert_eq!(plain.choices[0].message.content.as_deref(), Some("ok"));
     }
 
+    /// 【spec 30 Phase A】累計は client 単位で、**出力トークンと申告費用が足される** (2026-09-13 まで
+    /// completion はどこにも足されていなかった)。cache_stat の従来計数は不変。sink は 1 リクエスト
+    /// 1 イベントで role / model_id / cost を運ぶ。
+    #[test]
+    fn usage_ledger_accumulates_completion_and_reported_cost_and_sink_gets_events() {
+        use std::sync::{Arc, Mutex};
+        let seen: Arc<Mutex<Vec<UsageEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink_seen = seen.clone();
+        let client = LlmClient::new(LlmConfig::new("https://api.perplexity.ai", "k", "sonar-pro"))
+            .unwrap()
+            .with_role("gm")
+            .with_usage_sink(Arc::new(move |e: &UsageEvent| sink_seen.lock().unwrap().push(e.clone())));
+        client.record_usage(&Usage { prompt: 9000, completion: 300, cache_read: 8192, cost_usd: Some(0.01) });
+        client.record_usage(&Usage { prompt: 9500, completion: 250, cache_read: 0, cost_usd: None });
+
+        let l = client.usage_ledger();
+        assert_eq!(l.requests, 2);
+        assert_eq!(l.prompt_tokens, 18500);
+        assert_eq!(l.cache_read_tokens, 8192);
+        assert_eq!(l.completion_tokens, 550, "出力が初めて足される");
+        assert!((l.reported_cost_usd - 0.01).abs() < 1e-12);
+        assert_eq!(l.reported_cost_requests, 1, "申告の無いリクエストは数えない");
+        let cs = client.cache_stat();
+        assert_eq!(cs.total_requests, 2, "従来の cache 計数は不変");
+
+        let ev = seen.lock().unwrap();
+        assert_eq!(ev.len(), 2, "1 リクエスト 1 イベント");
+        match &ev[0] {
+            UsageEvent::Llm { role, model_id, usage, cost_usd } => {
+                assert_eq!(role, "gm");
+                assert_eq!(model_id, "sonar-pro");
+                assert_eq!(usage.completion, 300);
+                assert_eq!(*cost_usd, Some(0.01));
+            }
+            other => panic!("Llm のはず: {other:?}"),
+        }
+        assert_eq!(LlmClient::new(LlmConfig::new("https://x", "k", "m")).unwrap().role(), "", "既定は無印");
+    }
+
+    /// 【spec 30】jsonl の読み手 (Phase D の集計) が依存する serde 形を固定: `kind` タグ・
+    /// snake_case・`cost_usd` は None なら null。プロンプト本文を載せる欄は型に存在しない。
+    #[test]
+    fn usage_event_serializes_with_kind_tag_and_nullable_cost() {
+        let llm = UsageEvent::Llm {
+            role: "summary".into(),
+            model_id: "m".into(),
+            usage: Usage { prompt: 10, completion: 2, cache_read: 4, cost_usd: None },
+            cost_usd: None,
+        };
+        let j: serde_json::Value = serde_json::from_str(&serde_json::to_string(&llm).unwrap()).unwrap();
+        assert_eq!(j["kind"], "llm");
+        assert_eq!(j["role"], "summary");
+        assert_eq!(j["usage"]["completion"], 2);
+        assert!(j["cost_usd"].is_null());
+        assert!(j.get("prompt_text").is_none() && j.get("messages").is_none());
+
+        let img = UsageEvent::Image {
+            role: "illustration".into(),
+            provider: "comfy".into(),
+            count: 1,
+            usage_tokens: None,
+            elapsed_sec: Some(12.5),
+        };
+        let j: serde_json::Value = serde_json::from_str(&serde_json::to_string(&img).unwrap()).unwrap();
+        assert_eq!(j["kind"], "image");
+        assert_eq!(j["count"], 1);
+        assert_eq!(j["elapsed_sec"], 12.5);
+    }
+
     /// 【会話 ID】クライアント毎に一意な conv_id を持つ (xAI のキャッシュはサーバ単位 →
     /// x-grok-conv-id で同一サーバに sticky routing しないと同一プレフィックスでも miss)。
     #[test]
@@ -2067,6 +2138,7 @@ mod tests {
         assert_eq!(c.usage.prompt, 2169);
         assert_eq!(c.usage.completion, 162);
         assert_eq!(c.usage.cache_read, 700);
+        assert_eq!(c.usage.cost_usd, Some(0.00032), "Perplexity の申告費用は捨てない (spec 30)");
         let delta: StateDelta = parse::extract(&c).unwrap();
         assert_eq!(delta.narration, "扉が開く");
         assert!(matches!(delta.ops[0], StateOp::SetFlag { .. }));

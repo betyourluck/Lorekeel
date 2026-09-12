@@ -293,6 +293,7 @@ pub(crate) fn decode(resp: MessagesResponse) -> canonical::ChatResponse {
         .usage
         .as_ref()
         .map(|u| canonical::Usage {
+            cost_usd: None,
             // Anthropic native の input_tokens は**非キャッシュ分のみ** (総入力 = input +
             // cache_read + cache_creation)。OpenAI prompt_tokens / Gemini promptTokenCount は
             // 総入力なので、canonical の prompt は「総入力」へ正規化してプロバイダ間で比較可能に

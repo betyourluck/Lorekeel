@@ -58,11 +58,14 @@ pub enum Finish {
 /// プロバイダ中立の usage。`cache_read` / `prompt` は CacheStat (GUI キャッシュ健全性警告
 /// #44/#45 + spec 14 の hit rate 曲線) の一次ソースで、adapter が各 wire の該当フィールド
 /// から正規化する。
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize)]
 pub struct Usage {
     pub prompt: u64,
     pub completion: u64,
     pub cache_read: u64,
+    /// プロバイダが申告した費用 (USD)。今は Perplexity (responses の `cost.total_cost`) だけが埋める
+    /// (spec 30)。None = 申告なし (見積もりは提示層の仕事)。
+    pub cost_usd: Option<f64>,
 }
 
 /// ツール呼び出し。定義は wire 側 ([`crate::wire::ToolCall`]、pub) — spec 29 で呼び出し側

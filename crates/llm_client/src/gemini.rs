@@ -563,6 +563,7 @@ pub(crate) fn decode(resp: GenerateContentResponse, seq: u64) -> canonical::Chat
         .usage_metadata
         .as_ref()
         .map(|u| canonical::Usage {
+            cost_usd: None,
             prompt: u.prompt_token_count,
             completion: u.candidates_token_count,
             cache_read: u.cached_content_token_count,

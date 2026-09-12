@@ -217,7 +217,7 @@ async fn run_edit(args: &[String]) -> Result<(), Box<dyn Error>> {
     let base = LlmConfig::from_env()?;
     let config = LlmConfig::editor_from_env(&base)?.unwrap_or(base);
     eprintln!("[編集] {} / model={} / 対象={rel} ({kind})", config.base_url, config.model);
-    let client = LlmClient::new(config)?;
+    let client = LlmClient::new(config)?.with_role("editor");
     let mut session = harness::edit_tools::EditSession::new(&root, rel, &kind, files, &initial);
     let cancel = std::sync::atomic::AtomicBool::new(false);
     let t0 = std::time::Instant::now();
@@ -323,7 +323,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     eprintln!("[接続] {} / model={}", config.base_url, config.model);
     // mut: シナリオ確定後に判定様式 (spec 16) の除外 op を設定する。
-    let mut client = LlmClient::new(config)?;
+    let mut client = LlmClient::new(config)?.with_role("gm");
 
     // --- シナリオ / キャンペーン / パッケージ / 再開 ---
     // `--campaign <path>` でキャンペーンモード、`--package <dir>` でパッケージモード
@@ -357,7 +357,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let summary_client: Option<LlmClient> = match LlmConfig::summary_from_env(client.config())? {
         Some(c) => {
             eprintln!("[あらすじ要約] {} / model={}", c.base_url, c.model);
-            Some(LlmClient::new(c)?)
+            Some(LlmClient::new(c)?.with_role("summary"))
         }
         None => None,
     };
