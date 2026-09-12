@@ -459,6 +459,27 @@ async function applySummaryProfile() {
     summaryStatus.value = t("settings.status.saveFailed", { error: String(e) });
   }
 }
+// 直前の語りを何ターン分そのまま GM に渡すか (2026-09-13)。**0 = 既定** (harness 側の 3)。
+// あらすじの待ち時間と同じく独立した command で保存する。
+const recentTurns = ref(0);
+async function loadRecentTurns() {
+  try {
+    recentTurns.value = (await invoke<number>("get_recent_turns")) ?? 0;
+  } catch {
+    recentTurns.value = 0;
+  }
+}
+async function applyRecentTurns() {
+  try {
+    await invoke("set_recent_turns", { turns: recentTurns.value });
+    summaryStatus.value =
+      recentTurns.value > 0
+        ? t("settings.status.recentTurnsSet", { turns: recentTurns.value })
+        : t("settings.status.recentTurnsDefault");
+  } catch (e) {
+    summaryStatus.value = t("settings.status.saveFailed", { error: String(e) });
+  }
+}
 // 要約 1 回のタイムアウト秒。**0 = 既定** (既定値は harness 側の単一定義なので frontend に焼かない)。
 // プロファイル選択とは別 command = 片方の保存でもう片方を巻き添えで消さない。
 const summaryTimeout = ref(0);
@@ -605,6 +626,7 @@ onMounted(async () => {
   loadDefaultImageDir();
   void loadImageKeys();
   void loadSummaryTimeout();
+  void loadRecentTurns();
   void loadEditorProfile();
   void refreshSheets();
   game.refreshDevMode();
@@ -1502,6 +1524,20 @@ onMounted(async () => {
               </select>
               <p class="text-parchment/40 text-xs">
                 {{ t("settings.model.summaryTimeoutNote") }}
+              </p>
+              <label class="block text-parchment/70 text-xs pt-1">{{ t("settings.model.recentTurns") }}</label>
+              <select
+                v-model.number="recentTurns"
+                @change="applyRecentTurns"
+                class="block w-full rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none"
+              >
+                <option :value="0">{{ t("settings.model.recentTurnsDefault") }}</option>
+                <option v-for="n in [1, 2, 3, 5, 8, 12]" :key="n" :value="n">
+                  {{ t("settings.model.recentTurnsN", { turns: n }) }}
+                </option>
+              </select>
+              <p class="text-parchment/40 text-xs">
+                {{ t("settings.model.recentTurnsNote") }}
               </p>
               <span v-if="summaryStatus" class="text-xs text-parchment/60">{{ summaryStatus }}</span>
             </div>

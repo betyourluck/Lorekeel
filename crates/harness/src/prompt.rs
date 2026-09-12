@@ -1030,17 +1030,33 @@ pub fn history_note(history: &[crate::TurnLog], query: &HistoryQuery) -> String 
 /// 何を語ったかの記憶を持たない → 静的情景 (時刻・天候・部屋の様子) や一度きりのビート (登場・挨拶)
 /// をゼロから再establish して「情景がくどく二度出る」。直前の語りを継続文脈として渡し、
 /// 「繰り返さず続きから変化だけ描け」と接地して継続性 (矛盾しない GM) を保つ。
-pub fn recent_narration_note(prev: &str) -> String {
-    if prev.trim().is_empty() {
+///
+/// **直前 K ターン (2026-09-13)**: 引数は古い順・末尾が直前。1 本なら従来 (直前 1 ターンだけ) と
+/// **byte 一致**、複数なら「N ターン前」…「直前」のラベルで区切り、逐語の細部 (台詞・約束・
+/// 描いた小物) を確定した出来事として扱わせる — 要約 1 行に落ちなかった細部はこの層にしか無い。
+pub fn recent_narrations_note(prevs: &[String]) -> String {
+    let prevs: Vec<&str> = prevs.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    let n = prevs.len();
+    if n == 0 {
         return String::new();
     }
-    format!(
-        "\n\n# 直前までの語り（情景はここから継続する。繰り返さないこと）\n\
-        以下は直前のターンであなたが語った内容です。**既に確立した静的な情景（時刻・天候・\
+    const HEAD: &str = "\n\n# 直前までの語り（情景はここから継続する。繰り返さないこと）\n";
+    const RULE: &str = "**既に確立した静的な情景（時刻・天候・\
         部屋の様子・既に済んだ登場・挨拶・相手の初対面の驚きなど）を再び描写しないこと**。\
-        同じ説明を二度せず、この続きとして「変化・反応・新しい展開」だけを描いてください。\n---\n{}\n---\n",
-        prev.trim()
-    )
+        同じ説明を二度せず、この続きとして「変化・反応・新しい展開」だけを描いてください。";
+    if n == 1 {
+        return format!("{HEAD}以下は直前のターンであなたが語った内容です。{RULE}\n---\n{}\n---\n", prevs[0]);
+    }
+    let mut s = format!(
+        "{HEAD}以下は直前の {n} ターンであなたが語った内容です（古い順・最後が直前）。{RULE}\
+        台詞・約束・描いた小物など、ここに書かれた細部は確定した出来事として扱い、食い違う語りをしないこと。\n"
+    );
+    for (i, p) in prevs.iter().enumerate() {
+        let label = if i + 1 == n { "直前".to_string() } else { format!("{} ターン前", n - i) };
+        s.push_str(&format!("---（{label}）---\n{p}\n"));
+    }
+    s.push_str("---\n");
+    s
 }
 
 /// 移動直後の否定接地: 直前ターンで場所が変わったとき、前の場所に居て今ここに居ない NPC を

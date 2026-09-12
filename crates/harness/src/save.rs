@@ -59,9 +59,14 @@ pub struct SessionSave {
     /// 経緯ログ (chronicle) 全量。GM の中期記憶。
     #[serde(default)]
     pub history: Vec<TurnLog>,
-    /// 直前の語り (継続性の持ち越し)。
+    /// 直前の語り (継続性の持ち越し)。2026-09-13 以降は `recent_narrations` の末尾の写し
+    /// (旧版の読み手・スロット一覧の冒頭 60 字・再開時の「前回までの語り」がこの欄を読む)。
     #[serde(default)]
     pub last_narration: String,
+    /// 直前 K ターンの語り (古い順・末尾が直前、2026-09-13)。この欄の無い旧セーブは
+    /// `last_narration` から 1 本だけ seed する ([`SessionSave::recent_narrations_seeded`])。
+    #[serde(default)]
+    pub recent_narrations: Vec<String>,
     /// 直前ターンの判定結果 (次ターン還流分)。
     #[serde(default)]
     pub pending_checks: Vec<CheckOutcome>,
@@ -80,6 +85,13 @@ pub struct SessionSave {
     /// 提示層の状態だが、セーブしないと再開で背景だけ巻き戻る (last_narration と同じ「継続性」)。
     #[serde(default)]
     pub sustained_cg: Option<String>,
+}
+
+impl SessionSave {
+    /// 再開時に GM へ渡す直前の語りの列 ([`crate::seed_recent_narrations`])。
+    pub fn recent_narrations_seeded(&self) -> Vec<String> {
+        crate::seed_recent_narrations(self.recent_narrations.clone(), &self.last_narration)
+    }
 }
 
 /// セーブを YAML で書く。**tmp → rename の原子的置換** — 受理ターン毎の上書き運用で

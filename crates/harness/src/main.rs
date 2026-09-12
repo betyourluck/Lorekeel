@@ -536,8 +536,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut pending_checks: Vec<gm_core::CheckOutcome> =
         resume_save.as_ref().map(|s| s.pending_checks.clone()).unwrap_or_default();
     // 直前ターンの語り。次ターンに「続く情景」として渡し、既出描写の繰り返しを防ぐ (継続性)。
-    let mut last_narration =
-        resume_save.as_ref().map(|s| s.last_narration.clone()).unwrap_or_default();
+    let recent_limit = harness::recent_turns_limit();
+    let mut recent_narrations: Vec<String> =
+        resume_save.as_ref().map(|s| s.recent_narrations_seeded()).unwrap_or_default();
     // 経緯ログ (chronicle)。GM の書く summary を蓄積し「これまでの経緯」として還流する (中期記憶)。
     let mut history: Vec<harness::TurnLog> =
         resume_save.as_ref().map(|s| s.history.clone()).unwrap_or_default();
@@ -558,7 +559,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 state: state.clone(),
                 campaign_memory: campaign_memory.clone(),
                 history: history.clone(),
-                last_narration: last_narration.clone(),
+                last_narration: recent_narrations.last().cloned().unwrap_or_default(),
+                recent_narrations: recent_narrations.clone(),
                 pending_checks: pending_checks.clone(),
                 pending_lore: pending_lore.clone(),
                 facts: facts_list.clone(),
@@ -591,7 +593,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             lang,
             &pending_lore,    // 前ターンの伏線を注入
             &pending_checks,  // 前ターンの判定結果を注入
-            &last_narration,  // 前ターンの語りを継続文脈として注入 (繰り返し防止)
+            &recent_narrations, // 直前 K ターンの語りを継続文脈として注入 (繰り返し防止)
             &history,         // 経緯ログ (中期記憶)。過去ターンの要約を還流
             &synopsis.entries, // あらすじ (長期の物語記憶、spec 10)
             &facts_list,           // 既成事実 (ピン留めの覚え書き、spec 20)
@@ -630,7 +632,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     &checks,
                 ));
                 // 次ターンの継続文脈に持ち越す (ビート込み)。
-                last_narration = harness::carryover_narration(&narration, &beat_texts, &checks);
+                harness::push_recent_narration(
+                    &mut recent_narrations,
+                    harness::carryover_narration(&narration, &beat_texts, &checks),
+                    recent_limit,
+                );
                 for r in &rolls {
                     let mark = if r.success { "成功" } else { "失敗" };
                     println!("  🎲 1d{} = {} (DC {}) → {mark}", r.sides, r.result, r.dc);
@@ -711,8 +717,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             if let Some(end) = r.ended {
                                 let digest = harness::contest_digest(&end);
                                 println!("  [{digest}]");
-                                last_narration =
-                                    harness::carryover_narration(&last_narration, std::slice::from_ref(&digest), &[]);
+                                harness::extend_last_narration(&mut recent_narrations, std::slice::from_ref(&digest), &[]);
                                 if let Some(h) = history.last_mut() {
                                     h.summary.push_str(&format!("／{digest}"));
                                 }
@@ -811,7 +816,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     client.set_excluded_ops(harness::excluded_check_ops(&scenario));
                                     pending_lore = Vec::new();
                                     pending_checks = Vec::new();
-                                    last_narration = String::new(); // 新モジュール=新しい情景
+                                    recent_narrations.clear(); // 新モジュール=新しい情景
                                     // 経緯は捨てない (跨いで覚えるのが chronicle の眼目)。章替わりを刻む。
                                     history.push(harness::TurnLog {
                                         turn: state.turn,
@@ -833,7 +838,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     );
                                     print_epilogue(
                                         &client, &scenario, &state, &synopsis, &history,
-                                        &last_narration,
+                                        recent_narrations.last().map(String::as_str).unwrap_or(""),
                                     )
                                     .await;
                                     break;
@@ -844,7 +849,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             // 単発シナリオのクリア。バナー → エピローグで幕 (spec 11)。
                             println!("\n🎉 クリア。goal 到達 (turn {}).", state.turn);
                             print_epilogue(
-                                &client, &scenario, &state, &synopsis, &history, &last_narration,
+                                &client, &scenario, &state, &synopsis, &history,
+                                recent_narrations.last().map(String::as_str).unwrap_or(""),
                             )
                             .await;
                             break;

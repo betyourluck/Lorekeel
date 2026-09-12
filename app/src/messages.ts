@@ -360,6 +360,11 @@ export const messages = {
         summaryTimeoutSecs: "{secs} 秒",
         summaryTimeoutNote:
           "遅いモデルや長い章では 60 秒で足りないことがあります。あらすじの生成はターンの確定と同時に行われるので、この秒数だけ次の語りが待たされることがあります（失敗したときは毎回その時間を払います）。同じ範囲で 3 回失敗すると、あらすじは機械的にまとめて先へ進みます。",
+        recentTurns: "直前の語りを GM にそのまま渡すターン数",
+        recentTurnsDefault: "既定（3 ターン）",
+        recentTurnsN: "{turns} ターン",
+        recentTurnsNote:
+          "GM は毎ターン記憶を組み立て直します。ここで選んだターン数ぶんの語りは要約せずそのまま渡すので、台詞や約束の細部が保たれます。それより前は 1 行の経緯とあらすじに圧縮されます。増やすほど毎ターンの入力トークン（キャッシュに乗らない分）が増えます。1 が従来の挙動（直前 1 ターンだけ）。変更は次のターンから効きます。",
         summaryNote:
           "長編プレイで自動生成される「あらすじ」（右ペイン第 3 タブ）の要約に使うモデル。安いモデルを選ぶとコストを抑えられます。選択は即保存（次の「新しいゲーム」から有効）。",
         editorHeading: "AI 編集用モデル",
@@ -420,6 +425,8 @@ export const messages = {
         editorUsing: "「{name}」で AI 編集します（次の実行から有効）",
         summaryTimeoutSet: "要約の待ち時間の上限を {secs} 秒にしました",
         summaryTimeoutDefault: "要約の待ち時間の上限を既定（60 秒）に戻しました",
+        recentTurnsSet: "直前の語りを {turns} ターン分そのまま渡すようにしました（次のターンから）",
+        recentTurnsDefault: "直前の語りのターン数を既定（3）に戻しました",
       },
     },
     contest: {
@@ -1229,6 +1236,11 @@ export const messages = {
         summaryTimeoutSecs: "{secs} s",
         summaryTimeoutNote:
           "Slow models or long chapters may need more than 60 seconds. The synopsis is written as the turn is committed, so the next passage can be held for up to this long — and a failing summary costs that time on every attempt. After 3 failures on the same range the synopsis is joined mechanically and play moves on.",
+        recentTurns: "Recent passages passed to the GM verbatim",
+        recentTurnsDefault: "Default (3 turns)",
+        recentTurnsN: "{turns} turns",
+        recentTurnsNote:
+          "The GM rebuilds its memory every turn. Passages from this many recent turns are passed verbatim, so details such as lines and promises survive; anything older is compressed into one-line history and the synopsis. More turns means more uncached input tokens per turn. 1 restores the old behavior (only the last turn). Takes effect from the next turn.",
         summaryNote:
           "The model used to summarize the auto-generated “synopsis” (3rd tab on the right) in long playthroughs. A cheaper model lowers cost. The choice is saved instantly (applies from the next “New game”).",
         editorHeading: "AI-edit model",
@@ -1290,6 +1302,8 @@ export const messages = {
         editorUsing: "AI edits use “{name}” (applies from the next run)",
         summaryTimeoutSet: "Summary time limit set to {secs} s",
         summaryTimeoutDefault: "Summary time limit reset to the default (60 s)",
+        recentTurnsSet: "Passing the last {turns} passages verbatim (from the next turn)",
+        recentTurnsDefault: "Recent passages reset to the default (3)",
       },
     },
     contest: {

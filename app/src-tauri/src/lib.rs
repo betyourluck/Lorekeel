@@ -684,6 +684,13 @@ fn map_view(scenario: &Scenario, state: &GameState, history: &[TurnLog]) -> MapV
 // session (backend が握る可変の真実。sled のような排他資源ではないので manage 可)
 // =============================================================================
 
+impl GameSession {
+    /// 直前 1 ターンの語り (挿絵のプロンプト書き・エピローグ・セーブの `last_narration` が読む)。
+    fn last_narration(&self) -> &str {
+        self.recent_narrations.last().map(String::as_str).unwrap_or("")
+    }
+}
+
 struct GameSession {
     state: GameState,
     scenario: Scenario,
@@ -693,8 +700,9 @@ struct GameSession {
     pending_lore: Vec<MemoryFragment>,
     /// 直前ターンの技能判定の結果。次ターンの語りに還流する。
     pending_checks: Vec<CheckOutcome>,
-    /// 直前ターンの語り。次ターンに「続く情景」として渡し、既出描写の繰り返しを防ぐ (継続性)。
-    last_narration: String,
+    /// 直前 K ターンの語り (古い順・末尾が直前)。次ターンに「続く情景」として渡し、既出描写の
+    /// 繰り返しを防ぐ (継続性)。K は設定 (`LOREKEEL_RECENT_TURNS`、2026-09-13)。
+    recent_narrations: Vec<String>,
     /// 経緯ログ (chronicle)。GM の summary を蓄積し「これまでの経緯」として還流する (中期記憶)。
     history: Vec<TurnLog>,
     lang: Lang,
@@ -1237,7 +1245,7 @@ async fn generate_image(
         let req = harness::build_image_prompt_request(
             &sess.scenario,
             &sess.state,
-            &sess.last_narration,
+            sess.last_narration(),
             &config.user_prefix,
             direction.as_deref().unwrap_or_default(),
             style,
@@ -2426,6 +2434,39 @@ struct SummaryLlmConfigView {
     timeout_secs: u64,
 }
 
+/// 直前の語りを何ターン分そのまま GM に渡すか (`LOREKEEL_RECENT_TURNS`、2026-09-13)。
+/// **0 = 未設定 = harness の既定** ([`harness::RECENT_NARRATIONS_DEFAULT`] = 3)。設定「AIモデル」タブの初期値。
+#[tauri::command]
+fn get_recent_turns() -> u32 {
+    recent_turns_setting(harness::env_var("RECENT_TURNS").as_deref())
+}
+
+/// 設定表示用の解釈 (純関数): 未設定・空・不正は 0 (= 既定を選択中)、それ以外は**選んだ値をそのまま**。
+/// 実効値の解釈 (既定への丸め・上限) は harness の `parse_recent_turns` が持つ — 丸めた値を
+/// 見せると「保存したのに違う数字」に映るので、表示は選んだ値、効き方は harness、と分ける。
+fn recent_turns_setting(raw: Option<&str>) -> u32 {
+    raw.map(str::trim).filter(|s| !s.is_empty()).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0)
+}
+
+/// 直前 K ターン逐語の K を更新する。あらすじの待ち時間 (`set_summary_timeout`) と同じ流儀 —
+/// 独立した command・`0` は空を書いて harness の既定へ戻す・プロセス env にも即時反映
+/// (次のターンから効く: 下げた直後の受理ターンで古い分がリングから落ちる)。
+#[tauri::command]
+fn set_recent_turns(app: tauri::AppHandle, turns: u32) -> Result<(), String> {
+    let key = harness::env_name("RECENT_TURNS");
+    let v = if turns == 0 {
+        String::new()
+    } else {
+        turns.min(harness::RECENT_NARRATIONS_MAX as u32).to_string()
+    };
+    std::env::set_var(&key, &v);
+    let path = config_env_path(&app).ok_or_else(|| "app_data_dir を解決できない".to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("設定フォルダの作成に失敗: {e}"))?;
+    }
+    upsert_env(&path, &[(key, v)]).map_err(|e| format!(".env の保存に失敗: {e}"))
+}
+
 /// 現在のあらすじ要約用設定を返す。設定「AIモデル」タブの初期値。
 #[tauri::command]
 fn get_summary_llm_config() -> SummaryLlmConfigView {
@@ -3374,7 +3415,7 @@ async fn new_game(
         pending_lore: Vec::new(),
         pending_checks: Vec::new(),
         package_root: pkg_dir,
-        last_narration: String::new(),
+        recent_narrations: Vec::new(),
         history: Vec::new(),
         campaign,
         current_module,
@@ -3535,7 +3576,7 @@ async fn restore_session(
         pending_lore: save.pending_lore,
         pending_checks: save.pending_checks,
         package_root: pkg_dir,
-        last_narration: save.last_narration,
+        recent_narrations: harness::seed_recent_narrations(save.recent_narrations, &save.last_narration),
         history: save.history,
         campaign,
         current_module,
@@ -3575,7 +3616,8 @@ fn session_save_of(sess: &GameSession) -> SessionSave {
         state: sess.state.clone(),
         campaign_memory: sess.campaign_memory.clone(),
         history: sess.history.clone(),
-        last_narration: sess.last_narration.clone(),
+        last_narration: sess.last_narration().to_string(),
+        recent_narrations: sess.recent_narrations.clone(),
         pending_checks: sess.pending_checks.clone(),
         pending_lore: sess.pending_lore.clone(),
         facts: sess.facts.clone(),
@@ -4191,7 +4233,6 @@ async fn do_play_turn(
     // 前ターンの伏線・判定結果・語りを取り出して注入し、pending を空にする。
     let pending = std::mem::take(&mut sess.pending_lore);
     let pending_checks = std::mem::take(&mut sess.pending_checks);
-    let prev_narration = std::mem::take(&mut sess.last_narration);
     let outcome = run_turn(
         &sess.client,
         &mut sess.state,
@@ -4201,7 +4242,8 @@ async fn do_play_turn(
         sess.lang,
         &pending,
         &pending_checks,
-        &prev_narration,
+        // 借用のまま渡す (2026-09-13 まで `mem::take` していたため、却下ターンの次は継続文脈が空だった)。
+        &sess.recent_narrations,
         &sess.history,
         &sess.synopsis.entries,
         &sess.facts,
@@ -4231,7 +4273,11 @@ async fn do_play_turn(
             // ビートは GM が見ていない筋書きの出来事 — 継続文脈と経緯ログの両方へ併記する。
             let beat_texts: Vec<String> = resolved.iter().map(|b| b.narration.clone()).collect();
             // 次ターンの継続文脈に持ち越す (既出情景の繰り返し防止。ビート込み)。
-            sess.last_narration = carryover_narration(&narration, &beat_texts, &checks);
+            harness::push_recent_narration(
+                &mut sess.recent_narrations,
+                carryover_narration(&narration, &beat_texts, &checks),
+                harness::recent_turns_limit(),
+            );
             // 経緯ログに積む (GM の summary、無ければ narration 冒頭へ fallback。
             // tags/checks は engine 事実の機械タグ = retrieval の接地、spec 08-B)。
             sess.history.push(chronicle_entry(
@@ -4433,7 +4479,7 @@ async fn do_play_turn(
                 // 一緒に変わるのでキャッシュ影響は遷移時のみ)。
                 sess.client.set_excluded_ops(harness::excluded_check_ops(&sess.scenario));
                 // 新モジュール = 新しい情景。継続文脈・伏線・判定の持ち越しをリセット。
-                sess.last_narration = String::new();
+                sess.recent_narrations.clear();
                 sess.pending_lore.clear();
                 sess.pending_checks.clear();
                 // 経緯 (chronicle) は捨てない — 章を跨いで覚えるのが眼目。章替わりを刻む。
@@ -4505,7 +4551,7 @@ async fn do_play_turn(
                     goal,
                     &sess.synopsis.entries,
                     &sess.history,
-                    &sess.last_narration,
+                    sess.last_narration(),
                 );
                 let _ = app.emit("epilogue-writing", ());
                 match harness::generate_epilogue(&sess.client, &req).await {
@@ -4592,8 +4638,7 @@ async fn resolve_dice_decision(
     sess.sustained_cg = resolve_sustained_cg(sess.sustained_cg.clone(), &resolved);
     let beat_texts: Vec<String> = resolved.iter().map(|b| b.narration.clone()).collect();
     // 継続文脈: 直前の語りに決断の結末を継ぎ足す (判定結末文・ビートを含む)。
-    let base = std::mem::take(&mut sess.last_narration);
-    sess.last_narration = carryover_narration(&base, &beat_texts, std::slice::from_ref(&r.check));
+    harness::extend_last_narration(&mut sess.recent_narrations, &beat_texts, std::slice::from_ref(&r.check));
     // 経緯ログ: このターンの行に決断を併記する (中期記憶にも決断が残る)。
     if let Some(last) = sess.history.last_mut() {
         let what = if r.check.pushed {
@@ -4785,8 +4830,7 @@ async fn play_contest_round(
     // 決着: digest を GM の継続文脈 + 経緯ログへ (次ターンの語りの素)。
     let ended = r.ended.as_ref().map(|end| {
         let digest = harness::contest_digest(end);
-        let base = std::mem::take(&mut sess.last_narration);
-        sess.last_narration = carryover_narration(&base, std::slice::from_ref(&digest), &[]);
+        harness::extend_last_narration(&mut sess.recent_narrations, std::slice::from_ref(&digest), &[]);
         if let Some(h) = sess.history.last_mut() {
             h.summary.push_str(&format!("／{digest}"));
         }
@@ -4953,7 +4997,7 @@ async fn current_game_view(
         // 途中参加のゲストにも「前回までの語り」を出す (再開と同じ器 = 情景の接続)。
         resumed: Some(ResumeView {
             turn: sess.state.turn,
-            last_narration: normalize(&sess.last_narration),
+            last_narration: normalize(sess.last_narration()),
             warnings: Vec::new(),
         }),
         warnings: Vec::new(),
@@ -5036,6 +5080,8 @@ pub fn run() {
             get_editor_llm_config,
             set_editor_llm_config,
             set_summary_timeout,
+            get_recent_turns,
+            set_recent_turns,
             get_dev_mode,
             set_dev_mode,
             load_ui_settings,
@@ -5140,6 +5186,20 @@ mod tests {
         assert_eq!(v["media"].as_array().map(|a| a.len()), Some(1));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 【直前 K ターン逐語の設定 (2026-09-13)】表示用の解釈は「選んだ値をそのまま」、未設定は 0。
+    /// 実効値は harness 側 (既定 3・上限 20) — 同じ入力で二つの解釈が食い違わないことを対で固定。
+    #[test]
+    fn recent_turns_setting_shows_chosen_value_and_zero_when_unset() {
+        use super::recent_turns_setting;
+        assert_eq!(recent_turns_setting(None), 0);
+        assert_eq!(recent_turns_setting(Some("")), 0);
+        assert_eq!(recent_turns_setting(Some("x")), 0);
+        assert_eq!(recent_turns_setting(Some(" 5 ")), 5);
+        assert_eq!(harness::parse_recent_turns(Some(" 5 ")), 5);
+        assert_eq!(harness::parse_recent_turns(None), harness::RECENT_NARRATIONS_DEFAULT);
+        assert_eq!(harness::parse_recent_turns(Some("")), harness::RECENT_NARRATIONS_DEFAULT, "0 = 空 = 既定");
     }
 
     /// 【要約タイムアウトの独立性 (2026-09-01)】あらすじの待ち時間 (`SUMMARY_LLM_TIMEOUT_SECS`) を

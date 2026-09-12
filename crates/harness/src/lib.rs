@@ -90,7 +90,9 @@ pub use prompt::{
     SILENT_ACTION,
 };
 pub use turn::{
-    carryover_narration, chronicle_entry, contest_digest, excluded_check_ops, run_turn,
+    carryover_narration, chronicle_entry, contest_digest, excluded_check_ops, extend_last_narration,
+    parse_recent_turns, push_recent_narration, recent_turns_limit, run_turn, seed_recent_narrations,
+    RECENT_NARRATIONS_BUDGET, RECENT_NARRATIONS_DEFAULT, RECENT_NARRATIONS_MAX,
     ChronicleTags, RetryCause, TurnLog,
     TurnOutcome,
 };
@@ -188,7 +190,7 @@ mod tests {
         let mut s = fresh(&sc);
         let p = FlakyProposer { calls: Mutex::new(0) };
 
-        let outcome = run_turn(&p, &mut s, &sc, "話しかける", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[])
+        let outcome = run_turn(&p, &mut s, &sc, "話しかける", 3, Lang::Ja, &[], &[], &[], &[], &[], &[], &[])
             .await
             .unwrap();
         match outcome {
@@ -216,7 +218,7 @@ mod tests {
             value: true,
         }])]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], &[], &[], &[], &[], &[]).await.unwrap();
         match outcome {
             TurnOutcome::Accepted { attempts, .. } => assert_eq!(attempts, 1),
             other => panic!("受理されるべき: {other:?}"),
@@ -237,7 +239,7 @@ mod tests {
             delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]),
         ]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[], &[], &[], &[], &[], &[]).await.unwrap();
         match outcome {
             TurnOutcome::Accepted { attempts, .. } => assert_eq!(attempts, 2, "2回目で受理"),
             other => panic!("最終的に受理されるべき: {other:?}"),
@@ -257,7 +259,7 @@ mod tests {
             delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]),
         ]);
 
-        run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "鍵を探す", 3, Lang::Ja, &[], &[], &[], &[], &[], &[], &[]).await.unwrap();
 
         let second = p.seen_text(2);
         assert!(second.contains("却下"), "再生成プロンプトに却下の文脈があるはず");
@@ -278,7 +280,7 @@ mod tests {
             delta(vec![StateOp::AddItem { item: "rusty_key".into() }]), // 引き出し前で却下
         ]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "力ずくで脱出する", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "力ずくで脱出する", 3, Lang::Ja, &[], &[], &[], &[], &[], &[], &[]).await.unwrap();
         match outcome {
             TurnOutcome::Rejected { attempts, last_reasons } => {
                 assert_eq!(attempts, 3);
@@ -298,7 +300,7 @@ mod tests {
         let mut s = fresh(&sc); // seed=42, cursor=0
         let p = ScriptedProposer::new(vec![delta(vec![StateOp::RequestRoll { sides: 20, dc: 10 }])]);
 
-        let outcome = run_turn(&p, &mut s, &sc, "聞き耳を立てる", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[]).await.unwrap();
+        let outcome = run_turn(&p, &mut s, &sc, "聞き耳を立てる", 3, Lang::Ja, &[], &[], &[], &[], &[], &[], &[]).await.unwrap();
         match outcome {
             TurnOutcome::Accepted { rolls, .. } => {
                 assert_eq!(rolls.len(), 1);
@@ -370,7 +372,7 @@ mod tests {
             text: "丘の上の古い樫の木の下で、二人は小指を絡めて誓った。".into(),
         }];
 
-        run_turn(&p, &mut s, &sc, "暖炉を見つめる", 3, Lang::Ja, &lore, &[], "", &[], &[], &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "暖炉を見つめる", 3, Lang::Ja, &lore, &[], &[], &[], &[], &[], &[]).await.unwrap();
 
         let prompt_text = p.seen_text(1);
         assert!(prompt_text.contains("思い出された記憶"), "想起の見出しが prompt に載る");
@@ -390,12 +392,123 @@ mod tests {
         }])]);
         let prev = "夕日が差し込む教室。モカが振り向いて微笑んだ。";
 
-        run_turn(&p, &mut s, &sc, "話しかける", 3, Lang::Ja, &[], &[], prev, &[], &[], &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "話しかける", 3, Lang::Ja, &[], &[], &[prev.to_string()], &[], &[], &[], &[]).await.unwrap();
 
         let prompt_text = p.seen_text(1);
         assert!(prompt_text.contains("直前までの語り"), "継続の見出しが prompt に載る");
         assert!(prompt_text.contains("モカが振り向いて微笑んだ"), "直前の語り本文が注入される");
         assert!(prompt_text.contains("繰り返さない") || prompt_text.contains("再び描写しない"), "繰り返し禁止を指示する");
+    }
+
+    /// 【直前 K ターン逐語 (2026-09-13)】K=1 の注入文は従来 (直前 1 ターンだけ) と 1 バイトも
+    /// 変わらない。複数なら古い順に並び、最後が「直前」で、逐語の細部を確定事実として扱わせる。
+    #[test]
+    fn recent_narrations_note_is_byte_stable_for_one_and_labels_many() {
+        let one = ["夕日が差し込む教室。".to_string()];
+        let legacy = format!(
+            "\n\n# 直前までの語り（情景はここから継続する。繰り返さないこと）\n\
+            以下は直前のターンであなたが語った内容です。**既に確立した静的な情景（時刻・天候・\
+            部屋の様子・既に済んだ登場・挨拶・相手の初対面の驚きなど）を再び描写しないこと**。\
+            同じ説明を二度せず、この続きとして「変化・反応・新しい展開」だけを描いてください。\n---\n{}\n---\n",
+            "夕日が差し込む教室。"
+        );
+        assert_eq!(prompt::recent_narrations_note(&one), legacy, "K=1 は従来と byte 一致");
+        assert_eq!(prompt::recent_narrations_note(&[]), "", "無ければ空");
+        assert_eq!(prompt::recent_narrations_note(&["  ".to_string()]), "", "空白だけも空");
+
+        let three: Vec<String> = ["一日目。", "二日目。", "三日目。"].iter().map(|s| s.to_string()).collect();
+        let note = prompt::recent_narrations_note(&three);
+        let a = note.find("（3 ターン前）").expect("最古のラベル");
+        let b = note.find("（2 ターン前）").expect("中のラベル");
+        let c = note.find("（直前）").expect("直前のラベル");
+        assert!(a < b && b < c, "古い順に並ぶ: {note}");
+        assert!(note.find("一日目。").unwrap() < note.find("三日目。").unwrap());
+        assert!(note.contains("直前の 3 ターン"), "何ターン分かを告げる");
+        assert!(note.contains("細部は確定した出来事"), "逐語の細部を確定事実として扱わせる");
+    }
+
+    /// リングは件数上限と字数予算で古い方から落ち、最新の 1 本は予算を越えても残る。
+    /// K の解釈は 未設定/0/不正 = 既定 3、上限 20 で丸め。継ぎ足しは末尾の 1 本へ。
+    #[test]
+    fn recent_narrations_ring_respects_limit_budget_and_env_parsing() {
+        let mut ring = Vec::new();
+        for i in 1..=5 {
+            push_recent_narration(&mut ring, format!("T{i}"), 3);
+        }
+        assert_eq!(ring, vec!["T3", "T4", "T5"], "件数上限で古い方から落ちる");
+        push_recent_narration(&mut ring, String::new(), 3);
+        assert_eq!(ring.len(), 3, "空の語りは積まない");
+        let long = "あ".repeat(RECENT_NARRATIONS_BUDGET);
+        push_recent_narration(&mut ring, long.clone(), 3);
+        assert_eq!(ring, vec![long], "予算を越えた分は古い方から落ちる");
+        let longer = "い".repeat(RECENT_NARRATIONS_BUDGET + 1);
+        push_recent_narration(&mut ring, longer.clone(), 3);
+        assert_eq!(ring, vec![longer], "最新の 1 本は予算を越えても必ず残る");
+
+        assert_eq!(parse_recent_turns(None), RECENT_NARRATIONS_DEFAULT);
+        assert_eq!(parse_recent_turns(Some("")), RECENT_NARRATIONS_DEFAULT);
+        assert_eq!(parse_recent_turns(Some("0")), RECENT_NARRATIONS_DEFAULT);
+        assert_eq!(parse_recent_turns(Some("abc")), RECENT_NARRATIONS_DEFAULT);
+        assert_eq!(parse_recent_turns(Some(" 5 ")), 5);
+        assert_eq!(parse_recent_turns(Some("1")), 1, "1 = 従来挙動");
+        assert_eq!(parse_recent_turns(Some("999")), RECENT_NARRATIONS_MAX);
+
+        let mut ring = vec!["語り".to_string()];
+        extend_last_narration(&mut ring, &["結末".to_string()], &[]);
+        assert_eq!(ring.len(), 1);
+        assert!(ring[0].starts_with("語り") && ring[0].contains("結末"), "末尾の 1 本へ継ぎ足す: {ring:?}");
+        let mut empty = Vec::new();
+        extend_last_narration(&mut empty, &["結末".to_string()], &[]);
+        assert_eq!(empty.len(), 1, "空なら新しく 1 本になる");
+
+        assert_eq!(seed_recent_narrations(vec![], "霧"), vec!["霧".to_string()], "旧セーブは last 1 本");
+        assert_eq!(seed_recent_narrations(vec![], "  "), Vec::<String>::new());
+        assert_eq!(seed_recent_narrations(vec!["一".into(), "二".into()], "二"), vec!["一".to_string(), "二".to_string()]);
+    }
+
+    /// 2 ターン分を渡すと prompt に両方が載り、順序とラベルが保たれる (run_turn 経路)。
+    #[tokio::test]
+    async fn two_recent_narrations_are_both_woven_into_prompt() {
+        let sc = scenario();
+        let mut s = fresh(&sc);
+        let p = ScriptedProposer::new(vec![delta(vec![])]);
+        let prevs = vec!["一日目、モカと出会った。".to_string(), "二日目、約束を交わした。".to_string()];
+        run_turn(&p, &mut s, &sc, "話しかける", 3, Lang::Ja, &[], &[], &prevs, &[], &[], &[], &[]).await.unwrap();
+        let text = p.seen_text(1);
+        assert!(text.contains("一日目、モカと出会った。") && text.contains("二日目、約束を交わした。"), "{text}");
+        assert!(text.find("（2 ターン前）").unwrap() < text.find("（直前）").unwrap(), "{text}");
+    }
+
+    /// 欄の無い旧セーブ YAML はそのまま読め、`last_narration` から 1 本 seed される。
+    #[test]
+    fn old_save_without_recent_narrations_seeds_from_last_narration() {
+        let sc = scenario();
+        let save = SessionSave {
+            version: SAVE_VERSION,
+            content: SavedContent::Package { path: "packages/escape".into() },
+            package_version: String::new(),
+            module: None,
+            state: fresh(&sc),
+            campaign_memory: CampaignMemory::new(),
+            history: vec![],
+            last_narration: "霧が窓を這う。".into(),
+            recent_narrations: vec![],
+            pending_checks: vec![],
+            pending_lore: vec![],
+            sustained_cg: None,
+            facts: vec![],
+            synopsis: Synopsis::default(),
+        };
+        let yaml: String = serde_yaml::to_string(&save)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.starts_with("recent_narrations"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert!(!yaml.contains("recent_narrations"), "旧形式を再現");
+        let loaded: SessionSave = serde_yaml::from_str(&yaml).expect("旧セーブが読める");
+        assert!(loaded.recent_narrations.is_empty());
+        assert_eq!(loaded.recent_narrations_seeded(), vec!["霧が窓を這う。".to_string()]);
     }
 
     /// 【spec 20 既成事実の注入】ユーザーが宣言した設定が user 可変メッセージの state_brief の
@@ -414,7 +527,7 @@ mod tests {
             score: 4,
         }];
 
-        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &facts, &[])
+        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], &[], &[], &[], &facts, &[])
             .await
             .unwrap();
 
@@ -429,7 +542,7 @@ mod tests {
         // 空なら節を出さない (トークンを使わない)。
         let p2 = ScriptedProposer::new(vec![delta(vec![])]);
         let mut s2 = fresh(&sc);
-        run_turn(&p2, &mut s2, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[])
+        run_turn(&p2, &mut s2, &sc, "見回す", 3, Lang::Ja, &[], &[], &[], &[], &[], &[], &[])
             .await
             .unwrap();
         assert!(!p2.seen_text(1).contains("# 既成事実"));
@@ -516,7 +629,7 @@ mod tests {
         // 多人数: system に接地ブロックが載る。
         let p = ScriptedProposer::new(vec![delta(vec![])]);
         let mut s = fresh(&sc);
-        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &party)
+        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], &[], &[], &[], &[], &party)
             .await
             .unwrap();
         let system = p.seen_messages(1)[0].content.clone();
@@ -529,7 +642,7 @@ mod tests {
         // 単騎: 従来の system と byte 一致 (party が空なら何も足さない)。
         let p2 = ScriptedProposer::new(vec![delta(vec![])]);
         let mut s2 = fresh(&sc);
-        run_turn(&p2, &mut s2, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[])
+        run_turn(&p2, &mut s2, &sc, "見回す", 3, Lang::Ja, &[], &[], &[], &[], &[], &[], &[])
             .await
             .unwrap();
         assert_eq!(
@@ -574,7 +687,7 @@ mod tests {
             key: "好感度".into(),
             delta: 2,
         }])]);
-        let outcome = run_turn(&p, &mut s, &sc, &action, 3, Lang::Ja, &[], &[], "", &[], &[], &[], &members)
+        let outcome = run_turn(&p, &mut s, &sc, &action, 3, Lang::Ja, &[], &[], &[], &[], &[], &[], &members)
             .await
             .unwrap();
         assert!(outcome.is_accepted(), "帰属の正しい束は一発受理");
@@ -612,7 +725,7 @@ mod tests {
             },
         ];
 
-        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &history, &[], &[], &[])
+        let outcome = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], &[], &history, &[], &[], &[])
             .await
             .unwrap();
 
@@ -653,7 +766,7 @@ mod tests {
             ..Default::default()
         }];
 
-        run_turn(&p, &mut s, &sc, "扉を調べる", 3, Lang::Ja, &[], &[], "", &history, &synopsis, &[], &[])
+        run_turn(&p, &mut s, &sc, "扉を調べる", 3, Lang::Ja, &[], &[], &[], &history, &synopsis, &[], &[])
             .await
             .unwrap();
 
@@ -677,7 +790,7 @@ mod tests {
             key: "drawer_opened".into(),
             value: true,
         }])]);
-        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], &[], &[], &[], &[], &[]).await.unwrap();
         assert!(!p.seen_text(1).contains("# これまでのあらすじ"), "あらすじ無しなら注入しない");
         let system_count = p
             .seen_messages(1)
@@ -705,7 +818,7 @@ mod tests {
             title: "村の章".into(),
             text: "旅人は村に着き、長老から祠の封印の話を聞いた。".into(),
         }];
-        run_turn(&p, &mut s, &sc, "扉を調べる", 3, Lang::Ja, &[], &[], "", &[], &synopsis, &[], &[])
+        run_turn(&p, &mut s, &sc, "扉を調べる", 3, Lang::Ja, &[], &[], &[], &[], &synopsis, &[], &[])
             .await
             .unwrap();
 
@@ -734,7 +847,7 @@ mod tests {
             key: "drawer_opened".into(),
             value: true,
         }])]);
-        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], &[], &[], &[], &[], &[]).await.unwrap();
         // GM_SYSTEM は summary の説明で『これまでの経緯』に言及するので、注入見出し (#) で判定する。
         assert!(!p.seen_text(1).contains("# これまでの経緯"), "経緯なしなら注入しない");
     }
@@ -884,7 +997,7 @@ mod tests {
         let sc = scenario();
         let mut state = fresh(&sc);
         let p = FlakyProposer { calls: Mutex::new(0) };
-        let out = run_turn(&p, &mut state, &sc, "調べる", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[])
+        let out = run_turn(&p, &mut state, &sc, "調べる", 3, Lang::Ja, &[], &[], &[], &[], &[], &[], &[])
             .await
             .expect("パース失敗はエラーでなく再生成で回復する");
         match out {
@@ -1013,6 +1126,7 @@ mod tests {
                 ..Default::default()
             }],
             last_narration: "霧が窓を這う。".into(),
+            recent_narrations: vec![],
             pending_checks: vec![],
             pending_lore: vec![],
             sustained_cg: None,
@@ -1070,6 +1184,7 @@ mod tests {
             campaign_memory: CampaignMemory::new(),
             history: vec![],
             last_narration: String::new(),
+            recent_narrations: vec![],
             pending_checks: vec![],
             pending_lore: vec![],
             sustained_cg: None,
@@ -1282,7 +1397,7 @@ mod tests {
             delta(vec![StateOp::SetFlag { key: "drawer_opened".into(), value: true }]),
             delta(vec![StateOp::AddItem { item: "rusty_key".into() }]),
         ]);
-        let o1 = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[])
+        let o1 = run_turn(&p, &mut s, &sc, "引き出しを調べる", 3, Lang::Ja, &[], &[], &[], &[], &[], &[], &[])
             .await
             .unwrap();
         match o1 {
@@ -1293,7 +1408,7 @@ mod tests {
             }
             _ => panic!("受理されるはず"),
         }
-        let o2 = run_turn(&p, &mut s, &sc, "鍵を取る", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[])
+        let o2 = run_turn(&p, &mut s, &sc, "鍵を取る", 3, Lang::Ja, &[], &[], &[], &[], &[], &[], &[])
             .await
             .unwrap();
         match o2 {
@@ -1367,7 +1482,7 @@ mod tests {
             key: "drawer_opened".into(),
             value: true,
         }])]);
-        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "見回す", 3, Lang::Ja, &[], &[], &[], &[], &[], &[], &[]).await.unwrap();
         assert!(!p.seen_text(1).contains("直前までの語り"), "直前の語り無しなら注入しない");
     }
 
@@ -1381,7 +1496,7 @@ mod tests {
             value: true,
         }])]);
 
-        run_turn(&p, &mut s, &sc, "周囲を見回す", 3, Lang::Ja, &[], &[], "", &[], &[], &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "周囲を見回す", 3, Lang::Ja, &[], &[], &[], &[], &[], &[], &[]).await.unwrap();
         assert!(!p.seen_text(1).contains("思い出された記憶"), "伏線無しなら注入しない");
     }
 
@@ -1411,7 +1526,7 @@ mod tests {
             degree: None, count: 1, times: 1, pushed: false, spent: 0, pending: false,
         }];
 
-        run_turn(&p, &mut s, &sc, "扉をこじ開ける", 3, Lang::Ja, &[], &checks, "", &[], &[], &[], &[]).await.unwrap();
+        run_turn(&p, &mut s, &sc, "扉をこじ開ける", 3, Lang::Ja, &[], &checks, &[], &[], &[], &[], &[]).await.unwrap();
         let prompt_text = p.seen_text(1);
         assert!(prompt_text.contains("直前の判定結果"), "判定結果の見出しが載る");
         assert!(prompt_text.contains("成功"), "成否が載る");

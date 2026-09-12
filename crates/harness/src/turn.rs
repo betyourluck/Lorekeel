@@ -142,6 +142,72 @@ pub fn excluded_check_ops(scenario: &Scenario) -> Vec<String> {
     }
 }
 
+/// 直前の語りを何ターン分そのまま GM に渡すかの既定 (`LOREKEEL_RECENT_TURNS` 未設定時)。
+/// 1 = 2026-06-24 以来の従来挙動 (直前 1 ターンだけ)。**既定を 3 にした根拠**: GM は毎ターン
+/// messages を組み立て直すので、逐語で持つのはこの層だけ — 要約 1 行 (chronicle) に書かれ
+/// なかった台詞・約束の細部は、ここに無ければその場で失われる (2026-09-13 ユーザー報告
+/// 「矛盾しない GM が Web 版より忘れる」の主因)。代償は可変側 (キャッシュに乗らない) の
+/// 入力トークンで、1 本 300〜800 字 = 3 本で 1〜2k トークン程度。
+pub const RECENT_NARRATIONS_DEFAULT: usize = 3;
+/// 上限。これ以上は chronicle / synopsis (要約) の役割で、逐語で運ぶ層ではない。
+pub const RECENT_NARRATIONS_MAX: usize = 20;
+/// 逐語で運ぶ合計の字数予算。K を大きくしても可変側の課金がここで頭打ちになる
+/// (最新の 1 本は予算を越えても必ず残す)。
+pub const RECENT_NARRATIONS_BUDGET: usize = 8000;
+
+/// `LOREKEEL_RECENT_TURNS` の解釈 (純関数)。未設定・空・不正・0 は既定、上限で丸める。
+pub fn parse_recent_turns(raw: Option<&str>) -> usize {
+    match raw.map(str::trim).filter(|s| !s.is_empty()).and_then(|s| s.parse::<usize>().ok()) {
+        Some(0) | None => RECENT_NARRATIONS_DEFAULT,
+        Some(n) => n.min(RECENT_NARRATIONS_MAX),
+    }
+}
+
+/// 実効 K。env から読む (app は app_data/.env、CLI は repo .env)。
+pub fn recent_turns_limit() -> usize {
+    parse_recent_turns(crate::env_var("RECENT_TURNS").as_deref())
+}
+
+/// 語りのリングに 1 本積む (古い順・末尾が直前)。件数 `limit` と字数予算 [`RECENT_NARRATIONS_BUDGET`]
+/// で古い方から落とす。空の語りは積まない。
+pub fn push_recent_narration(ring: &mut Vec<String>, text: String, limit: usize) {
+    if text.trim().is_empty() {
+        return;
+    }
+    ring.push(text);
+    let limit = limit.max(1);
+    while ring.len() > limit {
+        ring.remove(0);
+    }
+    while ring.len() > 1
+        && ring.iter().map(|s| s.chars().count()).sum::<usize>() > RECENT_NARRATIONS_BUDGET
+    {
+        ring.remove(0);
+    }
+}
+
+/// 直前の語りの末尾に、後から確定した出来事 (決断の結末・対決の digest) を継ぎ足す —
+/// [`carryover_narration`] を最後の 1 本へ適用する。空なら新しく 1 本になる。
+pub fn extend_last_narration(ring: &mut Vec<String>, beats: &[String], checks: &[CheckOutcome]) {
+    let base = ring.pop().unwrap_or_default();
+    let merged = carryover_narration(&base, beats, checks);
+    if !merged.trim().is_empty() {
+        ring.push(merged);
+    }
+}
+
+/// 再開時に GM へ渡す直前の語りの列: 新欄 `recent_narrations` があればそれ、無ければ
+/// (2026-09-13 より前のセーブ) `last_narration` 1 本だけ。
+pub fn seed_recent_narrations(recent: Vec<String>, last: &str) -> Vec<String> {
+    if !recent.is_empty() {
+        recent
+    } else if last.trim().is_empty() {
+        Vec::new()
+    } else {
+        vec![last.to_string()]
+    }
+}
+
 /// 次ターンへ持ち越す「直前までの語り」を組む。GM の narration に、**GM が見ていない**
 /// authored テキスト 2 種を連結する: 発火ビート (筋書きの出来事、#27 のトリガー版) と
 /// **判定の結末文** (`CheckOutcome.narration`、#41) — 出目は apply 後に確定するので GM の
@@ -304,7 +370,7 @@ pub enum RetryCause {
 /// 今回の語りに「思い出す様子」として織り込ませるため prompt に注入する (空なら注入しない)。
 /// `recent_checks` は直前ターンの技能判定の結果。出目は apply 後に確定するので同一ターンの
 /// narration に間に合わない → 次ターンの prompt に還流し、GM に結果へ沿って語らせる。
-/// `recent_narration` は直前ターンの語り。継続文脈として渡し、既出情景の繰り返しを防ぐ
+/// `recent_narrations` は直前 K ターンの語り (古い順・末尾が直前。K は呼び出し側が [`recent_turns_limit`] で決める。2026-09-13 までは直前 1 ターンだけだった)。継続文脈として渡し、既出情景の繰り返しを防ぐ
 /// (毎ターン messages を新規構築するので LLM は自分の直前の語りを記憶していない)。
 /// `history` は経緯ログ (chronicle)。過去ターンの 1 行要約列を「これまでの経緯」として
 /// 注入し、GM が数ターン前の経過を保持する (recent_narration の中期記憶版)。
@@ -325,7 +391,7 @@ pub async fn run_turn<P: DeltaProposer>(
     lang: Lang,
     recalled_lore: &[MemoryFragment],
     recent_checks: &[CheckOutcome],
-    recent_narration: &str,
+    recent_narrations: &[String],
     history: &[TurnLog],
     synopsis: &[crate::SynopsisEntry],
     facts: &[crate::FactEntry],
@@ -333,7 +399,7 @@ pub async fn run_turn<P: DeltaProposer>(
 ) -> Result<TurnOutcome, HarnessError> {
     // 盤面と現在状態を毎ターン新規に提示する (state は正本の唯一の真実)。
     // history=過去ターンの経緯、recalled_lore=思い出された伏線、recent_checks=直前判定の結果、
-    // recent_narration=直前の語り (継続文脈、繰り返し禁止) を語りに還流する。
+    // recent_narrations=直前 K ターンの語り (継続文脈、繰り返し禁止) を語りに還流する。
     let mut system = prompt::gm_system_prompt(scenario, prompt::dev_mode_enabled());
     // 多人数接地は最初の system ブロックの**末尾**に足す (前方の安定プレフィックスを
     // 動かさない。party はセッション不変なのでこのブロック自体もセッション内で安定)。
@@ -378,7 +444,7 @@ pub async fn run_turn<P: DeltaProposer>(
         ),
         prompt::check_outcome_note(recent_checks),
         prompt::recalled_lore_note(recalled_lore),
-        prompt::recent_narration_note(recent_narration),
+        prompt::recent_narrations_note(recent_narrations),
         player_action
     )));
 
