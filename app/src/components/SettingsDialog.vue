@@ -29,6 +29,18 @@ import {
 } from "../stores/game";
 import * as tts from "../tts";
 import {
+  costOf,
+  formatTokens,
+  formatUsd,
+  imageTokensLabel,
+  parsePricing,
+  pricingFor,
+  type CostView,
+  type Pricing,
+  type RoleUsage,
+  type UsageSnapshot,
+} from "../usage";
+import {
   currentSlot,
   DEFAULT_BASE_URL,
   DEFAULT_MODEL,
@@ -348,6 +360,60 @@ const llm = ref<LlmConfigView>({
 const llmStatus = ref("");
 /** 保存時に backend (`LlmConfig::warnings`) が返す組み合わせの警告。 */
 const llmWarnings = ref<string[]>([]);
+// spec 30 Phase C: 単価 (登録モデルの欄。.env には書かない)。3 欄揃ったときだけ Pricing になる。
+const pricingForm = ref({ input: "", cacheRead: "", output: "" });
+function pricingToForm(p?: Pricing): { input: string; cacheRead: string; output: string } {
+  return p
+    ? { input: String(p.inputPerMtokUsd), cacheRead: String(p.cacheReadPerMtokUsd), output: String(p.outputPerMtokUsd) }
+    : { input: "", cacheRead: "", output: "" };
+}
+// spec 30 Phase C: このセッションの利用量 (役割別・画像・合計)。開いたときと「更新」で取り直す。
+const usage = ref<UsageSnapshot | null>(null);
+async function loadUsage() {
+  try {
+    usage.value = await invoke<UsageSnapshot>("usage_snapshot");
+  } catch {
+    usage.value = null;
+  }
+}
+const USAGE_ROLES = ["gm", "summary", "editor", "image_prompt", "illustration"];
+function roleLabel(role: string): string {
+  return USAGE_ROLES.includes(role) ? t(`settings.usage.roles.${role}`) : role;
+}
+function costText(c: CostView): string {
+  switch (c.kind) {
+    case "reported":
+      return formatUsd(c.usd);
+    case "partial":
+      return `${formatUsd(c.usd)} (${t("settings.usage.partial", { reported: c.reported, requests: c.requests })})`;
+    case "estimated":
+      return `≈ ${formatUsd(c.usd)}`;
+    default:
+      return "-";
+  }
+}
+function costLabel(r: RoleUsage): string {
+  return costText(costOf(r.ledger, pricingFor(r.model_id, profiles.value)));
+}
+// 合計の金額: 出せる役割だけ足す。出せない役割が 1 つでもあれば「≥」で下限であることを示す
+// (見積もれない分を 0 と見せると、合計が本当の額より小さいのに確定値に見える)。
+function totalCostLabel(): string {
+  if (!usage.value) return "-";
+  let sum = 0;
+  let any = false;
+  let missing = false;
+  for (const r of usage.value.llm) {
+    const c = costOf(r.ledger, pricingFor(r.model_id, profiles.value));
+    if (c.kind === "none") {
+      missing = true;
+      continue;
+    }
+    sum += c.usd;
+    any = true;
+  }
+  if (!any) return "-";
+  return `${missing ? "≥ " : "≈ "}${formatUsd(sum)}`;
+}
 async function loadLlm() {
   try {
     llm.value = await invoke<LlmConfigView>("get_llm_config");
@@ -369,6 +435,7 @@ const draftName = ref("");
 function syncSelectionToConfig() {
   const hit = profiles.value.find((p) => profileMatchesConfig(p, llm.value));
   selectedProfileId.value = hit ? hit.id : "";
+  pricingForm.value = pricingToForm(hit?.pricing);
 }
 
 // コンボで選んだら、下のフォームへ即反映する (表示のみ・.env には書かない)。
@@ -384,6 +451,7 @@ function onSelectProfile() {
     max_tokens: p.maxTokens,
   };
   llmWarnings.value = []; // 表示を替えただけ = まだ書いていないので前の警告は当たらない
+  pricingForm.value = pricingToForm(p.pricing);
   llmStatus.value = t("settings.status.profileShowing", { name: p.name });
 }
 
@@ -411,6 +479,7 @@ function saveDraft() {
     useTools: llm.value.use_tools,
     effort: llm.value.effort.trim(),
     maxTokens: llm.value.max_tokens.trim(),
+    pricing: parsePricing(pricingForm.value),
   };
   profiles.value = [...profiles.value, profile];
   saveAiProfiles(profiles.value);
@@ -607,6 +676,7 @@ async function saveLlmAndProfile() {
     useTools: llm.value.use_tools,
     effort: llm.value.effort.trim(),
     maxTokens: llm.value.max_tokens.trim(),
+    pricing: parsePricing(pricingForm.value),
   };
   profiles.value = profiles.value.map((x) => (x.id === p.id ? updated : x));
   saveAiProfiles(profiles.value);
@@ -627,6 +697,7 @@ onMounted(async () => {
   void loadImageKeys();
   void loadSummaryTimeout();
   void loadRecentTurns();
+  void loadUsage();
   void loadEditorProfile();
   void refreshSheets();
   game.refreshDevMode();
@@ -1474,6 +1545,27 @@ onMounted(async () => {
             <p class="text-parchment/40 text-xs -mt-1">
               {{ t("settings.model.effortNote") }}
             </p>
+            <!-- 単価 (spec 30 Phase C)。**登録モデルの欄** (.env には書かない)。3 欄揃ったときだけ
+                 利用量の見積もりに使う。既定値は無い (間違った金額は無いより悪い)。 -->
+            <p class="text-parchment/70 text-sm pt-1">{{ t("settings.model.pricingHeading") }}</p>
+            <div class="grid grid-cols-3 gap-2">
+              <label class="block text-xs text-parchment/60">
+                {{ t("settings.model.pricingInput") }}
+                <input v-model="pricingForm.input" inputmode="decimal" placeholder="3.00"
+                  class="mt-1 block w-full min-w-0 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none" />
+              </label>
+              <label class="block text-xs text-parchment/60">
+                {{ t("settings.model.pricingCacheRead") }}
+                <input v-model="pricingForm.cacheRead" inputmode="decimal" placeholder="0.30"
+                  class="mt-1 block w-full min-w-0 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none" />
+              </label>
+              <label class="block text-xs text-parchment/60">
+                {{ t("settings.model.pricingOutput") }}
+                <input v-model="pricingForm.output" inputmode="decimal" placeholder="15.00"
+                  class="mt-1 block w-full min-w-0 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none" />
+              </label>
+            </div>
+            <p class="text-parchment/40 text-xs -mt-1">{{ t("settings.model.pricingNote") }}</p>
             <p v-for="(w, i) in llmWarnings" :key="i" class="text-warn/90 text-xs">⚠ {{ w }}</p>
             <!-- 保存は 2 種類 (2026-08-26): .env だけ / .env と登録モデルの両方。
                  後者は選択中の登録が無ければ押せない (書き換える先が無い)。 -->
@@ -1540,6 +1632,63 @@ onMounted(async () => {
                 {{ t("settings.model.recentTurnsNote") }}
               </p>
               <span v-if="summaryStatus" class="text-xs text-parchment/60">{{ summaryStatus }}</span>
+            </div>
+
+            <!-- 利用量 (spec 30 Phase C)。このセッションの役割別累計・画像・合計。会話ログには出さない。 -->
+            <div class="pt-3 border-t border-ash/60 space-y-2">
+              <div class="flex items-center gap-3">
+                <h4 class="text-parchment font-bold text-sm">{{ t("settings.usage.heading") }}</h4>
+                <button class="text-xs text-parchment/60 hover:text-parchment underline" @click="loadUsage">
+                  {{ t("settings.usage.reload") }}
+                </button>
+              </div>
+              <p v-if="!usage || (usage.total.requests === 0 && usage.image.requests === 0)" class="text-parchment/50 text-xs">
+                {{ t("settings.usage.none") }}
+              </p>
+              <div v-else class="overflow-x-auto">
+                <table class="text-xs text-parchment/80 w-full whitespace-nowrap">
+                  <thead>
+                    <tr class="text-parchment/50">
+                      <th class="text-left font-normal pr-2">{{ t("settings.usage.role") }}</th>
+                      <th class="text-left font-normal pr-2">{{ t("settings.usage.model") }}</th>
+                      <th class="text-right font-normal pr-2">{{ t("settings.usage.requests") }}</th>
+                      <th class="text-right font-normal pr-2">{{ t("settings.usage.prompt") }}</th>
+                      <th class="text-right font-normal pr-2">{{ t("settings.usage.cacheRead") }}</th>
+                      <th class="text-right font-normal pr-2">{{ t("settings.usage.completion") }}</th>
+                      <th class="text-right font-normal">{{ t("settings.usage.cost") }}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="r in usage.llm" :key="r.role">
+                      <td class="pr-2">{{ roleLabel(r.role) }}</td>
+                      <td class="pr-2 max-w-[10rem] truncate">{{ r.model_id }}</td>
+                      <td class="text-right pr-2">{{ r.ledger.requests }}</td>
+                      <td class="text-right pr-2">{{ formatTokens(r.ledger.prompt_tokens) }}</td>
+                      <td class="text-right pr-2">{{ formatTokens(r.ledger.cache_read_tokens) }}</td>
+                      <td class="text-right pr-2">{{ formatTokens(r.ledger.completion_tokens) }}</td>
+                      <td class="text-right">{{ costLabel(r) }}</td>
+                    </tr>
+                    <tr v-if="usage.image.requests > 0">
+                      <td class="pr-2">{{ roleLabel("illustration") }}</td>
+                      <td class="pr-2"></td>
+                      <td class="text-right pr-2">{{ t("settings.usage.imageCount", { count: usage.image.count }) }}</td>
+                      <td class="text-right pr-2" colspan="2">{{ imageTokensLabel(usage.image) }}</td>
+                      <td class="text-right pr-2">{{ usage.image.elapsed_sec.toFixed(1) }}s</td>
+                      <td class="text-right">-</td>
+                    </tr>
+                    <tr class="text-parchment font-bold border-t border-ash/60">
+                      <td class="pr-2">{{ t("settings.usage.total") }}</td>
+                      <td></td>
+                      <td class="text-right pr-2">{{ usage.total.requests }}</td>
+                      <td class="text-right pr-2">{{ formatTokens(usage.total.prompt_tokens) }}</td>
+                      <td class="text-right pr-2">{{ formatTokens(usage.total.cache_read_tokens) }}</td>
+                      <td class="text-right pr-2">{{ formatTokens(usage.total.completion_tokens) }}</td>
+                      <td class="text-right">{{ totalCostLabel() }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p class="text-parchment/40 text-xs">{{ t("settings.usage.note") }}</p>
             </div>
 
             <!-- AI 編集用モデル (spec 29)。編集モードの ✨ と `play edit` が使う。ツール呼び出しが要る。 -->

@@ -1,8 +1,8 @@
 # spec 30: 利用量の計器 — トークンと枚数を役割別に数え、価格はユーザーが持ち込む
 
 **Status**: rev2（2026-09-13 起草 → 4 点はユーザー裁定で凍結 → Phase A 実装 → **同日査読 2 本
-（矛盾 9 + 6）を反映 = rev2、Phase A のコードも rev2 に追従** → ユーザー承認 → **✅Phase B（同日）**。
-残 = C 表示・価格・jsonl / D 較正）。
+（矛盾 9 + 6）を反映 = rev2、Phase A のコードも rev2 に追従** → ユーザー承認 → **✅Phase B（同日）** → **✅Phase C（同日）**。
+残 = D 較正（実プレイ 1 セッションとダッシュボードの突合）+ GUI 目視（ユーザー実機）。
 査読の反映は末尾「査読の反映」節に凍結。
 
 ## 動機（ユーザーの言葉から）
@@ -117,7 +117,24 @@ OpenAI / Gemini = 往復、ComfyUI = `/prompt` 発行〜`/view` 取得（参照�
 挿絵の**プロンプト書き**は LLM 側で `role: image_prompt` として A で数える（画像とは別費目 =
 動画素材の Gemini と挿絵の Gemini が割れる）。
 
-### C. 表示・価格・jsonl（Phase C）
+### C. 表示・価格・jsonl（✅Phase C、2026-09-13）
+
+**実装で 1 点だけ設計を動かした**: editor と image_prompt の client は**呼び出しごとに生成・破棄**される
+ので、client 内の `LlmLedger` だけでは役割別累計が消える。ゆえに **app の `UsageState` を sink そのもの**
+にし（`UsageState::sink()` が `Arc<UsageInner>` を掴む closure を返す）、全イベントをここで①役割別
+`BTreeMap<role, RoleUsage{model_id, ledger}>` に累計 ②jsonl へ追記する。client 内の ledger は GM の
+スナップショットとして残る（`usage_ledger()`）。合計は snapshot 時に全役割を `absorb`。
+`usage_snapshot` command → `UsageSnapshotView { llm: [{role, model_id, ledger}], total, image }`。
+jsonl は `append_usage_line`（`create_dir_all` → append open → 1 行、時刻はここで打つ）、失敗は
+stderr（計器の失敗でプレイを止めない）。置き場は setup で `app_data/logs/usage.jsonl` を固定。
+配線 = gm / summary（new_game と restore_session の 2 箇所、同じ 1 本を共有）/ editor / image_prompt。
+frontend = `usage.ts`（純関数: `costOf` / `parsePricing` / `readPricing` / `pricingFor` / `formatUsd` /
+`imageTokensLabel`、vitest 10 本）/ `aiModelProfiles[].pricing?`（`readPricing` で検査、部分は捨てる）/
+設定 > AIモデル に単価 3 欄（登録モデルの欄。「保存 + 登録モデルを更新」と新規登録で保存、.env には
+書かない）と「利用量（このセッション）」の表（役割別・画像行・合計。合計の金額は出せる役割だけ足し、
+出せない役割があれば `≥` で下限と示す）/ タイトルバーのバッジ hover に合計（mouseenter で取り直す）。
+未決 1 の暫定 = `formatUsd`: 0 は `$0`、1e-4 未満は `< $0.0001`、1 ドル未満は 4 桁、以上は 2 桁。
+
 
 - app: セッション開始で 1 本の sink（jsonl 追記）を全 client と image_gen に配る。行は
   `LoggedUsageEvent`（`{"t_ms": ..., "kind": ..., ...}`）。置き場は `app_data/logs/usage.jsonl` 固定
@@ -181,7 +198,7 @@ type Pricing = { inputPerMtokUsd: number, cacheReadPerMtokUsd: number, outputPer
   `with_role` / `record_usage` / `[LLM_USAGE]` / Perplexity cost → `Usage.cost_usd`。役割の付与
   （app 4 箇所・CLI 3 箇所）。PoC 5 本。
 - **B**（✅）: image_gen の usage decode + `Image` イベント + `UsageState.image`。PoC: 3 プロバイダの decode + app の状態。
-- **C**: sink（jsonl）・pricing・表示。PoC: 金額の純関数（申告優先 / 部分申告 / 3 欄揃わないと None）。
+- **C**（✅）: sink（jsonl）・pricing・表示。PoC: app 1 本（役割別累計・jsonl 1 イベント 1 行・リセットで jsonl は残る）+ frontend vitest 10 本（申告優先 / 部分申告 / 見積もりの式 / 3 欄揃わないと None / 表示）。
 - **D**: 較正 1 セッション → 誤差を本 spec に記録。
 
 ## PoC 方針
@@ -195,7 +212,7 @@ type Pricing = { inputPerMtokUsd: number, cacheReadPerMtokUsd: number, outputPer
 
 ## 未決
 
-1. （C）見積もりの表示精度 — `$0.0123` の桁。小さすぎる額をどう見せるか（`< $0.01`）。
+1. （C）見積もりの表示精度 — 暫定を `formatUsd` に置いた（0 / `< $0.0001` / 4 桁 / 2 桁）。実プレイで額を見てから調整。
 
 ## 査読の反映（2026-09-13、2 本）
 

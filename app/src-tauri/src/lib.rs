@@ -33,7 +33,7 @@ use harness::{
     CampaignMemory, LoreStore, MemoryFragment, ModuleId, PackageManifest, SavedContent,
     SessionSave, Summarizer, Synopsis, SynopsisJob, TurnLog, TurnOutcome, SAVE_VERSION,
 };
-use llm_client::{CacheStat, ImageLedger, LlmClient, LlmConfig, UsageEvent, UsageSink};
+use llm_client::{CacheStat, ImageLedger, LlmClient, LlmConfig, LlmLedger, LoggedUsageEvent, UsageEvent, UsageSink};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use tokio::sync::Mutex;
@@ -761,47 +761,154 @@ fn next_scene_seq() -> u64 {
 /// new_game 前は None。
 type SharedSession = Mutex<Option<GameSession>>;
 
-/// spec 30 Phase B: 利用量の app 側の置き場。画像生成は `LlmClient` を通らないので、画像の累計は
-/// ここに持つ (セッション単位・揮発。`new_game` / `restore_session` = 新セッションでリセット。
-/// jsonl は追記なので消えない)。`sink` は Phase C が配る (1 イベント 1 行の受け口)。
+/// spec 30 Phase B/C: 利用量の app 側の置き場 = **sink そのもの**。全イベント (LLM は client の
+/// 記録点、画像は `generate_image`) がここへ来て、①役割別に累計 ②jsonl へ 1 イベント 1 行追記する。
+/// client 内の `LlmLedger` は GM のスナップショットとして残るが、editor / image_prompt の client は
+/// 呼び出しごとに生成・破棄されるので、**役割別の累計は client の外 (ここ) にしか置けない**。
+/// セッション単位・揮発 (`new_game` / `restore_session` でリセット。jsonl は追記なので消えない)。
 /// std の Mutex = 記録は同期で await を跨がない。
 #[derive(Default)]
 struct UsageState {
+    inner: std::sync::Arc<UsageInner>,
+}
+
+#[derive(Default)]
+struct UsageInner {
+    llm: std::sync::Mutex<std::collections::BTreeMap<String, RoleUsage>>,
     image: std::sync::Mutex<ImageLedger>,
-    sink: std::sync::Mutex<Option<UsageSink>>,
+    /// jsonl の置き場 (`app_data/logs/usage.jsonl` 固定、setup で入る)。None なら書かない (テスト)。
+    log_path: std::sync::Mutex<Option<PathBuf>>,
+}
+
+#[derive(Clone, Default, Serialize)]
+struct RoleUsage {
+    /// 最後に見たモデル id (役割の client はセッション内で 1 モデル)。
+    model_id: String,
+    ledger: LlmLedger,
+}
+
+/// `usage_snapshot` の返り (契約 `UsageMeter.display`)。
+#[derive(Serialize)]
+struct UsageSnapshotView {
+    llm: Vec<RoleUsageView>,
+    /// 全役割の `absorb` (タイトルバーのバッジ hover)。
+    total: LlmLedger,
+    image: ImageLedger,
+}
+
+#[derive(Serialize)]
+struct RoleUsageView {
+    role: String,
+    model_id: String,
+    ledger: LlmLedger,
+}
+
+impl UsageInner {
+    /// 1 イベントを累計へ足し、jsonl へ 1 行追記する。ロックは累計の更新の間だけ。
+    fn ingest(&self, e: &UsageEvent) {
+        match e {
+            UsageEvent::Llm { role, model_id, usage } => {
+                if let Ok(mut g) = self.llm.lock() {
+                    let r = g.entry(role.clone()).or_default();
+                    r.model_id = model_id.clone();
+                    r.ledger.record(usage);
+                }
+            }
+            UsageEvent::Image { count, prompt_tokens, completion_tokens, elapsed_sec, .. } => {
+                if let Ok(mut g) = self.image.lock() {
+                    g.record(*count, *prompt_tokens, *completion_tokens, *elapsed_sec);
+                }
+            }
+            UsageEvent::Search { .. } => {} // 予約 (v1 では来ない)
+        }
+        let path = self.log_path.lock().ok().and_then(|g| g.clone());
+        if let Some(path) = path {
+            if let Err(err) = append_usage_line(&path, e) {
+                // 計器の失敗でプレイを止めない。ただし黙らない (failures #98 の棚卸しと同じ線 —
+                // 毎イベント出るので、ここは stderr で足りる: 直せる人は dev で見る)。
+                eprintln!("[usage] jsonl の追記に失敗: {err}");
+            }
+        }
+    }
+}
+
+/// `LoggedUsageEvent` を 1 行追記する (spec 30 決定 2)。時刻はここで打つ (unix ミリ秒)。
+fn append_usage_line(path: &Path, e: &UsageEvent) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let t_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let row = LoggedUsageEvent { t_ms, event: e.clone() };
+    let mut line = serde_json::to_string(&row).map_err(std::io::Error::other)?;
+    line.push('\n');
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    f.write_all(line.as_bytes())
 }
 
 impl UsageState {
+    /// client に配る受け口 (1 本を全 client で共有)。
+    fn sink(&self) -> UsageSink {
+        let inner = self.inner.clone();
+        std::sync::Arc::new(move |e: &UsageEvent| inner.ingest(e))
+    }
+
+    fn set_log_path(&self, p: PathBuf) {
+        if let Ok(mut g) = self.inner.log_path.lock() {
+            *g = Some(p);
+        }
+    }
+
+    /// 新セッション: 累計だけ消す (jsonl と置き場は残る)。
     fn reset_session(&self) {
-        if let Ok(mut g) = self.image.lock() {
+        if let Ok(mut g) = self.inner.llm.lock() {
+            g.clear();
+        }
+        if let Ok(mut g) = self.inner.image.lock() {
             *g = ImageLedger::default();
         }
     }
 
-    /// 1 枚ぶんを累計へ足し、sink があれば `Image` イベントを流す (sink はロックの外で呼ぶ —
-    /// llm_client の記録点と同じ規律)。世代不一致で絵を捨てる場合でも課金は起きているので、
+    /// 1 枚ぶんを `Image` イベントとして流す。世代不一致で絵を捨てる場合でも課金は起きているので、
     /// 呼び出し側は捨てる判定の**前**に記録する。
     fn record_image(&self, provider: &str, u: &image_gen::ImageUsage) {
-        if let Ok(mut g) = self.image.lock() {
-            g.record(u.count, u.prompt_tokens, u.completion_tokens, Some(u.elapsed_sec));
-        }
-        let sink = self.sink.lock().ok().and_then(|g| g.clone());
-        if let Some(sink) = sink {
-            sink(&UsageEvent::Image {
-                role: "illustration".into(),
-                provider: provider.into(),
-                count: u.count,
-                prompt_tokens: u.prompt_tokens,
-                completion_tokens: u.completion_tokens,
-                elapsed_sec: Some(u.elapsed_sec),
-            });
-        }
+        self.inner.ingest(&UsageEvent::Image {
+            role: "illustration".into(),
+            provider: provider.into(),
+            count: u.count,
+            prompt_tokens: u.prompt_tokens,
+            completion_tokens: u.completion_tokens,
+            elapsed_sec: Some(u.elapsed_sec),
+        });
     }
 
-    #[allow(dead_code)] // Phase C の表示 (usage_snapshot command) が読む。
-    fn image_ledger(&self) -> ImageLedger {
-        self.image.lock().map(|g| g.clone()).unwrap_or_default()
+    fn snapshot(&self) -> UsageSnapshotView {
+        let llm: Vec<RoleUsageView> = self
+            .inner
+            .llm
+            .lock()
+            .map(|g| {
+                g.iter()
+                    .map(|(role, r)| RoleUsageView { role: role.clone(), model_id: r.model_id.clone(), ledger: r.ledger.clone() })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut total = LlmLedger::default();
+        for r in &llm {
+            total.absorb(&r.ledger);
+        }
+        let image = self.inner.image.lock().map(|g| g.clone()).unwrap_or_default();
+        UsageSnapshotView { llm, total, image }
     }
+}
+
+/// このセッションの利用量 (spec 30 Phase C)。設定 > AIモデル タブの表とタイトルバーのバッジ hover。
+#[tauri::command]
+fn usage_snapshot(usage: tauri::State<'_, UsageState>) -> UsageSnapshotView {
+    usage.snapshot()
 }
 
 /// ゲスト参加時のアセット解決 root (spec 23)。正本はホスト側 — ゲストの backend は
@@ -879,7 +986,10 @@ async fn edit_assist_run(
     let base = LlmConfig::from_env().map_err(|e| e.to_string())?;
     let config = LlmConfig::editor_from_env(&base).map_err(|e| e.to_string())?.unwrap_or(base);
     let model = config.model.clone();
-    let client = LlmClient::new(config).map_err(|e| e.to_string())?.with_role("editor");
+    let client = LlmClient::new(config)
+        .map_err(|e| e.to_string())?
+        .with_role("editor")
+        .with_usage_sink(app.state::<UsageState>().sink());
     cancel.0.store(false, std::sync::atomic::Ordering::Relaxed);
     let mut session = edit_assist::EditSession::new(&root, &target_rel, &kind, files, &initial_text);
     let messages = ea::build_messages(&req);
@@ -1300,7 +1410,10 @@ async fn generate_image(
     // LLM を通す意味が無いうえ、待ち時間と課金だけ増える (spec 27 B-3)。
     let override_text = prompt_override.unwrap_or_default();
     let prompt = if override_text.trim().is_empty() {
-        let writer = LlmClient::new(llm_config).map_err(|e| e.to_string())?.with_role("image_prompt");
+        let writer = LlmClient::new(llm_config)
+            .map_err(|e| e.to_string())?
+            .with_role("image_prompt")
+            .with_usage_sink(app.state::<UsageState>().sink());
         let scene =
             tokio::time::timeout(std::time::Duration::from_secs(60), writer.generate(messages))
                 .await
@@ -3407,12 +3520,16 @@ async fn new_game(
     // LLM クライアント (.env は main で読み込み済)。
     let config = LlmConfig::from_env().map_err(|e| e.to_string())?;
     // あらすじ要約用の専用 client (SUMMARY_LLM_*、spec 10)。未設定なら GM の client 共用。
+    let usage_sink = app.state::<UsageState>().sink(); // spec 30: 全 client に同じ受け口
     let summarizer = LlmConfig::summary_from_env(&config)
         .map_err(|e| e.to_string())?
-        .map(|c| LlmClient::new(c).map(|c| c.with_role("summary")))
+        .map(|c| LlmClient::new(c).map(|c| c.with_role("summary").with_usage_sink(usage_sink.clone())))
         .transpose()
         .map_err(|e| e.to_string())?;
-    let mut client = LlmClient::new(config).map_err(|e| e.to_string())?.with_role("gm");
+    let mut client = LlmClient::new(config)
+        .map_err(|e| e.to_string())?
+        .with_role("gm")
+        .with_usage_sink(usage_sink);
     // 判定様式 (spec 16): 盤面が使わない判定 op を schema から落とす (percentile → check を
     // 隠し check_under を出す / additive (既定) → 逆)。セッション開始時に一度だけ確定。
     client.set_excluded_ops(harness::excluded_check_ops(&scenario));
@@ -3550,12 +3667,16 @@ async fn restore_session(
         open_package(app, &package_path, save.module.as_ref())?;
     let lore = load_lore(&pkg_dir.join("memoria")).map_err(|e| e.to_string())?;
     let config = LlmConfig::from_env().map_err(|e| e.to_string())?;
+    let usage_sink = app.state::<UsageState>().sink(); // spec 30: 全 client に同じ受け口
     let summarizer = LlmConfig::summary_from_env(&config)
         .map_err(|e| e.to_string())?
-        .map(|c| LlmClient::new(c).map(|c| c.with_role("summary")))
+        .map(|c| LlmClient::new(c).map(|c| c.with_role("summary").with_usage_sink(usage_sink.clone())))
         .transpose()
         .map_err(|e| e.to_string())?;
-    let mut client = LlmClient::new(config).map_err(|e| e.to_string())?.with_role("gm");
+    let mut client = LlmClient::new(config)
+        .map_err(|e| e.to_string())?
+        .with_role("gm")
+        .with_usage_sink(usage_sink);
     // 判定様式 (spec 16): new_game と同じくセッション開始時に確定。
     client.set_excluded_ops(harness::excluded_check_ops(&scenario));
 
@@ -5108,6 +5229,8 @@ pub fn run() {
                     }
                 }
                 app.manage(notice);
+                // spec 30: 利用量 jsonl の置き場 (固定。会話ログの保存先設定には従わせない)。
+                app.state::<UsageState>().set_log_path(dir.join("logs").join("usage.jsonl"));
             }
             Ok(())
         })
@@ -5132,6 +5255,7 @@ pub fn run() {
             set_summary_timeout,
             get_recent_turns,
             set_recent_turns,
+            usage_snapshot,
             get_dev_mode,
             set_dev_mode,
             load_ui_settings,
@@ -5252,35 +5376,50 @@ mod tests {
         assert_eq!(harness::parse_recent_turns(Some("")), harness::RECENT_NARRATIONS_DEFAULT, "0 = 空 = 既定");
     }
 
-    /// 【spec 30 Phase B】画像の累計は app の `UsageState` に積み、sink があれば `Image` イベントを
-    /// 1 枚 1 件で流す (role は常に illustration・provider は設定の綴り)。新セッションで累計だけ
-    /// リセットされ、sink は残る (jsonl は追記のまま = セッションを跨いで消えない)。
+    /// 【spec 30 Phase B/C】`UsageState` は sink そのもの — LLM のイベントは役割別に累計、画像は
+    /// `ImageLedger`、どちらも jsonl へ 1 イベント 1 行 (`t_ms` + `kind`、本文欄なし)。新セッションで
+    /// 累計だけ消え、jsonl と置き場は残る。合計は全役割の `absorb`。
     #[test]
-    fn usage_state_records_images_and_resets_per_session() {
-        use super::{image_gen, ImageLedger, UsageEvent};
-        use std::sync::{Arc, Mutex};
+    fn usage_state_aggregates_by_role_appends_jsonl_and_resets_per_session() {
+        use super::{image_gen, ImageLedger, LlmLedger, UsageEvent};
+        let dir = std::env::temp_dir().join(format!("lorekeel_usage_{}", std::process::id()));
+        let path = dir.join("logs").join("usage.jsonl");
+        let _ = std::fs::remove_dir_all(&dir);
         let st = super::UsageState::default();
-        let seen: Arc<Mutex<Vec<UsageEvent>>> = Arc::new(Mutex::new(Vec::new()));
-        let s2 = seen.clone();
-        *st.sink.lock().unwrap() = Some(Arc::new(move |e: &UsageEvent| s2.lock().unwrap().push(e.clone())));
+        st.set_log_path(path.clone());
+        let sink = st.sink();
+        let u = |p: u64, c: u64| llm_client::Usage { prompt: p, completion: c, cache_read: 0, cost_usd: None };
+        sink(&UsageEvent::Llm { role: "gm".into(), model_id: "m1".into(), usage: u(1000, 100) });
+        sink(&UsageEvent::Llm { role: "gm".into(), model_id: "m1".into(), usage: u(1200, 50) });
+        sink(&UsageEvent::Llm { role: "editor".into(), model_id: "m2".into(), usage: u(300, 30) });
         st.record_image("openai", &image_gen::ImageUsage { count: 1, prompt_tokens: Some(272), completion_tokens: Some(1056), elapsed_sec: 24.8 });
         st.record_image("comfy", &image_gen::ImageUsage { count: 1, prompt_tokens: None, completion_tokens: None, elapsed_sec: 12.0 });
-        let l = st.image_ledger();
-        assert_eq!((l.requests, l.count, l.prompt_tokens, l.completion_tokens), (2, 2, 272, 1056));
-        assert!((l.elapsed_sec - 36.8).abs() < 1e-9);
-        let ev = seen.lock().unwrap();
-        assert_eq!(ev.len(), 2);
-        match &ev[1] {
-            UsageEvent::Image { role, provider, count, prompt_tokens, elapsed_sec, .. } => {
-                assert_eq!((role.as_str(), provider.as_str(), *count, *prompt_tokens), ("illustration", "comfy", 1, None));
-                assert_eq!(*elapsed_sec, Some(12.0));
-            }
-            other => panic!("Image のはず: {other:?}"),
-        }
-        drop(ev);
+
+        let snap = st.snapshot();
+        let roles: Vec<(&str, &str, u64, u64)> =
+            snap.llm.iter().map(|r| (r.role.as_str(), r.model_id.as_str(), r.ledger.requests, r.ledger.completion_tokens)).collect();
+        assert_eq!(roles, vec![("editor", "m2", 1, 30), ("gm", "m1", 2, 150)], "役割別 (BTreeMap 順)");
+        assert_eq!((snap.total.requests, snap.total.prompt_tokens, snap.total.completion_tokens), (3, 2500, 180), "合計は absorb");
+        assert_eq!((snap.image.requests, snap.image.count, snap.image.prompt_tokens, snap.image.completion_tokens), (2, 2, 272, 1056));
+        assert!((snap.image.elapsed_sec - 36.8).abs() < 1e-9);
+
+        let text = std::fs::read_to_string(&path).expect("jsonl が書かれる");
+        let lines: Vec<serde_json::Value> = text.lines().map(|l| serde_json::from_str(l).expect("1 行 1 JSON")).collect();
+        assert_eq!(lines.len(), 5, "1 イベント 1 行");
+        assert!(lines.iter().all(|v| v["t_ms"].as_u64().unwrap_or(0) > 1_600_000_000_000), "unix ミリ秒");
+        assert_eq!(lines[0]["kind"], "llm");
+        assert_eq!(lines[0]["usage"]["completion"], 100);
+        assert_eq!(lines[4]["kind"], "image");
+        assert_eq!(lines[4]["provider"], "comfy");
+        assert!(lines[4]["prompt_tokens"].is_null());
+        assert!(text.lines().all(|l| !l.contains("messages") && !l.contains("prompt_text")), "本文は書かない");
+
         st.reset_session();
-        assert_eq!(st.image_ledger(), ImageLedger::default(), "累計だけ消える");
-        assert!(st.sink.lock().unwrap().is_some(), "sink は残る");
+        let snap = st.snapshot();
+        assert!(snap.llm.is_empty() && snap.total == LlmLedger::default() && snap.image == ImageLedger::default(), "累計だけ消える");
+        sink(&UsageEvent::Llm { role: "gm".into(), model_id: "m1".into(), usage: u(10, 1) });
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 6, "jsonl は追記のまま (セッションを跨いで消えない)");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 【要約タイムアウトの独立性 (2026-09-01)】あらすじの待ち時間 (`SUMMARY_LLM_TIMEOUT_SECS`) を

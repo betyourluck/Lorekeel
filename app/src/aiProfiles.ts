@@ -8,6 +8,8 @@
 
 // プロファイルから選んで「決定」で .env へ反映する形にする。**.env の書き込みは決定時のみ**
 // (選択変更だけでは書かない)。API キーは平文で localStorage に入る (BYO-key・ローカル app)。
+import { readPricing, type Pricing } from "./usage";
+
 const AI_PROFILES_KEY = "kataribe.aiModelProfiles";
 export interface AiModelProfile {
   id: string; // アプリ生成の主キー (name 重複を許すため)
@@ -21,6 +23,9 @@ export interface AiModelProfile {
   // backend が空を書くと env_opt が None に落とすので「送らない」を表せる。
   effort: string; // LLM_EFFORT ("" | low | medium | high | xhigh | max)。**GM だけに効く**
   maxTokens: string; // LLM_MAX_TOKENS ("" = llm_client の既定 4096)。思考は**この上限を食う**
+  /** spec 30: 単価 (USD / 100 万トークン)。**任意・3 欄揃ったときだけ** — 無ければ金額を出さない。
+   *  .env には書かない (計器の表示にだけ使う)。既定価格は持たない (間違った金額は無いより悪い)。 */
+  pricing?: Pricing;
 }
 // localStorage から読む (壊れていれば空)。全項目を型で検査し、欠けは既定で補う (前方互換)。
 export function loadAiProfiles(): AiModelProfile[] {
@@ -41,6 +46,7 @@ export function loadAiProfiles(): AiModelProfile[] {
         // 前方互換: 2026-09-10 より前の登録には欄が無い = 未設定 (従来の挙動そのもの)。
         effort: typeof p.effort === "string" ? p.effort : "",
         maxTokens: typeof p.maxTokens === "string" ? p.maxTokens : "",
+        pricing: readPricing(p.pricing),
       }));
   } catch {
     return [];

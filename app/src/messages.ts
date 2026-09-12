@@ -26,6 +26,7 @@ export const messages = {
       updateOpen: "最新版 {version} を配布サイトで開く",
       updateOpenGeneric: "配布サイトを開く",
       modelBadge: "使用中の AI モデル: {model} (設定 → AIモデル で変更)",
+      modelBadgeUsage: "このセッション: {requests} 回 / 入力 {prompt} トークン (うちキャッシュ {cacheRead}) / 出力 {completion} トークン",
       guestConnected: "ホスト接続中",
       guestReconnecting: "再接続中…",
       guestOffline: "ホスト未接続",
@@ -346,6 +347,12 @@ export const messages = {
         effortOff: "使わない",
         maxTokens: "出力上限",
         maxTokensPlaceholder: "既定 4096",
+        pricingHeading: "単価（USD / 100 万トークン・任意）",
+        pricingInput: "入力",
+        pricingCacheRead: "キャッシュ読み",
+        pricingOutput: "出力",
+        pricingNote:
+          "この登録モデルの単価。3 欄すべて書いたときだけ、下の「利用量」に見積もり（≈）が出ます。既定値はありません — 価格は変わるので、間違った金額を出すより空のままにします。「保存 + 登録モデルを更新」か新規登録で保存され、.env には書きません。",
         effortNote:
           "どちらも**この登録モデルごと**の値で、保存すると .env に書かれます。「思考の深さ」は GM の語りにだけ効きます（あらすじ要約と AI 編集には継がれません）。思考は出力の一部として上限を食うので、深さを使うときは出力上限を 16000 以上にしてください（xhigh / max は 64000 目安）。深く考えるほど出力トークンが増える＝費用も増えます。高価なモデルでは「使わない」、安いモデルでは深く、という使い分けができます。",
         save: "保存",
@@ -403,6 +410,30 @@ export const messages = {
           "・タイトルバーの記録アイコンで会話ログをテキスト保存できます（保存先は「ログ」タブで指定）。",
         tagline:
           "語り部 — クラウド LLM をナレーター、決定論エンジンを正本とした、忘れない・矛盾しない GM。",
+      },
+      usage: {
+        heading: "利用量（このセッション）",
+        reload: "更新",
+        role: "役割",
+        model: "モデル",
+        requests: "回数",
+        prompt: "入力",
+        cacheRead: "うちキャッシュ",
+        completion: "出力",
+        cost: "金額",
+        total: "合計",
+        imageCount: "{count} 枚",
+        none: "まだ記録がありません（ターンを進めるか挿絵を生成すると増えます）",
+        partial: "申告 {reported}/{requests} 件",
+        note:
+          "トークンはプロバイダの usage をそのまま数えたものです。金額は、その登録モデルに単価（上の 3 欄）を書いたときの見積もり（≈）か、プロバイダが申告した額。合計に金額を出せない役割があるときは ≥ で下限を示します。1 イベント 1 行の記録が app_data/logs/usage.jsonl に追記されます（本文は書きません）。",
+        roles: {
+          gm: "GM",
+          summary: "あらすじ要約",
+          editor: "AI 編集",
+          image_prompt: "挿絵のプロンプト書き",
+          illustration: "挿絵（画像生成）",
+        },
       },
       status: {
         saving: "保存中…",
@@ -903,6 +934,7 @@ export const messages = {
       updateOpen: "Open the site to get {version}",
       updateOpenGeneric: "Open the distribution site",
       modelBadge: "Current AI model: {model} (change in Settings → AI Model)",
+      modelBadgeUsage: "This session: {requests} requests / {prompt} input tokens ({cacheRead} cached) / {completion} output tokens",
       guestConnected: "connected to host",
       guestReconnecting: "reconnecting…",
       guestOffline: "host not connected",
@@ -1222,6 +1254,12 @@ export const messages = {
         effortOff: "Off",
         maxTokens: "Output limit",
         maxTokensPlaceholder: "default 4096",
+        pricingHeading: "Pricing (USD per 1M tokens, optional)",
+        pricingInput: "Input",
+        pricingCacheRead: "Cache read",
+        pricingOutput: "Output",
+        pricingNote:
+          "Prices for this saved model. An estimate (≈) appears under “Usage” only when all three are filled. There is no default — prices change, and a wrong amount is worse than none. Saved with “Save + update saved model” or a new registration; never written to .env.",
         effortNote:
           "Both are **per saved model** and are written to .env when you save. Thinking depth applies only to the GM's narration (it is not inherited by synopsis summarisation or AI editing). Thinking counts against the output limit, so raise the limit to 16000 or more when you use a depth (64000 for xhigh / max). Deeper thinking means more output tokens, which costs more — you can leave it Off for an expensive model and turn it up for a cheap one.",
         save: "Save",
@@ -1280,6 +1318,30 @@ export const messages = {
           "・The record icon in the title bar saves the conversation log as text (destination set in the “Log” tab).",
         tagline:
           "Kataribe — a GM that never forgets or contradicts, with a cloud LLM as narrator and a deterministic engine as the source of truth.",
+      },
+      usage: {
+        heading: "Usage (this session)",
+        reload: "Refresh",
+        role: "Role",
+        model: "Model",
+        requests: "Requests",
+        prompt: "Input",
+        cacheRead: "of which cached",
+        completion: "Output",
+        cost: "Cost",
+        total: "Total",
+        imageCount: "{count} images",
+        none: "Nothing recorded yet (play a turn or generate an illustration).",
+        partial: "reported {reported}/{requests}",
+        note:
+          "Tokens are counted straight from each provider’s usage. Cost is an estimate (≈) when the saved model has prices (three fields above), or the amount the provider reported. When some role has no price, the total shows ≥ as a lower bound. One line per event is appended to app_data/logs/usage.jsonl (no prompt text).",
+        roles: {
+          gm: "GM",
+          summary: "Synopsis",
+          editor: "AI edit",
+          image_prompt: "Illustration prompt writer",
+          illustration: "Illustration (image generation)",
+        },
       },
       status: {
         saving: "Saving…",

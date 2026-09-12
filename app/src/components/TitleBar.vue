@@ -23,6 +23,7 @@ import { IS_MAC } from "../platform";
 import { theme, toggleTheme } from "../theme";
 import { t } from "../i18n";
 import { useGameStore } from "../stores/game";
+import { formatTokens } from "../usage";
 
 // git の最新タグ (ビルド時に vite.config が注入)。例 "v0.3.2"。タグ無しは空 = 非表示。
 const version = __APP_VERSION__;
@@ -45,6 +46,19 @@ defineProps<{
  * gemini=ブルーに白 / gpt=エメラルドグリーン / claude=くすみ系オレンジベージュ /
  * qwen=パープル / grok=濃い灰色。該当なしは既定 (ash) のまま = 空 style を返す。
  */
+// spec 30 Phase C: バッジ hover にこのセッションの利用量 (全役割の合計)。hover の瞬間に取り直す。
+function badgeTitle(model: string): string {
+  const base = t("titlebar.modelBadge", { model });
+  const u = game.usage;
+  if (!u || u.total.requests === 0) return base;
+  return `${base}\n${t("titlebar.modelBadgeUsage", {
+    requests: u.total.requests,
+    prompt: formatTokens(u.total.prompt_tokens),
+    cacheRead: formatTokens(u.total.cache_read_tokens),
+    completion: formatTokens(u.total.completion_tokens),
+  })}`;
+}
+
 function badgeStyle(model: string): Record<string, string> {
   const m = model.toLowerCase();
   const paint = (bg: string, fg = "#ffffff") => ({
@@ -223,7 +237,8 @@ async function win(method: "minimize" | "toggleMaximize" | "close") {
       data-tauri-drag-region
       class="mx-1 max-w-[12rem] truncate rounded-full border border-ash bg-ash/40 px-2 text-[10px] font-bold leading-4 text-parchment/70"
       :style="badgeStyle(model)"
-      :title="t('titlebar.modelBadge', { model })"
+      :title="badgeTitle(model)"
+      @mouseenter="game.refreshUsage()"
     >
       {{ model }}
     </span>

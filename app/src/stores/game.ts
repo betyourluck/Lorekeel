@@ -1,3 +1,4 @@
+import type { UsageSnapshot } from "../usage";
 import { defineStore } from "pinia";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { tableHooks, transport } from "../transport";
@@ -600,6 +601,8 @@ interface GameState {
   editor: EditorState;
   // 使用中の AI モデル名 (TitleBar バッジ + OS ウィンドウタイトル)。get_llm_config から取得。
   llmModel: string;
+  /** spec 30: このセッションの利用量 (バッジ hover で取り直す)。Tauri 外では null のまま。 */
+  usage: UsageSnapshot | null;
   // 配布サイトに現在版より新しいアプリがあるか (TitleBar の「最新版があります」表示)。
   updateAvailable: boolean;
   // 配布サイトの最新版タグ (表示用。例 "v0.3.3")。
@@ -714,6 +717,7 @@ export const useGameStore = defineStore("game", {
       editorRenameRequest: null,
       editor: freshEditorState(),
       llmModel: "",
+      usage: null,
       updateAvailable: false,
       latestVersion: "",
       devMode: false,
@@ -1479,6 +1483,14 @@ ${body}`, t("rename.ok"), true);
     },
     // 使用中の AI モデル名を backend から取り直す (起動時 + AIモデル設定の保存後)。
     // TitleBar のバッジと OS ウィンドウタイトル (タスクバー/Alt+Tab) の両方に反映する。
+    // spec 30 Phase C: 利用量を backend から取り直す (バッジ hover)。
+    async refreshUsage() {
+      try {
+        this.usage = await invoke<UsageSnapshot>("usage_snapshot");
+      } catch {
+        this.usage = null;
+      }
+    },
     async refreshLlmModel() {
       try {
         const cfg = await invoke<{ model: string }>("get_llm_config");
