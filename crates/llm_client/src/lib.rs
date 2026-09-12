@@ -29,7 +29,7 @@ mod usage;
 mod wire;
 
 pub use canonical::{Finish, ToolSpec, Usage};
-pub use usage::{UsageEvent, UsageLedger, UsageSink};
+pub use usage::{ImageLedger, LlmLedger, LoggedUsageEvent, UsageEvent, UsageSink};
 pub use client::{CachePoint, CacheStat, ChatTurn, LlmClient};
 pub use config::{Effort, LlmConfig, Provider, ToolMode};
 pub use error::LlmError;
@@ -1772,11 +1772,12 @@ mod tests {
         assert_eq!(plain.choices[0].message.content.as_deref(), Some("ok"));
     }
 
-    /// 【spec 30 Phase A】累計は client 単位で、**出力トークンと申告費用が足される** (2026-09-13 まで
+    /// 【spec 30 Phase A / rev2】累計は client 単位で、**出力トークンと申告費用が足される** (2026-09-13 まで
     /// completion はどこにも足されていなかった)。cache_stat の従来計数は不変。sink は 1 リクエスト
-    /// 1 イベントで role / model_id / cost を運ぶ。
+    /// 1 イベントで role / model_id / usage を運び、費用は `usage.cost_usd` の 1 箇所だけ。
+    /// セッション合計は `absorb`。
     #[test]
-    fn usage_ledger_accumulates_completion_and_reported_cost_and_sink_gets_events() {
+    fn llm_ledger_accumulates_completion_and_reported_cost_and_sink_gets_events() {
         use std::sync::{Arc, Mutex};
         let seen: Arc<Mutex<Vec<UsageEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let sink_seen = seen.clone();
@@ -1794,51 +1795,109 @@ mod tests {
         assert_eq!(l.completion_tokens, 550, "出力が初めて足される");
         assert!((l.reported_cost_usd - 0.01).abs() < 1e-12);
         assert_eq!(l.reported_cost_requests, 1, "申告の無いリクエストは数えない");
-        let cs = client.cache_stat();
-        assert_eq!(cs.total_requests, 2, "従来の cache 計数は不変");
+        assert_eq!(client.cache_stat().total_requests, 2, "従来の cache 計数は不変");
 
         let ev = seen.lock().unwrap();
         assert_eq!(ev.len(), 2, "1 リクエスト 1 イベント");
         match &ev[0] {
-            UsageEvent::Llm { role, model_id, usage, cost_usd } => {
+            UsageEvent::Llm { role, model_id, usage } => {
                 assert_eq!(role, "gm");
                 assert_eq!(model_id, "sonar-pro");
                 assert_eq!(usage.completion, 300);
-                assert_eq!(*cost_usd, Some(0.01));
+                assert_eq!(usage.cost_usd, Some(0.01), "費用は usage の中の 1 箇所");
             }
             other => panic!("Llm のはず: {other:?}"),
         }
         assert_eq!(LlmClient::new(LlmConfig::new("https://x", "k", "m")).unwrap().role(), "", "既定は無印");
+
+        let mut total = LlmLedger::default();
+        total.absorb(&l);
+        total.absorb(&l);
+        assert_eq!((total.requests, total.completion_tokens, total.reported_cost_requests), (4, 1100, 2));
+        assert!((total.reported_cost_usd - 0.02).abs() < 1e-12);
     }
 
-    /// 【spec 30】jsonl の読み手 (Phase D の集計) が依存する serde 形を固定: `kind` タグ・
-    /// snake_case・`cost_usd` は None なら null。プロンプト本文を載せる欄は型に存在しない。
+    /// 【spec 30 rev2 査読 #1-細 2】sink は ledger のロックの**外**で呼ばれる — sink の中から
+    /// `usage_ledger()` を読めて (デッドロックしない)、その時点で今回分が既に足されている。
+    /// 退行すると std Mutex は非再入なので永久に詰まる → スレッド + タイムアウトで検出する。
     #[test]
-    fn usage_event_serializes_with_kind_tag_and_nullable_cost() {
+    fn usage_sink_runs_outside_the_ledger_lock() {
+        use std::sync::{mpsc, Arc, Mutex, OnceLock};
+        let slot: Arc<OnceLock<Arc<LlmClient>>> = Arc::new(OnceLock::new());
+        let seen: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        let (slot2, seen2) = (slot.clone(), seen.clone());
+        let client = Arc::new(
+            LlmClient::new(LlmConfig::new("https://x", "k", "m"))
+                .unwrap()
+                .with_usage_sink(Arc::new(move |_e: &UsageEvent| {
+                    if let Some(c) = slot2.get() {
+                        seen2.lock().unwrap().push(c.usage_ledger().requests);
+                    }
+                })),
+        );
+        slot.set(client.clone()).ok();
+        let (tx, rx) = mpsc::channel();
+        let c2 = client.clone();
+        std::thread::spawn(move || {
+            let u = Usage { prompt: 1, completion: 1, cache_read: 0, cost_usd: None };
+            c2.record_usage(&u);
+            c2.record_usage(&u);
+            tx.send(()).unwrap();
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok(),
+            "sink がロック内で呼ばれると usage_ledger() で詰まる"
+        );
+        assert_eq!(*seen.lock().unwrap(), vec![1, 2], "今回分が足された後の値が sink から読める");
+    }
+
+    /// 【spec 30】jsonl の読み手 (Phase D の集計) が依存する serde 形を固定: `kind` タグ・snake_case・
+    /// 費用は `usage.cost_usd` だけ (トップレベルに二重に無い)・Image はトークン二値・
+    /// `LoggedUsageEvent` は `t_ms` と `kind` が同じ段 (flatten で段が増えない)。
+    /// プロンプト本文を載せる欄は型に存在しない。
+    #[test]
+    fn usage_event_serializes_with_kind_tag_and_logged_wrapper_flattens() {
         let llm = UsageEvent::Llm {
             role: "summary".into(),
             model_id: "m".into(),
             usage: Usage { prompt: 10, completion: 2, cache_read: 4, cost_usd: None },
-            cost_usd: None,
         };
         let j: serde_json::Value = serde_json::from_str(&serde_json::to_string(&llm).unwrap()).unwrap();
         assert_eq!(j["kind"], "llm");
         assert_eq!(j["role"], "summary");
         assert_eq!(j["usage"]["completion"], 2);
-        assert!(j["cost_usd"].is_null());
+        assert!(j["usage"]["cost_usd"].is_null());
+        assert!(j.get("cost_usd").is_none(), "費用の欄は usage の中だけ");
         assert!(j.get("prompt_text").is_none() && j.get("messages").is_none());
 
         let img = UsageEvent::Image {
             role: "illustration".into(),
-            provider: "comfy".into(),
+            provider: "openai".into(),
             count: 1,
-            usage_tokens: None,
-            elapsed_sec: Some(12.5),
+            prompt_tokens: Some(272),
+            completion_tokens: Some(1056),
+            elapsed_sec: Some(24.8),
         };
         let j: serde_json::Value = serde_json::from_str(&serde_json::to_string(&img).unwrap()).unwrap();
         assert_eq!(j["kind"], "image");
-        assert_eq!(j["count"], 1);
-        assert_eq!(j["elapsed_sec"], 12.5);
+        assert_eq!(j["prompt_tokens"], 272);
+        assert_eq!(j["completion_tokens"], 1056);
+
+        let row = LoggedUsageEvent { t_ms: 1_757_700_000_123, event: img };
+        let j: serde_json::Value = serde_json::from_str(&serde_json::to_string(&row).unwrap()).unwrap();
+        assert_eq!(j["t_ms"], 1_757_700_000_123u64);
+        assert_eq!(j["kind"], "image", "t_ms と kind が同じ段");
+        assert!(j.get("event").is_none(), "flatten で段が増えない");
+    }
+
+    /// 【spec 30】画像の累計は枚数・二値のトークン・秒。ComfyUI (トークン None) は枚数と秒だけ足す。
+    #[test]
+    fn image_ledger_records_counts_tokens_and_seconds() {
+        let mut l = ImageLedger::default();
+        l.record(1, Some(272), Some(1056), Some(24.8));
+        l.record(1, None, None, Some(12.0));
+        assert_eq!((l.requests, l.count, l.prompt_tokens, l.completion_tokens), (2, 2, 272, 1056));
+        assert!((l.elapsed_sec - 36.8).abs() < 1e-9);
     }
 
     /// 【会話 ID】クライアント毎に一意な conv_id を持つ (xAI のキャッシュはサーバ単位 →

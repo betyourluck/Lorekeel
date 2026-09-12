@@ -25,7 +25,7 @@ pub struct ChatTurn {
 }
 use crate::canonical::Usage;
 use crate::config::{LlmConfig, Provider, ToolMode};
-use crate::usage::{UsageEvent, UsageLedger, UsageSink};
+use crate::usage::{UsageEvent, LlmLedger, UsageSink};
 use crate::error::LlmError;
 use crate::gemini;
 use crate::openai_compat;
@@ -148,7 +148,7 @@ pub struct LlmClient {
     /// `[LLM_USAGE]` 行・[`UsageEvent::Llm`] に載る。未設定は空 (CLI の一部・テスト)。
     role: String,
     /// spec 30: 累計 (プロセス内揮発)。記録点は [`Self::complete`] の単一点。
-    usage: Mutex<UsageLedger>,
+    usage: Mutex<LlmLedger>,
     /// spec 30: app が配る受け口 (jsonl 追記)。llm_client は呼ぶだけ。
     usage_sink: Option<UsageSink>,
 }
@@ -168,7 +168,7 @@ impl LlmClient {
             call_seq: std::sync::atomic::AtomicU64::new(0),
             gemini_cache: Mutex::new(None),
             role: String::new(),
-            usage: Mutex::new(UsageLedger::default()),
+            usage: Mutex::new(LlmLedger::default()),
             usage_sink: None,
             tool_mode: Mutex::new(config_tool_mode),
             // 既定 = additive 盤面 (従来どおり)。percentile 判定 op は隠す。
@@ -214,13 +214,13 @@ impl LlmClient {
     }
 
     /// spec 30: 累計のスナップショット。lock 毒化時は既定値。
-    pub fn usage_ledger(&self) -> UsageLedger {
+    pub fn usage_ledger(&self) -> LlmLedger {
         self.usage.lock().map(|g| g.clone()).unwrap_or_default()
     }
 
-    /// spec 30: 1 リクエスト分の usage を**単一点**で記録する — cache 計測 (従来) → 累計 →
-    /// `LLM_CACHE_DEBUG=1` で `[LLM_USAGE]` 行 (`[LLM_CACHE_STAT]` の隣・スイッチは増やさない)
-    /// → sink。`chat` / `generate` / `generate_structured` / 4 adapter / 再送・降格の全経路が
+    /// spec 30: 1 リクエスト分の usage を**単一点**で記録する — cache 計測 (従来) → 累計 (ロックを
+    /// 解放) → `LLM_CACHE_DEBUG=1` で `[LLM_USAGE]` 行 (`conv` は `[LLM_CACHE_STAT]` と同じ
+    /// `conv_id`。スイッチは増やさない) → sink。`chat` / `generate` / `generate_structured` / 4 adapter / 再送・降格の全経路が
     /// [`Self::complete`] を通るのでここ 1 箇所で網羅する。
     pub(crate) fn record_usage(&self, u: &Usage) {
         self.record_cache(u.cache_read, u.prompt);
@@ -243,12 +243,13 @@ impl LlmClient {
                 u.cost_usd.map(|c| format!("{c:.6}")).unwrap_or_else(|| "-".into()),
             );
         }
+        // sink は**ロックの外**で呼ぶ (上の `if let` で guard は落ちている)。sink が `usage_ledger()`
+        // を読んでもデッドロックしない (spec 30 rev2 査読 #1-細 2、PoC で固定)。
         if let Some(sink) = &self.usage_sink {
             sink(&UsageEvent::Llm {
                 role: self.role.clone(),
                 model_id: self.config.model.clone(),
                 usage: *u,
-                cost_usd: u.cost_usd,
             });
         }
     }
