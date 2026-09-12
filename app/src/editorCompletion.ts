@@ -393,6 +393,14 @@ export function candidatesAt(
   };
 }
 
+/** 打ちかけの語 (`from` を決める) と、結果を使い回してよい範囲 (`validFor`) は**同じ文字集合**で持つ。
+ *  別々に持つと、再実行のたびに `from` が動いて置換範囲がずれる。引用符は語に含めない —
+ *  `"焼き` で開き引用符ごと置換すると候補の前に引用符が消える。 */
+const KEY_WORD = /[A-Za-z_][A-Za-z0-9_]*$/;
+const KEY_VALID = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const VALUE_WORD = /[^\s:,{}[\]"']*$/;
+const VALUE_VALID = /^[^\s:,{}[\]"']*$/;
+
 /** 補完ソースを作る。vocab / kind は getter で受ける (ファイル切替・保存後の語彙更新に追従)。 */
 export function makeCompletionSource(
   getVocab: () => EditorVocabulary | null,
@@ -401,11 +409,6 @@ export function makeCompletionSource(
   return (context: CompletionContext): CompletionResult | null => {
     const vocab = getVocab();
     if (!vocab) return null;
-    const line = context.state.doc.lineAt(context.pos);
-    const before = line.text.slice(0, context.pos - line.from);
-    // いま打ちかけの語 (候補の置換範囲を決めるだけ — 文脈判定は木が行う)。
-    const typed = /([A-Za-z_][A-Za-z0-9_]*)?$/.exec(before)?.[1] ?? "";
-
     const { options, isKey, needsTag } = candidatesAt(
       vocab,
       getDocKind(),
@@ -413,6 +416,14 @@ export function makeCompletionSource(
       context.pos,
     );
     if (!options.length) return null;
+    const line = context.state.doc.lineAt(context.pos);
+    const before = line.text.slice(0, context.pos - line.from);
+    // いま打ちかけの語 (候補の置換範囲を決めるだけ — 文脈判定は木が行う)。
+    // **値欄は `validFor` と同じ文字集合で切る** — キーは型由来で ASCII だが、id (場所・
+    // フラグ・アイテム) は日本語で書かれる。ライブラリは IME の変換が確定した瞬間に
+    // 補完ソースを再実行するので、ここが ASCII だけだと `from` が `pos` に落ち、確定済みの
+    // 「焼き」を残したまま候補「焼き魚」を後ろへ挿して「焼き焼き魚」になる (ユーザー実測)。
+    const typed = (isKey ? KEY_WORD : VALUE_WORD).exec(before)?.[0] ?? "";
     // キー欄は明示要求か打ち始めてから (行頭で常に開くとうるさい)。
     // 値欄は「: 」の直後に開く — id の typo = 死んだ参照の**上流予防**が本命。
     if (isKey && !typed && !context.explicit) return null;
@@ -425,7 +436,7 @@ export function makeCompletionSource(
           ? toCompletion(i, "property", `${i.name}: `, i.name === needsTag ? 99 : undefined)
           : toCompletion(i, "constant"),
       ),
-      validFor: isKey ? /^[A-Za-z_][A-Za-z0-9_]*$/ : /^[^\s:,{}[\]]*$/,
+      validFor: isKey ? KEY_VALID : VALUE_VALID,
     };
   };
 }

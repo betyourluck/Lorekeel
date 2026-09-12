@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { candidatesAt, resolveContext, type EditorVocabulary } from "./editorCompletion";
+import { CompletionContext } from "@codemirror/autocomplete";
+import { EditorState } from "@codemirror/state";
+import { candidatesAt, makeCompletionSource, resolveContext, type EditorVocabulary } from "./editorCompletion";
 
 /** 実表の形を写した最小語彙 (walk とカテゴリ判定を測るためのもの)。
  *  実データそのものの正しさは Rust 側 (`editor_vocab` / `gm_core::wiring`) が固定する。 */
@@ -237,5 +239,38 @@ describe("resolveContext — 名前の段と未知キー", () => {
   it("列は段を挟まない", () => {
     expect(resolveContext(V, "Scenario", ["triggers", "[]"]).ctx).toBe("Trigger");
     expect(resolveContext(V, "Scenario", ["triggers", "[]", "effects", "[]"]).ctx).toBe("Op");
+  });
+});
+
+describe("makeCompletionSource — 置換範囲は打ちかけの語を含む", () => {
+  const VJ: EditorVocabulary = { ...V, ids: { ...V.ids, items: [{ name: "key" }, { name: "焼き魚" }] } };
+  const source = makeCompletionSource(
+    () => VJ,
+    () => "scenario",
+  );
+  function complete(src: string) {
+    const pos = src.indexOf("|");
+    const doc = src.slice(0, pos) + src.slice(pos + 1);
+    return { pos, result: source(new CompletionContext(EditorState.create({ doc }), pos, false)) };
+  }
+  const DOC = "triggers:\n  - id: t\n    effects:\n      - { op: give_item, from: player, to: alice, item: ";
+
+  it("日本語の打ちかけも from に含める (IME 確定後の再実行で二重挿入していた)", () => {
+    // ライブラリは変換確定の瞬間に補完ソースを再実行する。ここで from が pos に落ちると
+    // 確定済みの「焼き」を残したまま「焼き魚」を後ろへ挿し、「焼き焼き魚」になる (ユーザー実測)。
+    const { pos, result } = complete(DOC + "焼き| }");
+    expect(result).not.toBeNull();
+    expect(result!.from).toBe(pos - "焼き".length);
+    expect(result!.options.map((o) => o.label)).toContain("焼き魚");
+  });
+
+  it("ASCII の打ちかけは従来どおり", () => {
+    const { pos, result } = complete(DOC + "ke| }");
+    expect(result!.from).toBe(pos - 2);
+  });
+
+  it("引用符は語に含めない (開き引用符の直後から置換する)", () => {
+    const { pos, result } = complete(DOC + '"焼き| }');
+    expect(result!.from).toBe(pos - "焼き".length);
   });
 });
