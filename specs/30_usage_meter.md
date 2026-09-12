@@ -1,7 +1,8 @@
 # spec 30: 利用量の計器 — トークンと枚数を役割別に数え、価格はユーザーが持ち込む
 
 **Status**: rev2（2026-09-13 起草 → 4 点はユーザー裁定で凍結 → Phase A 実装 → **同日査読 2 本
-（矛盾 9 + 6）を反映 = rev2、Phase A のコードも rev2 に追従**。残 = B 画像 / C 表示・価格・jsonl / D 較正）。
+（矛盾 9 + 6）を反映 = rev2、Phase A のコードも rev2 に追従** → ユーザー承認 → **✅Phase B（同日）**。
+残 = C 表示・価格・jsonl / D 較正）。
 査読の反映は末尾「査読の反映」節に凍結。
 
 ## 動機（ユーザーの言葉から）
@@ -92,7 +93,20 @@
 （画像。`Image` イベントと `ImageLedger` だけに現れる）。エピローグは GM の client を使うので `gm`
 に数える（声の主が同じ）。
 
-### B. 画像生成（Phase B）
+### B. 画像生成（✅Phase B、2026-09-13）
+
+**合算則（ユーザー指摘 1 への決定）**: `ImageLedger` はトークンを 0 として足し、表示側は
+`prompt_tokens + completion_tokens == 0` かつ `requests > 0` なら `-`（ComfyUI だけのセッション）。
+二値のどちらかが返れば数える。`elapsed_sec` は合計。**リセット点（指摘 2）**: `new_game` /
+`restore_session`（resume / load_slot / resume_from_file の共通経路）= 新セッションでメモリの
+`ImageLedger` だけ消し、jsonl は追記のまま。実装: `image_gen::ImageUsage { count, prompt_tokens,
+completion_tokens, elapsed_sec }` を `Generated` に載せ、decode とは**別の純関数** `openai_usage` /
+`gemini_usage` で拾う（null・欠落・JSON でない本文は None = 計器の失敗で絵を失わない）。秒は
+OpenAI / Gemini = 往復、ComfyUI = `/prompt` 発行〜`/view` 取得（参照のアップロードは含めない）。
+`count` は常に 1（Kataribe は history の先頭 1 枚しか取らない）。app `UsageState { image, sink }`
+（std Mutex・`app.state()` で引く）、`generate_image` は**世代不一致で捨てる判定の前に**記録する
+（課金は起きている）。PoC: image_gen 1 本（3 プロバイダ × null / 欠落 / 壊れた本文）+ app 1 本
+（累計・イベント・リセットで sink は残る）。
 
 `image_gen.rs` の decode に usage を足す。OpenAI Images = `usage.{input_tokens, output_tokens}`
 （gpt-image-1 系）/ Gemini = `usageMetadata.{promptTokenCount, candidatesTokenCount}` / ComfyUI =
@@ -166,7 +180,7 @@ type Pricing = { inputPerMtokUsd: number, cacheReadPerMtokUsd: number, outputPer
 - **A**（✅）: llm_client の `LlmLedger` / `ImageLedger` / `UsageEvent` / `LoggedUsageEvent` /
   `with_role` / `record_usage` / `[LLM_USAGE]` / Perplexity cost → `Usage.cost_usd`。役割の付与
   （app 4 箇所・CLI 3 箇所）。PoC 5 本。
-- **B**: image_gen の usage decode + `Image` イベント + `UsageState.image`。PoC: 3 プロバイダの decode。
+- **B**（✅）: image_gen の usage decode + `Image` イベント + `UsageState.image`。PoC: 3 プロバイダの decode + app の状態。
 - **C**: sink（jsonl）・pricing・表示。PoC: 金額の純関数（申告優先 / 部分申告 / 3 欄揃わないと None）。
 - **D**: 較正 1 セッション → 誤差を本 spec に記録。
 

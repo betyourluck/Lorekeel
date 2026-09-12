@@ -33,7 +33,7 @@ use harness::{
     CampaignMemory, LoreStore, MemoryFragment, ModuleId, PackageManifest, SavedContent,
     SessionSave, Summarizer, Synopsis, SynopsisJob, TurnLog, TurnOutcome, SAVE_VERSION,
 };
-use llm_client::{CacheStat, LlmClient, LlmConfig};
+use llm_client::{CacheStat, ImageLedger, LlmClient, LlmConfig, UsageEvent, UsageSink};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use tokio::sync::Mutex;
@@ -761,6 +761,49 @@ fn next_scene_seq() -> u64 {
 /// new_game 前は None。
 type SharedSession = Mutex<Option<GameSession>>;
 
+/// spec 30 Phase B: 利用量の app 側の置き場。画像生成は `LlmClient` を通らないので、画像の累計は
+/// ここに持つ (セッション単位・揮発。`new_game` / `restore_session` = 新セッションでリセット。
+/// jsonl は追記なので消えない)。`sink` は Phase C が配る (1 イベント 1 行の受け口)。
+/// std の Mutex = 記録は同期で await を跨がない。
+#[derive(Default)]
+struct UsageState {
+    image: std::sync::Mutex<ImageLedger>,
+    sink: std::sync::Mutex<Option<UsageSink>>,
+}
+
+impl UsageState {
+    fn reset_session(&self) {
+        if let Ok(mut g) = self.image.lock() {
+            *g = ImageLedger::default();
+        }
+    }
+
+    /// 1 枚ぶんを累計へ足し、sink があれば `Image` イベントを流す (sink はロックの外で呼ぶ —
+    /// llm_client の記録点と同じ規律)。世代不一致で絵を捨てる場合でも課金は起きているので、
+    /// 呼び出し側は捨てる判定の**前**に記録する。
+    fn record_image(&self, provider: &str, u: &image_gen::ImageUsage) {
+        if let Ok(mut g) = self.image.lock() {
+            g.record(u.count, u.prompt_tokens, u.completion_tokens, Some(u.elapsed_sec));
+        }
+        let sink = self.sink.lock().ok().and_then(|g| g.clone());
+        if let Some(sink) = sink {
+            sink(&UsageEvent::Image {
+                role: "illustration".into(),
+                provider: provider.into(),
+                count: u.count,
+                prompt_tokens: u.prompt_tokens,
+                completion_tokens: u.completion_tokens,
+                elapsed_sec: Some(u.elapsed_sec),
+            });
+        }
+    }
+
+    #[allow(dead_code)] // Phase C の表示 (usage_snapshot command) が読む。
+    fn image_ledger(&self) -> ImageLedger {
+        self.image.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+}
+
 /// ゲスト参加時のアセット解決 root (spec 23)。正本はホスト側 — ゲストの backend は
 /// これだけを持つ (session と別に manage する = 遊休 backend の唯一の状態)。
 type GuestAssetRoot = Mutex<Option<PathBuf>>;
@@ -1290,6 +1333,8 @@ async fn generate_image(
     let generated = image_gen::generate(&config, &key, &prompt, seed, &refs)
         .await
         .map_err(|e| e.to_string())?;
+    // 利用量 (spec 30 Phase B)。世代不一致で捨てる場合でも課金は起きているので先に記録する。
+    app.state::<UsageState>().record_image(config.provider.as_str(), &generated.usage);
     // ② 世代が一致するときだけ置く。
     let mut guard = session.lock().await;
     let sess = guard.as_mut().ok_or("ゲームが終了しています")?;
@@ -3407,6 +3452,8 @@ async fn new_game(
     };
 
     let save_path = autosave_path(&app, &pkg_dir);
+    // 新セッション = 利用量の揮発分 (画像) をリセット (spec 30 Phase B。jsonl は追記のまま)。
+    app.state::<UsageState>().reset_session();
     *session.lock().await = Some(GameSession {
         state,
         scenario,
@@ -3568,6 +3615,8 @@ async fn restore_session(
 
     // オートセーブの書き先 (ロード元がスロットでも常に autosave パス = スロットは凍結点のまま)。
     let autosave = autosave_path(app, &pkg_dir);
+    // 新セッション = 利用量の揮発分 (画像) をリセット (spec 30 Phase B。jsonl は追記のまま)。
+    app.state::<UsageState>().reset_session();
     *session.lock().await = Some(GameSession {
         state,
         scenario,
@@ -5036,6 +5085,7 @@ async fn reveal_all(session: tauri::State<'_, SharedSession>) -> Result<RevealVi
 pub fn run() {
     tauri::Builder::default()
         .manage(SharedSession::new(None))
+        .manage(UsageState::default())
         .manage(GuestAssetRoot::new(None))
         .manage(EditorRoot(Mutex::new(None)))
         .manage(EditAssistCancel(std::sync::atomic::AtomicBool::new(false)))
@@ -5200,6 +5250,37 @@ mod tests {
         assert_eq!(harness::parse_recent_turns(Some(" 5 ")), 5);
         assert_eq!(harness::parse_recent_turns(None), harness::RECENT_NARRATIONS_DEFAULT);
         assert_eq!(harness::parse_recent_turns(Some("")), harness::RECENT_NARRATIONS_DEFAULT, "0 = 空 = 既定");
+    }
+
+    /// 【spec 30 Phase B】画像の累計は app の `UsageState` に積み、sink があれば `Image` イベントを
+    /// 1 枚 1 件で流す (role は常に illustration・provider は設定の綴り)。新セッションで累計だけ
+    /// リセットされ、sink は残る (jsonl は追記のまま = セッションを跨いで消えない)。
+    #[test]
+    fn usage_state_records_images_and_resets_per_session() {
+        use super::{image_gen, ImageLedger, UsageEvent};
+        use std::sync::{Arc, Mutex};
+        let st = super::UsageState::default();
+        let seen: Arc<Mutex<Vec<UsageEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let s2 = seen.clone();
+        *st.sink.lock().unwrap() = Some(Arc::new(move |e: &UsageEvent| s2.lock().unwrap().push(e.clone())));
+        st.record_image("openai", &image_gen::ImageUsage { count: 1, prompt_tokens: Some(272), completion_tokens: Some(1056), elapsed_sec: 24.8 });
+        st.record_image("comfy", &image_gen::ImageUsage { count: 1, prompt_tokens: None, completion_tokens: None, elapsed_sec: 12.0 });
+        let l = st.image_ledger();
+        assert_eq!((l.requests, l.count, l.prompt_tokens, l.completion_tokens), (2, 2, 272, 1056));
+        assert!((l.elapsed_sec - 36.8).abs() < 1e-9);
+        let ev = seen.lock().unwrap();
+        assert_eq!(ev.len(), 2);
+        match &ev[1] {
+            UsageEvent::Image { role, provider, count, prompt_tokens, elapsed_sec, .. } => {
+                assert_eq!((role.as_str(), provider.as_str(), *count, *prompt_tokens), ("illustration", "comfy", 1, None));
+                assert_eq!(*elapsed_sec, Some(12.0));
+            }
+            other => panic!("Image のはず: {other:?}"),
+        }
+        drop(ev);
+        st.reset_session();
+        assert_eq!(st.image_ledger(), ImageLedger::default(), "累計だけ消える");
+        assert!(st.sink.lock().unwrap().is_some(), "sink は残る");
     }
 
     /// 【要約タイムアウトの独立性 (2026-09-01)】あらすじの待ち時間 (`SUMMARY_LLM_TIMEOUT_SECS`) を

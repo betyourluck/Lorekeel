@@ -23,6 +23,17 @@ pub enum Provider {
     Comfy,
 }
 
+impl Provider {
+    /// 利用量イベントの `provider` 名 (serde の snake_case と同じ綴り)。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Provider::Openai => "openai",
+            Provider::Gemini => "gemini",
+            Provider::Comfy => "comfy",
+        }
+    }
+}
+
 /// UI の 1 軸 (形)。プロバイダ語彙への写像は [`SizeMap`]。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -803,9 +814,48 @@ pub fn image_file_name(stamp: &str, package_dir_name: &str, title: &str, turn: u
 
 // --- HTTP ドライバ ------------------------------------------------------------------------
 
+/// spec 30 Phase B: 1 枚ぶんの利用量。トークンは提供者が返すときだけ (ComfyUI は None)。
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ImageUsage {
+    /// 取り込んだ枚数。Kataribe は常に 1 枚しか取らない (ComfyUI の history に複数あっても先頭だけ)。
+    pub count: u32,
+    pub prompt_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
+    /// 発行から取得まで (OpenAI / Gemini = 1 リクエストの往復、ComfyUI = /prompt 発行 〜 /view 取得。
+    /// 参照のアップロードは含めない)。
+    pub elapsed_sec: f64,
+}
+
 pub struct Generated {
     pub mime: String,
     pub bytes: Vec<u8>,
+    pub usage: ImageUsage,
+}
+
+/// OpenAI Images の `usage.{input_tokens, output_tokens}` (gpt-image-1 系)。null・欠落・JSON でない
+/// 本文はどれも None — 画像は既に decode 済みなので、ここで落とさない (spec 30 Phase B)。
+pub fn openai_usage(body: &str) -> (Option<u64>, Option<u64>) {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return (None, None),
+    };
+    (
+        v.pointer("/usage/input_tokens").and_then(Value::as_u64),
+        v.pointer("/usage/output_tokens").and_then(Value::as_u64),
+    )
+}
+
+/// Gemini の `usageMetadata.{promptTokenCount, candidatesTokenCount}`。`usageMetadata` 自体が
+/// 無いことがある → None (spec 30 Phase B)。
+pub fn gemini_usage(body: &str) -> (Option<u64>, Option<u64>) {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return (None, None),
+    };
+    (
+        v.pointer("/usageMetadata/promptTokenCount").and_then(Value::as_u64),
+        v.pointer("/usageMetadata/candidatesTokenCount").and_then(Value::as_u64),
+    )
 }
 
 /// 1 枚生成する。`api_key` は openai/gemini で必須 (comfy は無視)。
@@ -827,6 +877,7 @@ pub async fn generate(
                 return Err(ImageGenError::Config("OpenAI の API キーが未設定です".into()));
             }
             // 参照ありのときだけ /images/edits (multipart)。無ければ従来の /generations (JSON)。
+            let t0 = std::time::Instant::now();
             let resp = if refs.is_empty() {
                 let body = encode_openai(cfg, prompt);
                 http.post(openai_endpoint(cfg)).bearer_auth(api_key).json(&body).send().await
@@ -841,13 +892,19 @@ pub async fn generate(
                 return Err(classify_status(status, text));
             }
             let bytes = decode_openai(&text)?;
-            Ok(Generated { mime: "image/png".into(), bytes })
+            let (prompt_tokens, completion_tokens) = openai_usage(&text);
+            Ok(Generated {
+                mime: "image/png".into(),
+                bytes,
+                usage: ImageUsage { count: 1, prompt_tokens, completion_tokens, elapsed_sec: t0.elapsed().as_secs_f64() },
+            })
         }
         Provider::Gemini => {
             if api_key.trim().is_empty() {
                 return Err(ImageGenError::Config("Gemini の API キーが未設定です".into()));
             }
             let body = encode_gemini(cfg, prompt, refs);
+            let t0 = std::time::Instant::now();
             let resp = http
                 .post(gemini_endpoint(cfg))
                 .header("x-goog-api-key", api_key)
@@ -861,7 +918,12 @@ pub async fn generate(
                 return Err(classify_status(status, text));
             }
             let (mime, bytes) = decode_gemini(&text)?;
-            Ok(Generated { mime, bytes })
+            let (prompt_tokens, completion_tokens) = gemini_usage(&text);
+            Ok(Generated {
+                mime,
+                bytes,
+                usage: ImageUsage { count: 1, prompt_tokens, completion_tokens, elapsed_sec: t0.elapsed().as_secs_f64() },
+            })
         }
         Provider::Comfy => {
             let wf_text = cfg
@@ -904,6 +966,8 @@ pub async fn generate(
             let vars = ComfyVars { prompt, negative: &cfg.negative, seed, width: w, height: h, refs: &ref_names };
             let substituted = comfy_prune_unfilled_refs(&comfy_substitute(&wf, &vars));
             let client_id = format!("kataribe-{}", seed);
+            // 秒は /prompt 発行から /view 取得まで (参照のアップロードは含めない)。
+            let t0 = std::time::Instant::now();
             let resp = http
                 .post(format!("{base}/prompt"))
                 .json(&comfy_prompt_body(substituted, &client_id))
@@ -957,7 +1021,11 @@ pub async fn generate(
                 return Err(classify_status(status, String::new()));
             }
             let bytes = r.bytes().await.map_err(ImageGenError::from)?.to_vec();
-            Ok(Generated { mime: "image/png".into(), bytes })
+            Ok(Generated {
+                mime: "image/png".into(),
+                bytes,
+                usage: ImageUsage { count: 1, prompt_tokens: None, completion_tokens: None, elapsed_sec: t0.elapsed().as_secs_f64() },
+            })
         }
     }
 }
@@ -1095,6 +1163,29 @@ Please retry in 13s.","status":"RESOURCE_EXHAUSTED"}}"#;
         assert!(matches!(decode_gemini(safety).unwrap_err(), ImageGenError::Blocked { reason } if reason == "SAFETY"));
         let text_only = r#"{"candidates":[{"content":{"parts":[{"text":"no image"}]},"finishReason":"STOP"}]}"#;
         assert!(matches!(decode_gemini(text_only).unwrap_err(), ImageGenError::Shape { .. }));
+    }
+
+    /// 【spec 30 Phase B】画像の usage は decode と別の純関数で拾う — OpenAI は usage.{input,output}_tokens
+    /// (null や欠落は None) / Gemini は usageMetadata.{promptTokenCount, candidatesTokenCount}
+    /// (usageMetadata 自体が無いことがある) / ComfyUI はトークンを持たない (枚数と秒だけ)。
+    /// どれも壊れた本文で落ちない (画像は既に decode 済み = 計器の失敗で絵を失わない)。
+    #[test]
+    fn image_usage_is_read_as_two_optional_values_per_provider() {
+        assert_eq!(
+            openai_usage(r#"{"data":[],"usage":{"input_tokens":272,"output_tokens":1056,"total_tokens":1328}}"#),
+            (Some(272), Some(1056))
+        );
+        assert_eq!(openai_usage(r#"{"data":[],"usage":{"input_tokens":null,"output_tokens":1056}}"#), (None, Some(1056)), "null は None");
+        assert_eq!(openai_usage(r#"{"data":[]}"#), (None, None), "usage 欠落");
+        assert_eq!(openai_usage("not json"), (None, None), "壊れた本文でも落ちない");
+        assert_eq!(
+            gemini_usage(r#"{"candidates":[],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":1290,"totalTokenCount":1302}}"#),
+            (Some(12), Some(1290))
+        );
+        assert_eq!(gemini_usage(r#"{"candidates":[]}"#), (None, None), "usageMetadata 自体が無い");
+        let comfy = ImageUsage { count: 1, prompt_tokens: None, completion_tokens: None, elapsed_sec: 12.0 };
+        assert_eq!((comfy.count, comfy.prompt_tokens, comfy.completion_tokens), (1, None, None));
+        assert_eq!(Provider::Comfy.as_str(), "comfy");
     }
 
     /// 【ComfyUI 置換は型を保つ】"%width%" 単独の文字列値は**数値 JSON** に、%prompt% は文字列
