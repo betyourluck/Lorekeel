@@ -206,12 +206,12 @@ adapter の usage 正規化を疑う（#58 の同族）。
 （adapter の正規化 #58 が `input + cache_read + cache_creation` を prompt に畳み、ledger は書き込みを別に持たない。
 `Pricing` も 3 欄で書き込み単価が無い）。
 
-**判断**: 誤差の向きと原因が分かったので v1 はこのまま（過小 6% は「内訳を割る」目的には足りる）。直すなら
+**判断（ユーザー裁定 2026-09-13「厳密にコストを計算するというよりおおよそが分かればいい。複雑になるなら入れなくていい」）**: 誤差の向きと原因が分かったので**このまま = 見送り**（過小 6% は「内訳を割る」目的には足りる）。参考までに、直すなら
 ①adapter が `cache_creation` を canonical `Usage` に別欄で出す（Anthropic だけが返す。他は 0）②`LlmLedger` に
 `cache_write_tokens` ③`Pricing` に 4 欄目 `cacheWritePerMtokUsd`（prices.json は `cache_write_per_mtok` を持つ行が
 あるので取り込みで埋まる）④`costOf` が `cache_write × cache_write 単価` を足す — の 4 点セットで、単価が無い登録
-では従来どおり素の入力単価で数える（見積もりが今より良くなるだけで、悪くなる経路は無い）。優先度は低い
-（Anthropic 以外では差が出ない・長いセッションほど読みが支配して割増の比率は下がる）。
+では従来どおり素の入力単価で数える（見積もりが今より良くなるだけで、悪くなる経路は無い）。ユーザー裁定で見送り
+（Anthropic 以外では差が出ない・長いセッションほど読みが支配して割増の比率は下がる・計器の目的は概算）。
 
 ## 名詞（data_contract `UsageMeter` に凍結、rev2）
 
