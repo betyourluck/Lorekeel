@@ -23,6 +23,7 @@ import { IS_MAC } from "../platform";
 import { theme, toggleTheme } from "../theme";
 import { t } from "../i18n";
 import { useGameStore } from "../stores/game";
+import { loadAiProfiles } from "../aiProfiles";
 import { formatTokens } from "../usage";
 
 // git の最新タグ (ビルド時に vite.config が注入)。例 "v0.3.2"。タグ無しは空 = 非表示。
@@ -48,15 +49,22 @@ defineProps<{
  */
 // spec 30 Phase C: バッジ hover にこのセッションの利用量 (全役割の合計)。hover の瞬間に取り直す。
 function badgeTitle(model: string): string {
-  const base = t("titlebar.modelBadge", { model });
+  const lines = [t("titlebar.modelBadge", { model })];
+  // spec 30 追補: 登録モデルにコンテキスト長があれば添える (hover のたびに読む = 設定で書いた直後から効く)。
+  const ctx = loadAiProfiles().find((p) => p.contextTokens && p.model.trim() === model.trim())?.contextTokens;
+  if (ctx) lines.push(t("titlebar.modelBadgeContext", { tokens: formatTokens(ctx) }));
   const u = game.usage;
-  if (!u || u.total.requests === 0) return base;
-  return `${base}\n${t("titlebar.modelBadgeUsage", {
-    requests: u.total.requests,
-    prompt: formatTokens(u.total.prompt_tokens),
-    cacheRead: formatTokens(u.total.cache_read_tokens),
-    completion: formatTokens(u.total.completion_tokens),
-  })}`;
+  if (u && u.total.requests > 0) {
+    lines.push(
+      t("titlebar.modelBadgeUsage", {
+        requests: u.total.requests,
+        prompt: formatTokens(u.total.prompt_tokens),
+        cacheRead: formatTokens(u.total.cache_read_tokens),
+        completion: formatTokens(u.total.completion_tokens),
+      }),
+    );
+  }
+  return lines.join("\n");
 }
 
 function badgeStyle(model: string): Record<string, string> {

@@ -27,6 +27,7 @@ export const messages = {
       updateOpenGeneric: "配布サイトを開く",
       modelBadge: "使用中の AI モデル: {model} (設定 → AIモデル で変更)",
       modelBadgeUsage: "このセッション: {requests} 回 / 入力 {prompt} トークン (うちキャッシュ {cacheRead}) / 出力 {completion} トークン",
+      modelBadgeContext: "コンテキスト長 {tokens} トークン (登録モデルの値)",
       guestConnected: "ホスト接続中",
       guestReconnecting: "再接続中…",
       guestOffline: "ホスト未接続",
@@ -352,7 +353,12 @@ export const messages = {
         pricingCacheRead: "キャッシュ読み",
         pricingOutput: "出力",
         pricingNote:
-          "この登録モデルの単価。3 欄すべて書いたときだけ、下の「利用量」に見積もり（≈）が出ます。既定値はありません — 価格は変わるので、間違った金額を出すより空のままにします。「保存 + 登録モデルを更新」か新規登録で保存され、.env には書きません。",
+          "この登録モデルの単価とコンテキスト長。単価は 3 欄すべて書いたときだけ、下の「利用量」に見積もり（≈）が出ます。既定値はありません — 価格は変わるので、間違った金額を出すより空のままにします。「単価を取り込む」は価格表（既定は litellm 由来の prices.json）をその場で取得し、モデル名で照合して欄を埋めるだけです。候補が複数あって価格が食い違うときは埋めず候補を示します。埋まった値は「保存 + 登録モデルを更新」か新規登録で保存され、.env には書きません。",
+        contextTokens: "コンテキスト長（トークン・任意）",
+        priceTableUrl: "価格表の URL",
+        pricingImport: "単価を取り込む",
+        pricingImporting: "取得中…",
+        pricingImportTitle: "価格表を取得し、上のモデル名で照合して単価とコンテキスト長を埋めます（保存はしません）",
         effortNote:
           "どちらも**この登録モデルごと**の値で、保存すると .env に書かれます。「思考の深さ」は GM の語りにだけ効きます（あらすじ要約と AI 編集には継がれません）。思考は出力の一部として上限を食うので、深さを使うときは出力上限を 16000 以上にしてください（xhigh / max は 64000 目安）。深く考えるほど出力トークンが増える＝費用も増えます。高価なモデルでは「使わない」、安いモデルでは深く、という使い分けができます。",
         save: "保存",
@@ -427,6 +433,7 @@ export const messages = {
         imageCount: "{count} 枚",
         none: "まだ記録がありません（ターンを進めるか挿絵を生成すると増えます）",
         partial: "申告 {reported}/{requests} 件",
+        context: "コンテキスト長 {tokens}",
         note:
           "トークンはプロバイダの usage をそのまま数えたものです。金額は、その登録モデルに単価（上の 3 欄）を書いたときの見積もり（≈）か、プロバイダが申告した額。合計に金額を出せない役割があるときは ≥ で下限を示します。1 イベント 1 行の記録が app_data/logs/usage.jsonl に追記されます（本文は書きません）。",
         roles: {
@@ -462,6 +469,12 @@ export const messages = {
         summaryTimeoutDefault: "要約の待ち時間の上限を既定（60 秒）に戻しました",
         recentTurnsSet: "直前の語りを {turns} ターン分そのまま渡すようにしました（次のターンから）",
         recentTurnsDefault: "直前の語りのターン数を既定（3）に戻しました",
+        pricingImportModelRequired: "先にモデル名を入れてください（そのモデル名で価格表を照合します）",
+        pricingImported: "「{key}」の単価を埋めました（価格表の取得日 {fetched}）。「保存 + 登録モデルを更新」か新規登録で保存されます",
+        pricingImportedNoCache: "「{key}」の入力・出力単価を埋めました（取得日 {fetched}）。キャッシュ読みの単価は表に無いので空のままです — 3 欄揃わないと見積もりは出ません",
+        pricingImportAmbiguous: "候補が複数あり価格が食い違うので埋めませんでした。手で選んで書いてください（入力 / キャッシュ読み / 出力）: {list}",
+        pricingImportNone: "「{model}」は価格表にありません（{count} 件・取得日 {fetched}）",
+        pricingImportFailed: "価格表の取得に失敗: {error}",
       },
     },
     contest: {
@@ -939,6 +952,7 @@ export const messages = {
       updateOpenGeneric: "Open the distribution site",
       modelBadge: "Current AI model: {model} (change in Settings → AI Model)",
       modelBadgeUsage: "This session: {requests} requests / {prompt} input tokens ({cacheRead} cached) / {completion} output tokens",
+      modelBadgeContext: "context length {tokens} tokens (from the saved model)",
       guestConnected: "connected to host",
       guestReconnecting: "reconnecting…",
       guestOffline: "host not connected",
@@ -1263,7 +1277,12 @@ export const messages = {
         pricingCacheRead: "Cache read",
         pricingOutput: "Output",
         pricingNote:
-          "Prices for this saved model. An estimate (≈) appears under “Usage” only when all three are filled. There is no default — prices change, and a wrong amount is worse than none. Saved with “Save + update saved model” or a new registration; never written to .env.",
+          "Prices and context length for this saved model. The estimate (≈) in “Usage” below appears only when all three price fields are filled. There is no default — prices change, and a wrong amount is worse than none. “Import prices” fetches the price table (default: the litellm-derived prices.json), matches it by model name and only fills the fields. When several candidates disagree on price, nothing is filled and the candidates are listed. Saved by “Save + update saved model” or by a new registration; not written to .env.",
+        contextTokens: "Context length (tokens, optional)",
+        priceTableUrl: "Price table URL",
+        pricingImport: "Import prices",
+        pricingImporting: "Fetching…",
+        pricingImportTitle: "Fetch the price table, match it by the model name above and fill prices and context length (nothing is saved)",
         effortNote:
           "Both are **per saved model** and are written to .env when you save. Thinking depth applies only to the GM's narration (it is not inherited by synopsis summarisation or AI editing). Thinking counts against the output limit, so raise the limit to 16000 or more when you use a depth (64000 for xhigh / max). Deeper thinking means more output tokens, which costs more — you can leave it Off for an expensive model and turn it up for a cheap one.",
         save: "Save",
@@ -1339,6 +1358,7 @@ export const messages = {
         imageCount: "{count} images",
         none: "Nothing recorded yet (play a turn or generate an illustration).",
         partial: "reported {reported}/{requests}",
+        context: "context {tokens}",
         note:
           "Tokens are counted straight from each provider’s usage. Cost is an estimate (≈) when the saved model has prices (three fields above), or the amount the provider reported. When some role has no price, the total shows ≥ as a lower bound. One line per event is appended to app_data/logs/usage.jsonl (no prompt text).",
         roles: {
@@ -1374,6 +1394,12 @@ export const messages = {
         summaryTimeoutDefault: "Summary time limit reset to the default (60 s)",
         recentTurnsSet: "Passing the last {turns} passages verbatim (from the next turn)",
         recentTurnsDefault: "Recent passages reset to the default (3)",
+        pricingImportModelRequired: "Enter a model name first (the price table is matched by it)",
+        pricingImported: "Filled prices for “{key}” (table fetched {fetched}). Saved by “Save + update saved model” or a new registration",
+        pricingImportedNoCache: "Filled input/output prices for “{key}” (table fetched {fetched}). The table has no cache-read price, so that field stays empty — no estimate until all three are filled",
+        pricingImportAmbiguous: "Several candidates disagree on price, so nothing was filled. Pick one by hand (input / cache read / output): {list}",
+        pricingImportNone: "“{model}” is not in the price table ({count} entries, fetched {fetched})",
+        pricingImportFailed: "Failed to fetch the price table: {error}",
       },
     },
     contest: {

@@ -2067,6 +2067,89 @@ fn os_open(target: &str) -> Result<(), String> {
         .map_err(|e| format!("開けません: {e}"))
 }
 
+/// spec 30 追補 (2026-09-13 ユーザー要望「コンテキスト長や単価表は prices.json から取得できる。
+/// モデルに自動で割り当てられるか」): 価格表の 1 行。litellm 由来の
+/// `https://betyourluck.github.io/prices.json` の形 (`key` + USD/100 万トークン + 任意欄)。
+/// 知らない欄 (cache_write 等) は読み捨てる。**照合と欄埋めは frontend の純関数** (`prices.ts`) —
+/// backend は取ってきて形を検めるだけ (CSP の connect-src が localhost 限定なので WebView からは
+/// 直接叩けない = 画像生成・書庫と同じ理由でここに居る)。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+struct PriceEntry {
+    key: String,
+    #[serde(default)]
+    max_input_tokens: Option<u64>,
+    input_per_mtok: f64,
+    output_per_mtok: f64,
+    #[serde(default)]
+    cache_read_per_mtok: Option<f64>,
+}
+
+/// 価格表全体。`version` はこの形式の版 (今は 1 だけを受ける — 版が上がって欄の意味が変わった表を
+/// 黙って読むと**間違った金額**が登録に入る = 裁定 1 の「無いより悪い」側なので拒む)。
+#[derive(Serialize, Deserialize, Debug)]
+struct PriceTable {
+    #[serde(default)]
+    version: u32,
+    /// 表の取得日 (表示用。「いつの価格か」を必ず添える)。
+    #[serde(default)]
+    fetched: String,
+    models: Vec<PriceEntry>,
+}
+
+/// 価格表の本文 → `PriceTable` (純関数 = PoC の対象)。
+fn parse_price_table(text: &str) -> Result<PriceTable, String> {
+    let t: PriceTable = serde_json::from_str(text).map_err(|e| format!("価格表の形式が読めません: {e}"))?;
+    if t.version != 1 {
+        return Err(format!("価格表の版 {} には対応していません (対応: 1)", t.version));
+    }
+    if t.models.iter().any(|m| {
+        m.key.trim().is_empty()
+            || !m.input_per_mtok.is_finite()
+            || !m.output_per_mtok.is_finite()
+            || m.input_per_mtok < 0.0
+            || m.output_per_mtok < 0.0
+            || m.cache_read_per_mtok.is_some_and(|c| !c.is_finite() || c < 0.0)
+    }) {
+        return Err("価格表に不正な行があります (空のキー・負や非数の単価)".to_string());
+    }
+    Ok(t)
+}
+
+/// 価格表の取得上限 (バイト)。1,700 行で 240KB なので 8MB は十分な余裕 = 巨大な応答で固まらない保険。
+const PRICE_TABLE_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+/// 価格表を取ってくる (spec 30 追補)。URL はユーザー設定 (既定は betyourluck.github.io) —
+/// **押したときだけ** (opt-in)。取った表は frontend が照合して単価 3 欄とコンテキスト長を
+/// **フォームに埋めるだけ**で、保存は従来の「保存 + 登録モデルを更新」を通る (黙って書かない)。
+#[tauri::command]
+async fn fetch_price_table(url: String) -> Result<PriceTable, String> {
+    let u = url.trim().to_string();
+    if !(u.starts_with("http://") || u.starts_with("https://")) {
+        return Err("価格表の URL は http:// または https:// で始めてください".to_string());
+    }
+    let res = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTP クライアントの初期化に失敗: {e}"))?
+        .get(&u)
+        .send()
+        .await
+        .map_err(|e| format!("価格表に接続できません: {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("価格表の取得に失敗しました: {}", res.status()));
+    }
+    if res.content_length().is_some_and(|n| n as usize > PRICE_TABLE_MAX_BYTES) {
+        return Err("価格表が大きすぎます (8MB 超)".to_string());
+    }
+    let bytes = res.bytes().await.map_err(|e| format!("価格表の読み込みに失敗: {e}"))?;
+    if bytes.len() > PRICE_TABLE_MAX_BYTES {
+        return Err("価格表が大きすぎます (8MB 超)".to_string());
+    }
+    let text = std::str::from_utf8(&bytes).map_err(|_| "価格表が UTF-8 ではありません".to_string())?;
+    parse_price_table(text)
+}
+
 /// URL を既定ブラウザで開く (更新通知のクリック等)。http/https のみ受理。
 /// URL は呼び出し側 (フロント) が持つ設定値 = 配布サイト。API 応答由来の URL は開かない
 /// (攻撃者が誘導する外部 URL を踏まない — 開くのは常にユーザーが登録した siteUrl)。
@@ -5262,6 +5345,7 @@ pub fn run() {
             save_ui_settings,
             rename_notice,
             fetch_site_packages,
+            fetch_price_table,
             install_site_package,
             check_package_updates,
             package_is_locally_edited,
@@ -5326,6 +5410,33 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    /// 【価格表の読み (spec 30 追補 2026-09-13)】prices.json は litellm 由来で欄が行ごとに揃わない —
+    /// `max_input_tokens` と `cache_read_per_mtok` は無い行がある (実表 1,732 行中キャッシュ読みは 490 行)。
+    /// 無い欄は None で通し、知らない欄 (cache_write) は捨て、**版が違う表・負や非数の単価は拒む**
+    /// (黙って読むと間違った金額が登録に入る = 裁定 1 の「無いより悪い」側)。
+    #[test]
+    fn price_table_parses_optional_fields_and_rejects_bad_tables() {
+        use super::parse_price_table;
+        let good = r#"{"_notice":"x","version":1,"fetched":"2026-08-20","models":[
+            {"key":"claude-opus-4-8","max_input_tokens":1000000,"input_per_mtok":5.0,"output_per_mtok":25.0,"cache_read_per_mtok":0.5,"cache_write_per_mtok":6.25},
+            {"key":"grok-4.3","input_per_mtok":1.25,"output_per_mtok":2.5}
+        ]}"#;
+        let t = parse_price_table(good).unwrap();
+        assert_eq!(t.fetched, "2026-08-20");
+        assert_eq!(t.models.len(), 2);
+        assert_eq!(t.models[0].max_input_tokens, Some(1_000_000));
+        assert_eq!(t.models[0].cache_read_per_mtok, Some(0.5));
+        assert_eq!(t.models[1].max_input_tokens, None);
+        assert_eq!(t.models[1].cache_read_per_mtok, None);
+        // 版違いは拒む (欄の意味が変わった表を黙って読まない)
+        assert!(parse_price_table(r#"{"version":2,"models":[]}"#).unwrap_err().contains("版 2"));
+        // 負の単価・空のキーは拒む
+        assert!(parse_price_table(r#"{"version":1,"models":[{"key":"m","input_per_mtok":-1,"output_per_mtok":1}]}"#).is_err());
+        assert!(parse_price_table(r#"{"version":1,"models":[{"key":" ","input_per_mtok":1,"output_per_mtok":1}]}"#).is_err());
+        // 形が違う (models が無い) 本文は読めないと言う
+        assert!(parse_price_table(r#"{"version":1}"#).unwrap_err().contains("形式"));
+    }
+
     /// 【削除の返りは files と media の両方 (2026-09-04 ユーザー報告)】メディアの削除ボタンを
     /// 押しても一覧が変わらず「無反応」に見えた。真因は返りの形 — 削除は作成と同じ
     /// `files` だけの返りを使い回しており、frontend は返りをそのまま state に写すので

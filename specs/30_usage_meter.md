@@ -3,6 +3,7 @@
 **Status**: rev2（2026-09-13 起草 → 4 点はユーザー裁定で凍結 → Phase A 実装 → **同日査読 2 本
 （矛盾 9 + 6）を反映 = rev2、Phase A のコードも rev2 に追従** → ユーザー承認 → **✅Phase B（同日）** → **✅Phase C（同日）**。
 残 = D 較正（実プレイ 1 セッションとダッシュボードの突合）+ GUI 目視（ユーザー実機）。
+**追補（同日）**: 価格表 `prices.json` からの取り込み（裁定 1 を「焼き込み既定なし・取り込みは opt-in」へ改訂、下の C-2 節）。
 査読の反映は末尾「査読の反映」節に凍結。
 
 ## 動機（ユーザーの言葉から）
@@ -32,6 +33,12 @@
    見積もりは作らない。None なら金額は出さない。08-20（AI モデル既定の撤去）と同型 —
    価格は変わるし、**間違った金額は無いより悪い**。**プロバイダが費用を申告する場合（今は
    Perplexity の `cost` のみ）はそれを捨てず `Usage.cost_usd` に載せ、見積もりより申告を優先する。**
+   **←追補 2026-09-13（ユーザー要望「単価表は prices.json から取得できる。自動で割り当てられるか」）**:
+   文言を「**焼き込み既定なし・取り込みは opt-in**」へ改訂。アプリは価格を**持たない**ままで、ユーザーが保守する
+   外部の表（既定 `https://betyourluck.github.io/prices.json`、URL は差し替え可）を**押したときだけ**取りに行き、
+   モデル名で照合して単価 3 欄とコンテキスト長を**フォームに埋めるだけ**。保存は従来の経路（黙って登録を書き換えない）、
+   出所と表の取得日を状態行に必ず添える。裁定の根拠（価格は変わる・間違った金額は無いより悪い）はそのまま —
+   焼き込みは「いつの価格か分からない値が黙って居座る」から悪く、取り込みは「いつのどの表から来たか」が見えるので両立する。
 2. **永続化はセッション揮発 + `app_data/logs/usage.jsonl` 追記（置き場は固定）。** セーブには入れない
    （セーブ汚染と再現性崩れを避ける）。セッション累計 = client 単位の `LlmLedger`（プロセス内揮発）+
    app セッション単位の `ImageLedger`。永続 = **1 イベント 1 行**の jsonl で、中身は
@@ -151,6 +158,31 @@ frontend = `usage.ts`（純関数: `costOf` / `parsePricing` / `readPricing` / `
 - 表示: 決定 4 のとおり。セッション合計は全 client の `LlmLedger` を `absorb` で足す（GM / summary /
   editor / image_prompt の全部）+ `ImageLedger`。
 
+### C-2. 価格表の取り込み（✅追補、2026-09-13）
+
+- **backend** `fetch_price_table(url)` → `PriceTable { version, fetched, models: [PriceEntry { key, max_input_tokens?, input_per_mtok, output_per_mtok, cache_read_per_mtok? }] }`。
+  取ってきて形を検めるだけ（`parse_price_table` 純関数: 版 1 以外・空キー・負や非数の単価は拒む = 版が上がって欄の意味が
+  変わった表を黙って読むと間違った金額が入る）。上限 8MB・30 秒。WebView からは CSP（connect-src localhost 限定）で
+  直接叩けないので backend に居る（画像生成・書庫と同じ理由）。知らない欄（cache_write 等）は読み捨てる。
+- **frontend** `prices.ts`（純関数・vitest 11 本）: `normalizeModelKey`（`/` の後ろ・`@` の前・**英字だけの段** `anthropic.` `us.` を剥ぐ。
+  `gemini-3.5-flash` の `3.5` は段ではない）/ `matchPrice`（**完全一致 → 正規化一致**。正規化の候補が複数で**価格が食い違えば
+  `ambiguous`** = 埋めずに候補を見せる。同価格なら素の行を優先）/ `pricingFormFromEntry`（**キャッシュ読みが表に無い行は空のまま**
+  = 入力単価を写して「割引なし」とするのは推測なので埋めない。3 欄揃わないと見積もりは出ない、が既存の規則）/
+  `parseContextTokens` / `readContextTokens`（正の整数だけ）。
+- **実表の形が照合規則を決めた**: 1,732 行のうち正規化で 1,421 群、**131 群が価格の食い違う候補を持つ**。`claude-opus-4-8` は
+  接頭辞違いで 9 行あり、**地域つき（us./eu./jp./au. = Bedrock）は 1 割高い**（5.0 vs 5.5）。完全一致が無ければ
+  `ambiguous` に落ちる = 「近い行を黙って選ばない」が実データで必要だった。`gpt-5.6-luna` も `openai.` 行だけ 1 割高い。
+  キャッシュ読みは 490 行にしか無い（`grok-4.3` に無い）。文脈長は 1,493 行（`openai/…` の転記行には無い →
+  同じモデルの他の行から補う）。
+- **登録モデル** `aiModelProfiles[].contextTokens?: number`（任意・正の整数・.env には書かない・engine も llm_client も読まない）。
+  最初の使い道 = 利用量の表のモデル欄に「コンテキスト長 N」、バッジ hover に 1 行。上限に近づいた警告は次（1 リクエストの
+  入力トークンを ledger は持たない = `CacheStat.recent` の `prompt` を引く形が候補）。
+- **UI**: 単価 3 欄の下にコンテキスト長 + 価格表の URL（`kataribe.priceTableUrl`、既定のときは書かない）+「単価を取り込む」。
+  状態行 = 埋めた行のキーと取得日 / キャッシュ読みが無い旨 / 候補一覧（`key: in / cache / out`）/ 表に無い / 取得失敗。
+  モデル名が空なら取りに行かない。
+- **新規登録時の自動前埋めは入れなかった** — 埋める前提として表の取得（ネットワーク）が要り、モデル名を打つたびに走らせる形は
+  opt-in の線を越える。ボタンは新規登録の前にも押せるので同じ動線で足りる。
+
 ### D. 較正（Phase D）
 
 実プレイ 1 セッション（`LLM_CACHE_DEBUG=1`）を回し、同時間帯のプロバイダのダッシュボードと
@@ -187,7 +219,7 @@ type Pricing = { inputPerMtokUsd: number, cacheReadPerMtokUsd: number, outputPer
 
 ## スコープ外（v1）
 
-- 価格の自動取得・既定価格・為替。金額は USD 固定、ユーザーが書いた単価だけ。
+- ~~価格の自動取得~~・既定価格・為替。金額は USD 固定。価格表からの**手動取り込み**は追補 C-2 で入った（自動＝黙って登録を書き換える形は今も外）。
 - jsonl のローテ・集計 UI（月次は Phase D で必要になったら）。
 - ゲスト（spec 23）側の集計 — AI を回すのはホストなので、ホストの計器で足りる。
 - TTS・ノックサーバー・書庫の通信量。
@@ -199,6 +231,7 @@ type Pricing = { inputPerMtokUsd: number, cacheReadPerMtokUsd: number, outputPer
   （app 4 箇所・CLI 3 箇所）。PoC 5 本。
 - **B**（✅）: image_gen の usage decode + `Image` イベント + `UsageState.image`。PoC: 3 プロバイダの decode + app の状態。
 - **C**（✅）: sink（jsonl）・pricing・表示。PoC: app 1 本（役割別累計・jsonl 1 イベント 1 行・リセットで jsonl は残る）+ frontend vitest 10 本（申告優先 / 部分申告 / 見積もりの式 / 3 欄揃わないと None / 表示）。
+- **C-2**（✅追補）: 価格表の取り込み。PoC: app 1 本（`parse_price_table` の任意欄・版違い・不正行）+ frontend vitest 11 本（正規化 / 完全一致が地域つきの高い行に負けない / 同価格の候補は素の行 / 食い違えば ambiguous / 表に無い / キャッシュ読み無しは空 / 文脈長の入力と保存値）+ aiProfiles +1（contextTokens の前方互換）。
 - **D**: 較正 1 セッション → 誤差を本 spec に記録。
 
 ## PoC 方針

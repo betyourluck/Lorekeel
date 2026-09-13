@@ -91,4 +91,18 @@ describe("loadAiProfiles", () => {
     expect(p.effort).toBe("high");
     expect(p.maxTokens).toBe("16000");
   });
+
+  it("コンテキスト長は正の整数だけ読み戻る (spec 30 追補)", () => {
+    stubStorage({
+      "kataribe.aiModelProfiles": JSON.stringify([
+        { id: "a", name: "a", model: "m", baseUrl: "b", apiKey: "k", contextTokens: 1048576 },
+        { id: "b", name: "b", model: "m", baseUrl: "b", apiKey: "k", contextTokens: "1048576" },
+        { id: "c", name: "c", model: "m", baseUrl: "b", apiKey: "k" },
+      ]),
+    });
+    const [a, b, c] = loadAiProfiles();
+    expect(a.contextTokens).toBe(1048576);
+    expect(b.contextTokens).toBeUndefined();
+    expect(c.contextTokens).toBeUndefined();
+  });
 });

@@ -28,6 +28,15 @@ import {
   type AiModelProfile,
   type PaneTheme,
 } from "../stores/game";
+import {
+  DEFAULT_PRICE_TABLE_URL,
+  PRICE_TABLE_URL_KEY,
+  describeCandidate,
+  matchPrice,
+  parseContextTokens,
+  pricingFormFromEntry,
+  type PriceTable,
+} from "../prices";
 import * as tts from "../tts";
 import {
   costOf,
@@ -368,6 +377,52 @@ function pricingToForm(p?: Pricing): { input: string; cacheRead: string; output:
     ? { input: String(p.inputPerMtokUsd), cacheRead: String(p.cacheReadPerMtokUsd), output: String(p.outputPerMtokUsd) }
     : { input: "", cacheRead: "", output: "" };
 }
+// spec 30 追補: コンテキスト長 (登録モデルの欄。単価と同じく .env には書かない)。
+const contextForm = ref("");
+function contextToForm(n?: number): string {
+  return n ? String(n) : "";
+}
+// spec 30 追補: 価格表 (prices.json) の取り込み。**押したときだけ**取りに行き、単価 3 欄とコンテキスト長を
+// フォームに埋めるだけ — 保存は従来の「保存 + 登録モデルを更新」を通る (黙って登録を書き換えない)。
+// URL はユーザーが差し替えられる (自分で保守する表を指せる)。
+const priceTableUrl = ref(localStorage.getItem(PRICE_TABLE_URL_KEY) || DEFAULT_PRICE_TABLE_URL);
+const importingPrices = ref(false);
+function savePriceTableUrl() {
+  const u = priceTableUrl.value.trim();
+  if (!u || u === DEFAULT_PRICE_TABLE_URL) localStorage.removeItem(PRICE_TABLE_URL_KEY);
+  else localStorage.setItem(PRICE_TABLE_URL_KEY, u);
+}
+async function importPricing() {
+  const model = llm.value.model.trim();
+  if (!model) {
+    llmStatus.value = t("settings.status.pricingImportModelRequired");
+    return;
+  }
+  importingPrices.value = true;
+  try {
+    const table = await invoke<PriceTable>("fetch_price_table", { url: priceTableUrl.value.trim() || DEFAULT_PRICE_TABLE_URL });
+    const m = matchPrice(model, table);
+    const fetched = table.fetched || "?";
+    if (m.kind === "none") {
+      llmStatus.value = t("settings.status.pricingImportNone", { model, count: table.models.length, fetched });
+      return;
+    }
+    if (m.kind === "ambiguous") {
+      llmStatus.value = t("settings.status.pricingImportAmbiguous", { list: m.candidates.map(describeCandidate).join(" / ") });
+      return;
+    }
+    const f = pricingFormFromEntry(m.entry);
+    pricingForm.value = { input: f.input, cacheRead: f.cacheRead, output: f.output };
+    if (m.contextTokens) contextForm.value = String(m.contextTokens);
+    llmStatus.value = f.complete
+      ? t("settings.status.pricingImported", { key: m.entry.key, fetched })
+      : t("settings.status.pricingImportedNoCache", { key: m.entry.key, fetched });
+  } catch (e) {
+    llmStatus.value = t("settings.status.pricingImportFailed", { error: String(e) });
+  } finally {
+    importingPrices.value = false;
+  }
+}
 // spec 30 Phase C: このセッションの利用量 (役割別・画像・合計)。開いたときと「更新」で取り直す。
 const usage = ref<UsageSnapshot | null>(null);
 async function loadUsage() {
@@ -392,6 +447,11 @@ function costText(c: CostView): string {
     default:
       return "-";
   }
+}
+// spec 30 追補: その model_id を持つ登録モデルのコンテキスト長 (無ければ undefined = 表示なし)。
+function contextFor(modelId: string): number | undefined {
+  const id = modelId.trim();
+  return profiles.value.find((p) => p.contextTokens && p.model.trim() === id)?.contextTokens;
 }
 function costLabel(r: RoleUsage): string {
   return costText(costOf(r.ledger, pricingFor(r.model_id, profiles.value)));
@@ -440,7 +500,10 @@ function syncSelectionToConfig() {
   // 登録の古い値 (初回は空) に戻る = 「保存 + 登録モデルを更新」で単価が消えた (ユーザー実機 2026-09-13)。
   const changed = (hit?.id ?? "") !== selectedProfileId.value;
   selectedProfileId.value = hit ? hit.id : "";
-  if (changed) pricingForm.value = pricingToForm(hit?.pricing);
+  if (changed) {
+    pricingForm.value = pricingToForm(hit?.pricing);
+    contextForm.value = contextToForm(hit?.contextTokens);
+  }
 }
 
 // コンボで選んだら、下のフォームへ即反映する (表示のみ・.env には書かない)。
@@ -457,6 +520,7 @@ function onSelectProfile() {
   };
   llmWarnings.value = []; // 表示を替えただけ = まだ書いていないので前の警告は当たらない
   pricingForm.value = pricingToForm(p.pricing);
+  contextForm.value = contextToForm(p.contextTokens);
   llmStatus.value = t("settings.status.profileShowing", { name: p.name });
 }
 
@@ -485,6 +549,7 @@ function saveDraft() {
     effort: llm.value.effort.trim(),
     maxTokens: llm.value.max_tokens.trim(),
     pricing: parsePricing(pricingForm.value),
+    contextTokens: parseContextTokens(contextForm.value),
   };
   profiles.value = [...profiles.value, profile];
   saveAiProfiles(profiles.value);
@@ -676,6 +741,7 @@ async function saveLlmAndProfile() {
   }
   // 単価は .env を書く**前**にフォームから取る (saveLlm の中の同期がフォームに触りうるため)。
   const pricing = parsePricing(pricingForm.value);
+  const contextTokens = parseContextTokens(contextForm.value);
   const pricingTyped = [pricingForm.value.input, pricingForm.value.cacheRead, pricingForm.value.output].some((s) => s.trim() !== "");
   // **.env を先に書き、成功したときだけ登録を書き換える** — 失敗したのに登録簿だけ新しくすると、
   // 一度も適用されていない値が「登録済み」として残る。
@@ -689,6 +755,7 @@ async function saveLlmAndProfile() {
     effort: llm.value.effort.trim(),
     maxTokens: llm.value.max_tokens.trim(),
     pricing,
+    contextTokens,
   };
   profiles.value = profiles.value.map((x) => (x.id === p.id ? updated : x));
   saveAiProfiles(profiles.value);
@@ -1577,6 +1644,29 @@ onMounted(async () => {
                   class="mt-1 block w-full min-w-0 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none" />
               </label>
             </div>
+            <!-- spec 30 追補: コンテキスト長 + 価格表からの取り込み (opt-in・フォームに埋めるだけ)。 -->
+            <div class="grid grid-cols-3 gap-2 items-end">
+              <label class="block text-xs text-parchment/60">
+                {{ t("settings.model.contextTokens") }}
+                <input v-model="contextForm" inputmode="numeric" placeholder="200000"
+                  class="mt-1 block w-full min-w-0 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none" />
+              </label>
+              <label class="block text-xs text-parchment/60 col-span-2">
+                {{ t("settings.model.priceTableUrl") }}
+                <div class="mt-1 flex gap-2">
+                  <input v-model="priceTableUrl" @change="savePriceTableUrl" :placeholder="DEFAULT_PRICE_TABLE_URL"
+                    class="block w-full min-w-0 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none" />
+                  <button
+                    class="shrink-0 rounded bg-ash/60 hover:bg-ash px-3 py-1 text-xs text-parchment disabled:opacity-40"
+                    :disabled="importingPrices"
+                    :title="t('settings.model.pricingImportTitle')"
+                    @click="importPricing"
+                  >
+                    {{ importingPrices ? t("settings.model.pricingImporting") : t("settings.model.pricingImport") }}
+                  </button>
+                </div>
+              </label>
+            </div>
             <HelpNote>{{ t("settings.model.pricingNote") }}</HelpNote>
             <p v-for="(w, i) in llmWarnings" :key="i" class="text-warn/90 text-xs">⚠ {{ w }}</p>
             <!-- 保存は 2 種類 (2026-08-26): .env だけ / .env と登録モデルの両方。
@@ -1667,7 +1757,9 @@ onMounted(async () => {
                   <tbody>
                     <tr v-for="r in usage.llm" :key="r.role">
                       <td class="pr-2">{{ roleLabel(r.role) }}</td>
-                      <td class="pr-2 max-w-[10rem] truncate">{{ r.model_id }}</td>
+                      <td class="pr-2 max-w-[12rem] truncate" :title="r.model_id">
+                        {{ r.model_id }}<span v-if="contextFor(r.model_id)" class="text-parchment/50"> ({{ t("settings.usage.context", { tokens: formatTokens(contextFor(r.model_id)!) }) }})</span>
+                      </td>
                       <td class="text-right pr-2">{{ r.ledger.requests }}</td>
                       <td class="text-right pr-2">{{ formatTokens(r.ledger.prompt_tokens) }}</td>
                       <td class="text-right pr-2">{{ formatTokens(r.ledger.cache_read_tokens) }}</td>

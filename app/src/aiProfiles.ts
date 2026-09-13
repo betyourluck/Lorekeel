@@ -8,6 +8,7 @@
 
 // プロファイルから選んで「決定」で .env へ反映する形にする。**.env の書き込みは決定時のみ**
 // (選択変更だけでは書かない)。API キーは平文で localStorage に入る (BYO-key・ローカル app)。
+import { readContextTokens } from "./prices";
 import { readPricing, type Pricing } from "./usage";
 
 const AI_PROFILES_KEY = "kataribe.aiModelProfiles";
@@ -26,6 +27,9 @@ export interface AiModelProfile {
   /** spec 30: 単価 (USD / 100 万トークン)。**任意・3 欄揃ったときだけ** — 無ければ金額を出さない。
    *  .env には書かない (計器の表示にだけ使う)。既定価格は持たない (間違った金額は無いより悪い)。 */
   pricing?: Pricing;
+  /** spec 30 追補: コンテキスト長 (入力トークンの上限)。任意・正の整数。価格表の取り込みで埋まるか手で書く。
+   *  .env には書かない (計器の表示にだけ使う — engine も llm_client も読まない)。 */
+  contextTokens?: number;
 }
 // localStorage から読む (壊れていれば空)。全項目を型で検査し、欠けは既定で補う (前方互換)。
 export function loadAiProfiles(): AiModelProfile[] {
@@ -47,6 +51,7 @@ export function loadAiProfiles(): AiModelProfile[] {
         effort: typeof p.effort === "string" ? p.effort : "",
         maxTokens: typeof p.maxTokens === "string" ? p.maxTokens : "",
         pricing: readPricing(p.pricing),
+        contextTokens: readContextTokens(p.contextTokens),
       }));
   } catch {
     return [];
