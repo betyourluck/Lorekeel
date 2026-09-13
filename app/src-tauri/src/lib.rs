@@ -2098,7 +2098,13 @@ struct PriceTable {
 
 /// 価格表の本文 → `PriceTable` (純関数 = PoC の対象)。
 fn parse_price_table(text: &str) -> Result<PriceTable, String> {
-    let t: PriceTable = serde_json::from_str(text).map_err(|e| format!("価格表の形式が読めません: {e}"))?;
+    // 二段で読む (#93 と同じ理由): 型付きで一度に読むと、構文の壊れが「string "key" は
+    // PriceEntry ではない」のような型の文言に化けて、どこが壊れているか分からない。素の Value と
+    // しても読めなければ詰まりは構文なので、そちらの行番号つき文言を出す (実例 2026-09-13: 手で足した
+    // 行の `{` 抜けと `922,000` = 表を保守する人が直す場所を名指しできないと直せない)。
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("価格表の JSON が壊れています: {e}"))?;
+    let t: PriceTable = serde_json::from_value(value).map_err(|e| format!("価格表の形式が読めません: {e}"))?;
     if t.version != 1 {
         return Err(format!("価格表の版 {} には対応していません (対応: 1)", t.version));
     }
@@ -5435,6 +5441,14 @@ mod tests {
         assert!(parse_price_table(r#"{"version":1,"models":[{"key":" ","input_per_mtok":1,"output_per_mtok":1}]}"#).is_err());
         // 形が違う (models が無い) 本文は読めないと言う
         assert!(parse_price_table(r#"{"version":1}"#).unwrap_err().contains("形式"));
+        // 構文の壊れ (実例: 手で足した行の `{` 抜け) は「壊れている」+ 行番号で言う — 型付きで一度に
+        // 読むと `invalid type: string "key", expected struct PriceEntry` に化けて直す場所が分からない
+        let broken = "{\"version\":1,\"models\":[
+{\"key\":\"a\",\"input_per_mtok\":1,\"output_per_mtok\":1},
+\"key\":\"b\",
+\"input_per_mtok\":1}]}";
+        let e = parse_price_table(broken).unwrap_err();
+        assert!(e.contains("壊れています") && e.contains("line 3"), "{e}");
     }
 
     /// 【削除の返りは files と media の両方 (2026-09-04 ユーザー報告)】メディアの削除ボタンを
