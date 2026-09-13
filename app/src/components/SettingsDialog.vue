@@ -789,8 +789,10 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click.self="emit('close')">
-    <div class="w-[46rem] max-w-[94vw] h-[32rem] max-h-[88vh] flex flex-col rounded-lg border border-ash bg-ink shadow-2xl">
+  <!-- 幕のクリックでは閉じない (2026-09-13 ユーザーFB): 器が小さく外を押しやすいうえ、閉じると v-if で
+       部品ごと捨てられ打ちかけの入力が消える。閉じるのは ✕ だけ。器も 46×32rem → 64×44rem へ。 -->
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+    <div class="w-[64rem] max-w-[94vw] h-[44rem] max-h-[90vh] flex flex-col rounded-lg border border-ash bg-ink shadow-2xl">
       <header class="flex items-center px-4 py-3 border-b border-ash">
         <h2 class="text-glow font-bold tracking-wide">{{ t("settings.title") }}</h2>
         <button class="ml-auto text-parchment/50 hover:text-parchment" :aria-label="t('settings.close')" @click="emit('close')">✕</button>
