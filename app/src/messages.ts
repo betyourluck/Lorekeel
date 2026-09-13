@@ -396,6 +396,8 @@ export const messages = {
           "※ メタ質問に答えられるかは LLM のモデルによります（物語から抜けられないモデルもあります）。",
       },
       help: {
+        showNote: "説明を見る",
+        hideNote: "説明を閉じる",
         heading: "ヘルプ",
         replayTour: "はじめかたの案内をもう一度見る",
         line1:
@@ -1305,6 +1307,8 @@ export const messages = {
           "* Whether meta questions get answered depends on the LLM model (some can't step out of the story).",
       },
       help: {
+        showNote: "Show details",
+        hideNote: "Hide details",
         heading: "Help",
         replayTour: "Show the getting-started guide again",
         line1:

@@ -9,6 +9,7 @@
  */
 import { computed, defineAsyncComponent, ref, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import HelpNote from "./HelpNote.vue";
 import Icon from "./Icon.vue";
 
 // CodeMirror は重い (+400KB raw)。**値の import は動的だけ**にして、設定を開かない
@@ -895,7 +896,7 @@ onMounted(async () => {
                 <option value="auto">{{ t("settings.graphics.paneAuto") }}</option>
               </select>
             </label>
-            <p class="text-parchment/40 text-xs">{{ t("settings.graphics.paneNote") }}</p>
+            <HelpNote>{{ t("settings.graphics.paneNote") }}</HelpNote>
             <label class="block text-sm text-parchment/70">
               {{ t("settings.graphics.brightness", { value: game.bgBrightness }) }}
               <input
@@ -1530,9 +1531,7 @@ onMounted(async () => {
               <input v-model="llm.use_tools" type="checkbox" class="accent-ember" />
               {{ t("settings.model.useTools") }}
             </label>
-            <p class="text-parchment/40 text-xs -mt-1">
-              {{ t("settings.model.useToolsNote") }}
-            </p>
+            <HelpNote>{{ t("settings.model.useToolsNote") }}</HelpNote>
             <!-- 思考の深さと出力上限 (2026-09-10 ユーザー要望「他のモデルでは効かせて Opus では
                  効かせない」)。**登録モデルごとの値**で、保存でこのモデルの .env に書かれる。
                  対にしてあるのは、思考が出力上限を食うため — 深さだけ選べると上限 4096 の
@@ -1557,9 +1556,7 @@ onMounted(async () => {
                   class="mt-1 block w-full min-w-0 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none" />
               </label>
             </div>
-            <p class="text-parchment/40 text-xs -mt-1">
-              {{ t("settings.model.effortNote") }}
-            </p>
+            <HelpNote>{{ t("settings.model.effortNote") }}</HelpNote>
             <!-- 単価 (spec 30 Phase C)。**登録モデルの欄** (.env には書かない)。3 欄揃ったときだけ
                  利用量の見積もりに使う。既定値は無い (間違った金額は無いより悪い)。 -->
             <p class="text-parchment/70 text-sm pt-1">{{ t("settings.model.pricingHeading") }}</p>
@@ -1580,7 +1577,7 @@ onMounted(async () => {
                   class="mt-1 block w-full min-w-0 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none" />
               </label>
             </div>
-            <p class="text-parchment/40 text-xs -mt-1">{{ t("settings.model.pricingNote") }}</p>
+            <HelpNote>{{ t("settings.model.pricingNote") }}</HelpNote>
             <p v-for="(w, i) in llmWarnings" :key="i" class="text-warn/90 text-xs">⚠ {{ w }}</p>
             <!-- 保存は 2 種類 (2026-08-26): .env だけ / .env と登録モデルの両方。
                  後者は選択中の登録が無ければ押せない (書き換える先が無い)。 -->
@@ -1615,9 +1612,7 @@ onMounted(async () => {
                   {{ p.name }}（{{ p.model || t("settings.model.modelUnset") }}）
                 </option>
               </select>
-              <p class="text-parchment/40 text-xs">
-                {{ t("settings.model.summaryNote") }}
-              </p>
+              <HelpNote>{{ t("settings.model.summaryNote") }}</HelpNote>
               <label class="block text-parchment/70 text-xs pt-1">{{ t("settings.model.summaryTimeout") }}</label>
               <select
                 v-model.number="summaryTimeout"
@@ -1629,9 +1624,7 @@ onMounted(async () => {
                   {{ t("settings.model.summaryTimeoutSecs", { secs: sec }) }}
                 </option>
               </select>
-              <p class="text-parchment/40 text-xs">
-                {{ t("settings.model.summaryTimeoutNote") }}
-              </p>
+              <HelpNote>{{ t("settings.model.summaryTimeoutNote") }}</HelpNote>
               <label class="block text-parchment/70 text-xs pt-1">{{ t("settings.model.recentTurns") }}</label>
               <select
                 v-model.number="recentTurns"
@@ -1643,9 +1636,7 @@ onMounted(async () => {
                   {{ t("settings.model.recentTurnsN", { turns: n }) }}
                 </option>
               </select>
-              <p class="text-parchment/40 text-xs">
-                {{ t("settings.model.recentTurnsNote") }}
-              </p>
+              <HelpNote>{{ t("settings.model.recentTurnsNote") }}</HelpNote>
               <span v-if="summaryStatus" class="text-xs text-parchment/60">{{ summaryStatus }}</span>
             </div>
 
@@ -1703,7 +1694,7 @@ onMounted(async () => {
                   </tbody>
                 </table>
               </div>
-              <p class="text-parchment/40 text-xs">{{ t("settings.usage.note") }}</p>
+              <HelpNote>{{ t("settings.usage.note") }}</HelpNote>
             </div>
 
             <!-- AI 編集用モデル (spec 29)。編集モードの ✨ と `play edit` が使う。ツール呼び出しが要る。 -->
@@ -1722,9 +1713,7 @@ onMounted(async () => {
               <p v-if="editorEnvModel" class="text-warn/90 text-xs">
                 {{ t("settings.model.editorEnvHint", { model: editorEnvModel }) }}
               </p>
-              <p class="text-parchment/40 text-xs">
-                {{ t("settings.model.editorNote") }}
-              </p>
+              <HelpNote>{{ t("settings.model.editorNote") }}</HelpNote>
               <span v-if="editorStatus" class="text-xs text-parchment/60">{{ editorStatus }}</span>
             </div>
           </section>
