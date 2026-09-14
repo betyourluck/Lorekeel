@@ -1925,13 +1925,18 @@ fn delete_editor_file_view(
         rel_path,
         files: editor::list_files(base),
         media: editor::list_media(base),
+        rewritten: Vec::new(),
+        rewrite_warning: None,
         forked,
         fork_warning,
     })
 }
 
 /// ファイル名の変更 (spec 28 追補、2026-08-28 ユーザー要望)。同じフォルダの中だけ。
-/// **参照は追随しない** — 壊れることは層 2 の inspect が報告する (削除と同じ判断)。
+/// テキストの改名は**参照が追随しない** (壊れることは層 2 の inspect が報告する)。
+/// **アセットの改名は参照が追随する** (2026-09-14 ユーザー要望) — アセットは lint の射程外で
+/// 切れても誰も報告しないので、YAML の image/icon/bgm/sound 欄を書き換える。改名の後に書くので、
+/// 書き換えの失敗は改名を巻き戻さず警告で返す (一覧と実体をずらさない)。
 #[tauri::command]
 async fn rename_editor_file(
     rel_path: String,
@@ -1945,12 +1950,19 @@ async fn rename_editor_file(
     }
     let guard = editor_root.0.lock().await;
     let Some(base) = guard.as_ref() else { return Err("編集モードではありません".into()) };
-    let rel_path = editor::rename_file(base, &rel_path, &new_name)?;
+    let old_rel = rel_path;
+    let rel_path = editor::rename_file(base, &old_rel, &new_name)?;
+    let (rewritten, rewrite_warning) = match editor::rewrite_asset_references(base, &old_rel, &rel_path) {
+        Ok(files) => (files, None),
+        Err(e) => (Vec::new(), Some(e)),
+    };
     let (forked, fork_warning) = editor::fork_meta(base, fork, update::SOURCE_META_FILES);
     Ok(EditorListsView {
         rel_path,
         files: editor::list_files(base),
         media: editor::list_media(base),
+        rewritten,
+        rewrite_warning,
         forked,
         fork_warning,
     })
@@ -1965,6 +1977,10 @@ struct EditorListsView {
     rel_path: String,
     files: Vec<editor::EditorFileEntry>,
     media: Vec<editor::EditorFileEntry>,
+    /// アセットの改名で参照を書き換えた YAML (相対パス)。削除では常に空。
+    rewritten: Vec<String>,
+    /// 参照の書き換えに失敗したとき (改名そのものは済んでいる)。
+    rewrite_warning: Option<String>,
     forked: bool,
     fork_warning: Option<String>,
 }

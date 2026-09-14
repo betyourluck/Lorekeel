@@ -104,6 +104,29 @@ function toggleAudio(relPath: string) {
   });
 }
 
+// 名前のクリックは**少し待ってから**プレビューする (2026-09-14 ユーザー報告「ダブルクリックで
+// 名前を変えたい」)。すぐ開くと、画像は 1 回目のクリックで全画面のプレビューが被さり 2 回目が
+// その幕に当たって dblclick が名前に届かない (音声は 2 回鳴って止まる)。ダブルクリックが来たら取り消す。
+const MEDIA_CLICK_DELAY_MS = 300;
+let mediaClickTimer: ReturnType<typeof setTimeout> | null = null;
+function cancelMediaClick() {
+  if (mediaClickTimer) clearTimeout(mediaClickTimer);
+  mediaClickTimer = null;
+}
+function onMediaClick(e: MouseEvent, category: string, relPath: string) {
+  cancelMediaClick();
+  if (e.detail > 1) return; // ダブルクリックの 2 回目 = 開かない (dblclick が改名を始める)
+  mediaClickTimer = setTimeout(() => {
+    mediaClickTimer = null;
+    if (category === "image") preview.value = mediaUrl(relPath);
+    else toggleAudio(relPath);
+  }, MEDIA_CLICK_DELAY_MS);
+}
+function onMediaDblClick(relPath: string) {
+  cancelMediaClick();
+  startRename(relPath);
+}
+
 // 編集モードを出る / 別のパッケージへ移るときに鳴りっぱなしにしない。
 watch(
   () => game.editor.on,
@@ -117,6 +140,7 @@ watch(
   },
 );
 onBeforeUnmount(() => {
+  cancelMediaClick();
   audio?.pause();
   audio = null;
 });
@@ -457,8 +481,9 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
                   @click="preview = mediaUrl(f.relPath)"
                 />
                 <!-- 改名はテキスト側と同じ流儀 (ダブルクリック → その行が入力欄になる)。
-                     **アセットは参照が lint の射程外**なので、名前を変えたら YAML 側の
-                     image/bgm/sound/icon 欄も自分で直す必要がある (title で告げる)。 -->
+                     名前を変えると、パッケージ内の YAML の image/icon (画像) / bgm/sound (音声) 欄で
+                     その名前を指す値が新しい名前へ書き換わる (2026-09-14。アセットは lint の射程外なので
+                     追随しないと参照が黙って切れる)。 -->
                 <input
                   v-if="renaming === f.relPath"
                   :ref="bindDraft"
@@ -478,8 +503,8 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
                         : 'text-parchment/70 hover:bg-ash/40 hover:text-parchment'
                     "
                     :title="t('editor.assetRowTitle')"
-                    @click="g.category === 'image' ? (preview = mediaUrl(f.relPath)) : toggleAudio(f.relPath)"
-                    @dblclick.prevent="startRename(f.relPath)"
+                    @click="onMediaClick($event, g.category, f.relPath)"
+                    @dblclick.prevent="onMediaDblClick(f.relPath)"
                   >
                     <span v-if="g.category === 'audio'" class="mr-1 text-[10px]">{{ playingAudio === f.relPath ? "■" : "▶" }}</span>{{ f.relPath.split("/").pop() }}
                   </button>

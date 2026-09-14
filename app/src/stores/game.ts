@@ -1189,13 +1189,21 @@ ${body}`, t("rename.ok"), true);
 
     /**
      * ファイル名の変更 (2026-08-28)。同じフォルダの中だけ。
-     * **参照は追随しない** — シナリオを改名すれば entry/modules が、キャラなら cast/present が
-     * 指す先を失う。壊れることは層 2 の inspect が報告する (削除と同じ判断) ので、
+     * テキストの改名は**参照が追随しない** — シナリオを改名すれば entry/modules が、キャラなら
+     * cast/present が指す先を失う。壊れることは層 2 の inspect が報告する (削除と同じ判断) ので、
      * ここでは確認を挟まず即実行する (VS Code の流儀。取り消しは名前を戻せばよい)。
+     * **アセットの改名は参照が追随する** (2026-09-14) — backend が YAML の image/icon/bgm/sound 欄を
+     * 書き換える。ディスクの YAML を書き換えるので、**未保存の変更がある間は断る** (開いている
+     * ファイルが書き換え対象だと、保存で書き換えを消すか、書き換えで打ちかけを消すかの二択になる)。
      */
     async renameEditorFile(relPath: string, newName: string) {
       const ed = this.editor;
       if (!ed.on || !newName.trim()) return;
+      const isMedia = relPath.startsWith("images/") || relPath.startsWith("audios/");
+      if (isMedia && this.editorDirty) {
+        this.logToast = t("editor.assetRenameNeedsSave");
+        return;
+      }
       const fork = ed.fromSite;
       if (fork && !(await this.askConfirm(t("editor.forkConfirm"), t("editor.forkOk")))) return;
       try {
@@ -1203,15 +1211,28 @@ ${body}`, t("rename.ok"), true);
           rel_path: string;
           files: { rel_path: string; category: string }[];
           media: { rel_path: string; category: string }[];
+          rewritten: string[];
+          rewrite_warning: string | null;
           forked: boolean;
           fork_warning: string | null;
         }>("rename_editor_file", { relPath, newName: newName.trim(), fork });
         ed.files = res.files.map((f) => ({ relPath: f.rel_path, category: f.category }));
         ed.media = res.media.map((f) => ({ relPath: f.rel_path, category: f.category }));
         if (res.forked) ed.fromSite = false;
+        if (res.rewritten.length) {
+          this.logToast = t("editor.assetRefsRewritten", { n: res.rewritten.length, files: res.rewritten.join(", ") });
+        }
+        if (res.rewrite_warning) this.logToast = t("editor.assetRefsRewriteFailed", { error: res.rewrite_warning });
         if (res.fork_warning) this.logToast = res.fork_warning;
         // 開いていたファイルの名前が変わったら追随する (中身は同じ = dirty は保つ)。
         if (ed.current === relPath) ed.current = res.rel_path;
+        // 開いていたファイルの参照が書き換わったら読み直す (未保存は上で断っているので失うものは無い)。
+        if (ed.current && res.rewritten.includes(ed.current)) {
+          const raw = await invoke<string>("read_editor_file", { relPath: ed.current });
+          ed.eol = raw.includes("\r\n") ? "\r\n" : "\n";
+          ed.text = raw.replace(/\r\n/g, "\n");
+          ed.savedText = ed.text;
+        }
         void this.refreshEditorIssues();
         void this.refreshEditorVocab();
       } catch (e) {

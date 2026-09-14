@@ -519,6 +519,64 @@ pub fn rename_file(root: &Path, rel: &str, new_name: &str) -> Result<String, Str
     })
 }
 
+/// アセットを改名したときに、パッケージ内の YAML が指す参照を新しい名前へ書き換える
+/// (2026-09-14 ユーザー要望「ファイル名を変えたら参照している yaml も変わるのがよい」)。
+/// 返りは書き換えたファイルの相対パス (list_files の順)。
+///
+/// アセットは宣言を持たない不透明 ID で、切れた参照は lint にも inspect にも出ない (engine は
+/// 見つからないアセットを黙って None に落とす)。テキストの改名が「参照は追随しない・壊れたら
+/// 層 2 が報告する」で済むのと違い、**追随しなければ誰も気づかない**ので書き換える側に倒す。
+///
+/// 書き換えるのは**その種類のアセット欄だけ** (画像 = `image` / `icon`、音声 = `bgm` / `sound`)、
+/// かつ値が名前と**丸ごと一致**するときだけ。構文木を持たないテキスト置換だが、欄名の直前は
+/// 行頭・空白・`{`・`,` に限り (文字列の中の `"image: x"` を拾わない)、値の直後は行末・`,`・`}`・`#`
+/// に限る (`gate.webp.bak` のような前方一致を拾わない)。引用は開きと閉じが揃うときだけ。
+/// serde_yaml で読み書きし直さないのは、コメントとインデントと flow style が消えるから。
+pub fn rewrite_asset_references(root: &Path, old_rel: &str, new_rel: &str) -> Result<Vec<String>, String> {
+    let (Some((old_dir, old_name)), Some((new_dir, new_name))) = (old_rel.split_once('/'), new_rel.split_once('/'))
+    else {
+        return Ok(Vec::new());
+    };
+    if old_dir != new_dir || old_name == new_name {
+        return Ok(Vec::new());
+    }
+    let keys: &[&str] = match old_dir {
+        "images" => &["image", "icon"],
+        "audios" => &["bgm", "sound"],
+        _ => return Ok(Vec::new()), // テキストの改名は追随しない (上の doc)
+    };
+    let mut changed = Vec::new();
+    for entry in list_files(root) {
+        let path = root.join(&entry.rel_path);
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let (out, n) = replace_asset_refs(&text, keys, old_name, new_name);
+        if n > 0 {
+            atomic_write(&path, &out)?;
+            changed.push(entry.rel_path);
+        }
+    }
+    Ok(changed)
+}
+
+/// [`rewrite_asset_references`] の置換部 (純関数)。返りは置換後の本文と置換した個数。
+fn replace_asset_refs(text: &str, keys: &[&str], old: &str, new: &str) -> (String, usize) {
+    let pattern = format!(
+        r#"(?m)(^|[\s{{,])({})([ \t]*:[ \t]*)(["']?){}(["']?)([ \t]*(?:$|[,}}#\r]))"#,
+        keys.join("|"),
+        regex::escape(old)
+    );
+    let re = regex::Regex::new(&pattern).expect("asset reference pattern");
+    let mut n = 0;
+    let out = re.replace_all(text, |c: &regex::Captures| {
+        if c[4] != c[5] {
+            return c[0].to_string(); // 引用の開きと閉じが揃わない = 値の一部 (文字列の中) なので触らない
+        }
+        n += 1;
+        format!("{}{}{}{}{new}{}{}", &c[1], &c[2], &c[3], &c[4], &c[5], &c[6])
+    });
+    (out.into_owned(), n)
+}
+
 /// ファイルの削除 (2026-08-27 に v1 へ昇格 = ユーザーFB。リネームは v2 のまま)。
 /// **package.yaml だけは拒否** (消すとパッケージごと読めなくなる = エディタの土台が消える)。
 /// entry シナリオや campaign.yaml の削除は許す — 壊れることは層 2 の inspect が
@@ -821,6 +879,80 @@ mod tests {
             rename_file(&dir, "images/shrine_gate.webp", "shrine_gate.webp").unwrap(),
             "images/shrine_gate.webp"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// アセットの改名に参照が追随する (2026-09-14 ユーザー要望)。書き換えるのは**その種類の
+    /// アセット欄だけ** (画像 = image / icon、音声 = bgm / sound) で、値が名前と**丸ごと一致**
+    /// するときだけ。書式 (インデント・引用・flow style・コメント・CRLF) は保つ。
+    #[test]
+    fn renaming_an_asset_rewrites_references_in_package_yaml() {
+        let dir = std::env::temp_dir().join(format!("lorekeel_editor_refs_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for d in ["scenarios", "characters", "images", "audios"] {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+        }
+        std::fs::write(dir.join("package.yaml"), "title: t\nplayer:\n  icon: gate.webp\n").unwrap();
+        std::fs::write(dir.join("characters/alice.yaml"), "name: a\r\nicon: \"gate.webp\"\r\n").unwrap();
+        std::fs::write(dir.join("characters/bob.yaml"), "name: b\nicon: xgate.webp\n").unwrap();
+        let scenario = concat!(
+            "locations:\n",
+            "  gate:\n",
+            "    image: gate.webp\n",
+            "    bgm: wind.ogg\n",
+            "    description: \"image: gate.webp はここでは書き換えない\"\n",
+            "triggers:\n",
+            "  - { id: t1, when: { kind: flag_is, key: f, value: true }, image: gate.webp, sound: wind.ogg }\n",
+            "  - id: t2\n",
+            "    image: 'gate.webp'  # コメントは残る\n",
+            "    image_mode: background\n",
+            "title: gate.webp\n",
+        );
+        std::fs::write(dir.join("scenarios/main.yaml"), scenario).unwrap();
+        std::fs::write(dir.join("images/gate.webp"), "x").unwrap();
+        std::fs::write(dir.join("audios/wind.ogg"), "x").unwrap();
+
+        // 画像: image / icon だけが変わる。音声欄・description の中・部分一致・別の欄は触らない。
+        rename_file(&dir, "images/gate.webp", "shrine.webp").unwrap();
+        let changed = rewrite_asset_references(&dir, "images/gate.webp", "images/shrine.webp").unwrap();
+        assert_eq!(changed, ["package.yaml", "scenarios/main.yaml", "characters/alice.yaml"]);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("scenarios/main.yaml")).unwrap(),
+            concat!(
+                "locations:\n",
+                "  gate:\n",
+                "    image: shrine.webp\n",
+                "    bgm: wind.ogg\n",
+                "    description: \"image: gate.webp はここでは書き換えない\"\n",
+                "triggers:\n",
+                "  - { id: t1, when: { kind: flag_is, key: f, value: true }, image: shrine.webp, sound: wind.ogg }\n",
+                "  - id: t2\n",
+                "    image: 'shrine.webp'  # コメントは残る\n",
+                "    image_mode: background\n",
+                "title: gate.webp\n",
+            )
+        );
+        assert_eq!(std::fs::read_to_string(dir.join("package.yaml")).unwrap(), "title: t\nplayer:\n  icon: shrine.webp\n");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("characters/alice.yaml")).unwrap(),
+            "name: a\r\nicon: \"shrine.webp\"\r\n",
+            "引用と CRLF を保つ"
+        );
+        assert_eq!(std::fs::read_to_string(dir.join("characters/bob.yaml")).unwrap(), "name: b\nicon: xgate.webp\n");
+
+        // 音声: bgm / sound だけ。書き換え後の scenario は読み戻しても壊れていない。
+        rename_file(&dir, "audios/wind.ogg", "breeze.ogg").unwrap();
+        let changed = rewrite_asset_references(&dir, "audios/wind.ogg", "audios/breeze.ogg").unwrap();
+        assert_eq!(changed, ["scenarios/main.yaml"]);
+        let text = std::fs::read_to_string(dir.join("scenarios/main.yaml")).unwrap();
+        assert!(text.contains("    bgm: breeze.ogg\n") && text.contains("sound: breeze.ogg }"));
+        assert!(serde_yaml::from_str::<serde_yaml::Value>(&text).is_ok());
+
+        // テキストの改名・同名・参照ゼロは何も書かない。
+        assert!(rewrite_asset_references(&dir, "scenarios/main.yaml", "scenarios/a.yaml").unwrap().is_empty());
+        assert!(rewrite_asset_references(&dir, "images/shrine.webp", "images/shrine.webp").unwrap().is_empty());
+        assert!(rewrite_asset_references(&dir, "images/none.webp", "images/other.webp").unwrap().is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
