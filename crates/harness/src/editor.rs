@@ -342,14 +342,25 @@ const SCENARIO_TEMPLATE: &str = concat!(
 
 /// 新しいパッケージの骨格を作る (2026-09-04 ユーザー要望 = spec 28「ウィザード」の最小形)。
 /// 従来はフォルダと package.yaml を手で作ってローカル読み込みしないと編集モードに入れなかった。
-/// 置き場 (親フォルダ) と名前だけ受け、`{parent}/{name}/` に **package.yaml と最小の entry
-/// (`scenarios/main.yaml`)** を書く — package.yaml だけだと `load_package` が entry 不在で
-/// 落ち、一覧で「読込失敗」になるので、作った瞬間から読める形にする。
+/// 置き場 (親フォルダ)・フォルダ名・タイトルを受け、`{parent}/{name}/` に **package.yaml と
+/// 最小の entry (`scenarios/main.yaml`)** を書く — package.yaml だけだと `load_package` が
+/// entry 不在で落ち、一覧で「読込失敗」になるので、作った瞬間から読める形にする。
 ///
-/// 名前はファイル名と同じ stem 規則 (英数と `_` `-`)。同名フォルダが在れば拒否 (黙って中に
-/// 書き足さない = 既存パッケージを壊さない)。返りは作ったフォルダの絶対パス。
-pub fn create_package(parent: &Path, name: &str) -> Result<PathBuf, String> {
+/// フォルダ名はファイル名と同じ stem 規則 (英数と `_` `-`)。同名フォルダが在れば拒否 (黙って中に
+/// 書き足さない = 既存パッケージを壊さない)。**タイトルは別に受ける** (2026-09-14 ユーザー報告
+/// 「フォルダ名がタイトルになってしまう」— stem 規則のせいで日本語の題名が付けられなかった)。
+/// タイトルは空と改行を拒否し、YAML の引用は serde_yaml に任せる (`:` や `"` を含む題名を
+/// 手で組むと壊れる)。検査は**フォルダを作る前**に全部済ませる。返りは作ったフォルダの絶対パス。
+pub fn create_package(parent: &Path, name: &str, title: &str) -> Result<PathBuf, String> {
     validate_new_stem(name, "フォルダ名がそのままパッケージの置き場になります")?;
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("パッケージ名 (タイトル) を入力してください".to_string());
+    }
+    if title.contains(['\n', '\r']) {
+        return Err("パッケージ名 (タイトル) は 1 行で入力してください".to_string());
+    }
+    let title_yaml = serde_yaml::to_string(title).map_err(|e| format!("タイトルを書けません: {e}"))?;
     if !parent.is_dir() {
         return Err(format!("置き場のフォルダがありません: {}", parent.display()));
     }
@@ -360,7 +371,7 @@ pub fn create_package(parent: &Path, name: &str) -> Result<PathBuf, String> {
     std::fs::create_dir_all(root.join("scenarios")).map_err(|e| format!("フォルダを作れません: {e}"))?;
     let manifest = format!(
         concat!(
-            "title: {name}\n",
+            "title: {title}\n",
             "description: \"\"\n",
             "author: \"\"\n",
             "version: \"0.1\"\n",
@@ -370,7 +381,7 @@ pub fn create_package(parent: &Path, name: &str) -> Result<PathBuf, String> {
             "  name: \"\"\n",
             "  profile: \"\"\n",
         ),
-        name = name
+        title = title_yaml.trim_end()
     );
     atomic_write(&root.join("package.yaml"), &manifest)?;
     atomic_write(&root.join("scenarios/main.yaml"), SCENARIO_TEMPLATE)?;
@@ -627,21 +638,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&parent);
         std::fs::create_dir_all(&parent).unwrap();
 
-        let root = create_package(&parent, "my_tale").unwrap();
+        // タイトルはフォルダ名と別に受ける (2026-09-14 ユーザー報告「フォルダ名がタイトルになる」)。
+        // YAML で意味を持つ字 (`:` `"` `#`) を含めても、書いたとおりに読み戻ること。
+        let title = "放課後: \"はじまり\" #1";
+        let root = create_package(&parent, "my_tale", title).unwrap();
         assert!(root.join("package.yaml").is_file());
         assert!(root.join("scenarios/main.yaml").is_file());
         // 作った瞬間から読める (entry 不在で「読込失敗」にならない)・作者向け警告もゼロ。
         let loaded = crate::load_package(&root).expect("骨格が load_package を通らない");
-        assert_eq!(loaded.manifest.title, "my_tale");
+        assert_eq!(loaded.manifest.title, title, "フォルダ名でなく入力したタイトルが入る");
         assert!(loaded.warnings.is_empty(), "警告: {:?}", loaded.warnings);
         assert!(loaded.scenario.validate().is_empty());
 
         // 同名は拒否 (既存パッケージの中へ黙って書き足さない)。
-        assert!(create_package(&parent, "my_tale").is_err());
+        assert!(create_package(&parent, "my_tale", "t").is_err());
         // 名前は stem 規則・置き場は実在必須。
-        assert!(create_package(&parent, "my tale").is_err());
-        assert!(create_package(&parent, "../x").is_err());
-        assert!(create_package(&parent.join("missing"), "ok").is_err());
+        assert!(create_package(&parent, "my tale", "t").is_err());
+        assert!(create_package(&parent, "../x", "t").is_err());
+        assert!(create_package(&parent.join("missing"), "ok", "t").is_err());
+        // タイトルは空と改行を拒否し、拒否したときはフォルダを作らない。
+        assert!(create_package(&parent, "empty_title", "  ").is_err());
+        assert!(create_package(&parent, "multi_line", "a\nb").is_err());
+        assert!(!parent.join("empty_title").exists());
+        assert!(!parent.join("multi_line").exists());
 
         let _ = std::fs::remove_dir_all(&parent);
     }

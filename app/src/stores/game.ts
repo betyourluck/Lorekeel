@@ -429,6 +429,7 @@ export {
   saveAiProfiles,
   newProfileId,
   profileMatchesConfig,
+  selectionAfterSave,
   type AiModelProfile,
 } from "../aiProfiles";
 
@@ -1674,15 +1675,16 @@ ${body}`, t("rename.ok"), true);
       }
     },
     /**
-     * 新しいパッケージの骨格を作る (2026-09-04 ユーザー要望)。置き場と名前だけで
+     * 新しいパッケージの骨格を作る (2026-09-04 ユーザー要望)。置き場・フォルダ名・タイトルで
      * `{parent}/{name}/` に package.yaml と最小の entry を書き、一覧へ登録して選択する
+     * (タイトルをフォルダ名と分けたのは 2026-09-14 = フォルダ名が題名になってしまう、の報告)
      * (従来は手でフォルダと package.yaml を作ってローカル読み込みしないと編集に入れなかった
      * = その手順をここへ畳む)。編集モードへの入場は呼び出し側 (ダイアログを閉じてから)。
      * 成功なら true。
      */
-    async createLocalPackage(parent: string, name: string): Promise<boolean> {
+    async createLocalPackage(parent: string, name: string, title: string): Promise<boolean> {
       try {
-        const path = await invoke<string>("create_local_package", { parent, name });
+        const path = await invoke<string>("create_local_package", { parent, name, title });
         this.addPackage(path);
         this.packagePath = path;
         this.logToast = t("store.packageCreated", { path });

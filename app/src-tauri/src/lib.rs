@@ -1888,8 +1888,8 @@ async fn create_editor_file(
 /// 新しいパッケージの骨格を作る (2026-09-04 ユーザー要望)。パッケージ一覧の「新規作成」から。
 /// セッションにも編集ルートにも触らない (作るだけ。登録と編集モード入場は frontend の流れ)。
 #[tauri::command]
-fn create_local_package(parent: String, name: String) -> Result<String, String> {
-    let root = editor::create_package(Path::new(parent.trim()), name.trim())?;
+fn create_local_package(parent: String, name: String, title: String) -> Result<String, String> {
+    let root = editor::create_package(Path::new(parent.trim()), name.trim(), &title)?;
     Ok(root.to_string_lossy().into_owned())
 }
 

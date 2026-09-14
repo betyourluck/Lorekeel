@@ -24,7 +24,7 @@ import {
   loadAiProfiles,
   saveAiProfiles,
   newProfileId,
-  profileMatchesConfig,
+  selectionAfterSave,
   type AiModelProfile,
   type PaneTheme,
 } from "../stores/game";
@@ -494,15 +494,13 @@ const draftName = ref("");
 
 // 現在の .env と一致するプロファイルを選択状態にする (初期表示・保存後の同期)。
 function syncSelectionToConfig() {
-  const hit = profiles.value.find((p) => profileMatchesConfig(p, llm.value));
-  // 単価のフォームは**選択が別の登録へ移ったときだけ**差し替える。同じ登録のままここを通る
-  // 経路 (saveLlm → 同期) で毎回上書きすると、打ったばかりでまだ書いていない単価が
-  // 登録の古い値 (初回は空) に戻る = 「保存 + 登録モデルを更新」で単価が消えた (ユーザー実機 2026-09-13)。
-  const changed = (hit?.id ?? "") !== selectedProfileId.value;
-  selectedProfileId.value = hit ? hit.id : "";
-  if (changed) {
-    pricingForm.value = pricingToForm(hit?.pricing);
-    contextForm.value = contextToForm(hit?.contextTokens);
+  // 単価とコンテキスト長のフォームは**別の登録に一致したときだけ**差し替える (規則と経緯は
+  // selectionAfterSave の doc。#103 = 同じ登録のまま / 2026-09-14 = 一致が外れた経路)。
+  const r = selectionAfterSave(profiles.value, llm.value, selectedProfileId.value);
+  selectedProfileId.value = r.selectedId;
+  if (r.fill) {
+    pricingForm.value = pricingToForm(r.fill.pricing);
+    contextForm.value = contextToForm(r.fill.contextTokens);
   }
 }
 
@@ -708,7 +706,10 @@ async function applyEditorProfile() {
 // 選択中の登録モデルがあるか (「登録モデルも更新」の可否)。
 const canUpdateProfile = computed(() => profiles.value.some((p) => p.id === selectedProfileId.value));
 
-async function saveLlm(): Promise<boolean> {
+// `sync` = 書いた .env と一致する登録を選択状態にする。「保存 + 登録モデルを更新」は
+// 自分で選択を決めるので false で呼ぶ (書き換える前の登録簿で同期すると、偶然一致した
+// **別の**登録へ選択とフォームが飛ぶ)。
+async function saveLlm(sync = true): Promise<boolean> {
   llmStatus.value = t("settings.status.saving");
   try {
     llmWarnings.value = await invoke<string[]>("set_llm_config", {
@@ -720,7 +721,7 @@ async function saveLlm(): Promise<boolean> {
       maxTokens: llm.value.max_tokens.trim(),
     });
     llmStatus.value = t("settings.status.llmSaved");
-    syncSelectionToConfig(); // 直接編集が登録済みと一致すればコンボの選択に反映
+    if (sync) syncSelectionToConfig(); // 直接編集が登録済みと一致すればコンボの選択に反映
     game.refreshLlmModel(); // TitleBar のバッジ + ウィンドウタイトルへ即時反映
     return true;
   } catch (e) {
@@ -745,7 +746,7 @@ async function saveLlmAndProfile() {
   const pricingTyped = [pricingForm.value.input, pricingForm.value.cacheRead, pricingForm.value.output].some((s) => s.trim() !== "");
   // **.env を先に書き、成功したときだけ登録を書き換える** — 失敗したのに登録簿だけ新しくすると、
   // 一度も適用されていない値が「登録済み」として残る。
-  if (!(await saveLlm())) return;
+  if (!(await saveLlm(false))) return;
   const updated: AiModelProfile = {
     ...p,
     model: llm.value.model.trim(),
@@ -1674,7 +1675,7 @@ onMounted(async () => {
             <!-- 保存は 2 種類 (2026-08-26): .env だけ / .env と登録モデルの両方。
                  後者は選択中の登録が無ければ押せない (書き換える先が無い)。 -->
             <div class="flex flex-wrap items-center gap-2 pt-1">
-              <button class="rounded bg-ember/80 hover:bg-ember px-3 py-1 text-sm text-ink font-bold" @click="saveLlm">
+              <button class="rounded bg-ember/80 hover:bg-ember px-3 py-1 text-sm text-ink font-bold" @click="saveLlm()">
                 {{ t("settings.model.save") }}
               </button>
               <button

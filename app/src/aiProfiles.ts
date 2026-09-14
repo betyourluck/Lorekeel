@@ -68,6 +68,28 @@ export function newProfileId(): string {
     return `p_${Date.now()}_${Math.floor(Math.random() * 1e9)}`;
   }
 }
+/** 保存後に選択と単価フォームをどうするか。`fill` は「フォームをその登録の値に差し替える」、
+ *  `null` は「フォームに触らない」。 */
+export interface SelectionAfterSave {
+  selectedId: string;
+  fill: AiModelProfile | null;
+}
+/** .env を書いた後の選択の同期規則 (`syncSelectionToConfig` の判定部)。
+ *
+ *  単価とコンテキスト長のフォームを差し替えるのは**別の登録に一致したときだけ**。
+ *  「どの登録にも一致しない」は差し替えの理由にならない — 思考の深さや出力上限を書き換えて
+ *  保存すると、登録はまだ古い値を持つので .env と一致しなくなる。旧規則はこれを「選択が
+ *  変わった」とみなしてフォームを空にし、「保存 + 登録モデルを更新」で価格とコンテキスト長が
+ *  消えて見えた (2026-09-14 ユーザー報告。09-13 の #103 は同じ登録に一致したままの経路だけを
+ *  塞いでおり、一致が外れる経路が残っていた)。空のフォームのまま次に更新すると本当に消える。 */
+export function selectionAfterSave(
+  profiles: AiModelProfile[],
+  cfg: Parameters<typeof profileMatchesConfig>[1],
+  selectedId: string,
+): SelectionAfterSave {
+  const hit = profiles.find((p) => profileMatchesConfig(p, cfg));
+  return { selectedId: hit ? hit.id : "", fill: hit && hit.id !== selectedId ? hit : null };
+}
 // プロファイルが現在の .env 設定と一致するか (初期表示で選択状態を復元する判定)。
 // name/id は .env に無いので、**その登録が書く欄すべて**を突き合わせる。
 // effort / maxTokens も含めるのは、含めないと「Opus を選択中」と見せながら思考の深さだけ

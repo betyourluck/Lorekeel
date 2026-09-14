@@ -28,7 +28,9 @@ function add() {
 const creating = ref(false);
 const newParent = ref("");
 const newName = ref("");
+const newTitle = ref(""); // パッケージ名 (package.yaml の title)。フォルダ名とは別 (2026-09-14)
 const creatingBusy = ref(false);
+const canCreate = () => !creatingBusy.value && !!newParent.value.trim() && !!newName.value.trim() && !!newTitle.value.trim();
 function startCreate() {
   creating.value = true;
   if (!newParent.value) newParent.value = game.lastPackageParent;
@@ -38,13 +40,14 @@ async function pickParent() {
   if (picked) newParent.value = picked;
 }
 async function createPackage() {
-  if (creatingBusy.value || !newParent.value.trim() || !newName.value.trim()) return;
+  if (!canCreate()) return;
   creatingBusy.value = true;
   try {
-    const ok = await game.createLocalPackage(newParent.value, newName.value);
+    const ok = await game.createLocalPackage(newParent.value, newName.value, newTitle.value);
     if (!ok) return;
     creating.value = false;
     newName.value = "";
+    newTitle.value = "";
     emit("close");
     // プレイ中・卓中は入らない (toggleEditor 側のガードと二層)。登録と選択までは済んでいる。
     if (!game.started) await game.toggleEditor();
@@ -223,18 +226,24 @@ function totalPages(): number {
               <Icon name="folder" :size="18" />
             </button>
           </div>
+          <input
+            v-model="newTitle"
+            :placeholder="t('packages.newPkgTitleInput')"
+            class="block w-full rounded bg-ash/40 px-2 py-1 text-sm text-parchment focus:outline-none"
+            @keyup.enter="createPackage"
+          />
           <div class="flex items-center gap-2">
             <input
               v-model="newName"
               :placeholder="t('packages.newPkgName')"
-              class="flex-1 rounded bg-ash/40 px-2 py-1 text-sm text-parchment font-mono focus:outline-none"
+              class="flex-1 min-w-0 rounded bg-ash/40 px-2 py-1 text-sm text-parchment font-mono focus:outline-none"
               @keyup.enter="createPackage"
             />
             <button class="shrink-0 text-parchment/50 hover:text-parchment text-sm px-1" @click="creating = false">
               {{ t("packages.newPkgCancel") }}
             </button>
             <button
-              :disabled="creatingBusy || !newParent.trim() || !newName.trim()"
+              :disabled="!canCreate()"
               class="shrink-0 rounded bg-ember/80 hover:bg-ember px-3 py-1 text-sm text-ink font-bold disabled:opacity-40"
               @click="createPackage"
             >

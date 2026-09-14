@@ -6,7 +6,7 @@
  * **前方互換** (欄を持たない古い登録が壊れない) と、**選択表示が嘘をつかない**こと。
  */
 import { beforeEach, describe, expect, it } from "vitest";
-import { loadAiProfiles, profileMatchesConfig, type AiModelProfile } from "./aiProfiles";
+import { loadAiProfiles, profileMatchesConfig, selectionAfterSave, type AiModelProfile } from "./aiProfiles";
 
 /** node 環境なので localStorage を素朴に立てる (loadAiProfiles はグローバルを直に見る)。 */
 function stubStorage(init: Record<string, string> = {}) {
@@ -65,6 +65,34 @@ describe("profileMatchesConfig", () => {
 
   it("前後の空白は無視する (未設定と空白だけを同じに扱う)", () => {
     expect(profileMatchesConfig(profile({ effort: " " }), config({ effort: "" }))).toBe(true);
+  });
+});
+
+describe("selectionAfterSave", () => {
+  it("思考の深さを変えて保存しても、単価とコンテキスト長のフォームを空にしない (2026-09-14 ユーザー報告)", () => {
+    // 登録はまだ古い effort を持つので、書いたばかりの .env とは一致しない。ここで
+    // 「一致なし = 選択が変わった」とみなすと、フォームが空の登録で上書きされていた。
+    const p = profile({ pricing: { inputPerMtokUsd: 3, cacheReadPerMtokUsd: 0.3, outputPerMtokUsd: 15 }, contextTokens: 200000 });
+    const r = selectionAfterSave([p], config({ effort: "high" }), "p1");
+    expect(r.fill).toBeNull();
+  });
+
+  it("別の登録に一致したときはフォームをその登録へ差し替える", () => {
+    const a = profile({ id: "a" });
+    const b = profile({ id: "b", model: "grok-4.3", contextTokens: 1000000 });
+    const r = selectionAfterSave([a, b], config({ model: "grok-4.3" }), "a");
+    expect(r.selectedId).toBe("b");
+    expect(r.fill?.id).toBe("b");
+  });
+
+  it("同じ登録に一致したままならフォームに触らない", () => {
+    const r = selectionAfterSave([profile()], config(), "p1");
+    expect(r).toEqual({ selectedId: "p1", fill: null });
+  });
+
+  it("起動時 (未選択) に一致があればその登録で埋める", () => {
+    const r = selectionAfterSave([profile()], config(), "");
+    expect(r.fill?.id).toBe("p1");
   });
 });
 
