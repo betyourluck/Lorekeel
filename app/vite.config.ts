@@ -26,8 +26,33 @@ export default defineConfig(async () => ({
   clearScreen: false,
   // vitest は既定で CSS の取り込みを空に潰す (`test.css = false`)。テーマ配色のテスト
   // (src/theme.test.ts) は main.css の実値を読んで検算するので、ここだけ本物を通す。
+  //
+  // 環境はファイル名で割る (spec 31 決定 2): `*.mount.test.ts` だけが happy-dom で部品を立て、
+  // 残りは node のまま。ファイル先頭の `// @vitest-environment` 注記は書き忘れても黙って node で
+  // 走るので使わない。`extends: true` でルートの設定 (css 等) を両方へ継ぐ。
   test: {
     css: true,
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: "unit",
+          environment: "node",
+          include: ["src/**/*.test.ts"],
+          exclude: ["src/**/*.mount.test.ts"],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "mount",
+          environment: "happy-dom",
+          include: ["src/**/*.mount.test.ts"],
+          // 後始末を無条件に掛ける (src/test/mount.ts)
+          setupFiles: ["src/test/mount.setup.ts"],
+        },
+      },
+    ],
   },
   server: {
     port: 1420,

@@ -1,6 +1,7 @@
 # spec 31: マウントテスト — 提示層の部品を DOM ごと立てて、実機より先に不具合を出す
 
-**Status**: rev2（2026-09-18 起草 → 同日査読 2 本を反映。決定 5 点はユーザー承認済み・未着手）。
+**Status**: rev2（2026-09-18 起草 → 同日査読 2 本を反映。決定 5 点はユーザー承認済み）→ **✅Phase 0（2026-09-19）**。
+Phase A 以降は未着手。
 査読の反映は末尾「査読の反映」節に凍結。
 
 ## 動機
@@ -115,6 +116,30 @@ frontend の vitest（2026-08-29 新設、現在 115 本）は**純関数しか�
     スタブにする判断は変わらないが、なぜスタブが要るかを台帳に残す。
   - 偽装していない command を呼んだら例外で落ちる / `listen` は落ちない、を 1 本ずつ確かめる
     （決定 3 の二つの主張をテストで固定する）。
+
+#### ✅Phase 0 の実測（2026-09-19）
+
+| 完了条件 | 変更前 | 変更後 |
+|---|---|---|
+| 既存テスト | 115 本・1.97 秒 | `unit` 115 本・1.92 秒（verbose の `|unit|` ラベルで 115 本を確認）+ `mount` 10 本・1.41 秒 = 計 125 本・2.77 秒 |
+| main chunk（`index-*.js`） | 419,390 バイト | 419,390 バイト・**sha256 一致**（`95098a73…a85c`） |
+| 型検査（`vue-tsc`） | 通る | 通る |
+
+- **happy-dom の素の `HTMLAudioElement.play()`**: 例外を投げず、**解決済みの Promise を返す**（`paused` は false へ）。
+  査読 2 の「スタブに近い実装」は当たっていた。一方で **`navigator.mediaDevices` は存在しない**。
+  ゆえにスタブにする理由は「play が落ちるから」ではなく、①呼んだかをスパイで確かめるため
+  ②マイク一覧を読む部品（`refreshMicDevices`）が `mediaDevices` の不在で落ちないため、の 2 つ。
+  テスト `環境 > happy-dom の素の Audio.play()…` がこの観察を固定する（準備の前に測る）。
+- **決定 3 の二つの主張はテストで固定した**（`src/test/harness.mount.test.ts`）: 表に無い command は
+  `unmocked command: …` で reject される / `listen`・`emit` は表が空でも通り、`plugin:event|*` は
+  利用者のコールバックに一度も届かない / `getCurrentWindow().setTitle` は `plugin:window|set_title` として
+  コールバックへ届き、表に無ければ落ち、在れば通る。
+- 共通準備は `src/test/mount.ts`（`prepare` / `mountWith` / `teardown`）、後始末は
+  `src/test/mount.setup.ts` を mount project の `setupFiles` に置いて**無条件に** afterEach で掛けた。
+- 依存は `@vue/test-utils` 2.5.1 と `happy-dom` 20.14.5（devDependencies）。`npm audit` の警告 5 件は
+  すべて既存の依存由来（brace-expansion / browserslist / nanoid / postcss 系）で、今回の 2 つは含まれない。
+- **煙のテストで分かったこと**: 偽装の返り値はそのまま呼び出し側へ返る（`setTitle` が `null` を返した）。
+  最初の期待値（`undefined`）は私の書き間違いで、土台の主張ではない。
 
 ### Phase A — 既に直した不具合を固定する（後付けの Red→Green）
 
