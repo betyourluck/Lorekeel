@@ -567,6 +567,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 synopsis: synopsis.clone(),
                 // CLI は背景を描かないので持続 CG を持たない (GUI 専用の提示層状態)。
                 sustained_cg: None,
+                // CLI は終幕のターンで break するので、終幕後のセーブ自体を書かない
+                // (エピローグの保存は GUI だけ。2026-09-19)。
+                epilogue: None,
             };
             if let Err(e) = harness::save_session(&save_path, &save) {
                 // 救済機構がセッション本体を殺さない: 警告して続行。

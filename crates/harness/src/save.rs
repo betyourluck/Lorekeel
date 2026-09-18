@@ -85,6 +85,13 @@ pub struct SessionSave {
     /// 提示層の状態だが、セーブしないと再開で背景だけ巻き戻る (last_narration と同じ「継続性」)。
     #[serde(default)]
     pub sustained_cg: Option<String>,
+    /// 生成済みのエピローグ本文 (spec 11)。終幕のターンで生成に成功したときだけ埋まる。
+    /// 2026-09-19 改訂 (ユーザー要望「エピローグを読み返したい」) — 当初は SessionSave に入れず
+    /// 会話ログにのみ積んでいた。**生成失敗がセーブを巻き込まない**性質は保つ: 受理ターンの
+    /// autosave を先に書き、生成に成功した後にもう一度書く (失敗なら 1 回目のセーブのまま)。
+    /// GM には還流しない (chronicle に積まない = 終幕の後に次のターンは無い)。
+    #[serde(default)]
+    pub epilogue: Option<String>,
 }
 
 impl SessionSave {

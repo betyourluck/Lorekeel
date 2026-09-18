@@ -312,6 +312,8 @@ export interface ResumeView {
   turn: number;
   /** 前回までの語り (「前回のあらすじ」としてログに出す)。 */
   last_narration: string;
+  /** 終幕後のセーブなら生成済みのエピローグ (spec 11、2026-09-19)。無ければ null。 */
+  epilogue?: string | null;
   /** 版不一致などの警告 (拒否はしない)。 */
   warnings: string[];
 }

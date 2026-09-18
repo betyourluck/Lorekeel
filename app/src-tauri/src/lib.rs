@@ -389,6 +389,8 @@ struct ResumeView {
     last_narration: String,
     /// 版不一致などの警告 (拒否はしない — content の軽微な修正でセーブを殺さない)。
     warnings: Vec<String>,
+    /// 終幕後のセーブなら生成済みのエピローグ (spec 11、2026-09-19)。「前回までの語り」の後に出す。
+    epilogue: Option<String>,
 }
 
 /// 1 ターンの結果 view (play_turn の戻り)。
@@ -725,6 +727,9 @@ struct GameSession {
     /// 持続中のイベント CG (画像 ID)。`image_hold: show` で立ち `hide` で消える (2026-07-28)。
     /// 提示層の状態だが、セーブしないと再開で背景だけ巻き戻るのでセーブ対象。
     sustained_cg: Option<String>,
+    /// 生成済みのエピローグ (spec 11、2026-09-19 からセーブ対象)。終幕のターンで生成に
+    /// 成功したときだけ埋まり、再開・スロットのロードで読み返せる。GM には還流しない。
+    epilogue: Option<String>,
     /// あらすじ要約用の専用 client (SUMMARY_LLM_*)。None なら GM の client を共用。
     summarizer: Option<LlmClient>,
     /// 既成事実 (spec 20)。正本の外の覚え書き。セーブ対象、campaign 遷移でも持ち越す。
@@ -3694,6 +3699,7 @@ async fn new_game(
         package_path: rel,
         synopsis: Synopsis::default(),
         sustained_cg: None,
+        epilogue: None,
         summarizer,
         facts: Vec::new(),
         participants: Vec::new(),
@@ -3818,6 +3824,7 @@ async fn restore_session(
             turn: state.turn,
             last_narration: normalize(&save.last_narration),
             warnings,
+            epilogue: save.epilogue.as_deref().map(normalize),
         }),
         warnings: {
             let mut w = lint_warnings;
@@ -3863,6 +3870,7 @@ async fn restore_session(
         summarizer,
         facts: save.facts,
         sustained_cg: save.sustained_cg,
+        epilogue: save.epilogue.clone(),
         // 卓は揮発 (契約 participants) — セーブから復元しない。再開時はホストが張り直す。
         // 開帳の保留もロードで破棄 (spec 18: リロード = 自動開帳は許容)。
         participants: Vec::new(),
@@ -3898,6 +3906,7 @@ fn session_save_of(sess: &GameSession) -> SessionSave {
         facts: sess.facts.clone(),
         synopsis: sess.synopsis.clone(),
         sustained_cg: sess.sustained_cg.clone(),
+        epilogue: sess.epilogue.clone(),
     }
 }
 
@@ -4816,7 +4825,8 @@ async fn do_play_turn(
     // --- エピローグ (spec 11): 到達 + 終端 + 指示あり ---
     // 「いつ」は engine (reached_goal)、「何を」は LLM。終端 = campaign なら advance 辺なし
     // (遷移していれば上の campaign 前進が goal_reached=false にしている)。**autosave の後**に
-    // 生成する = 生成の失敗・クラッシュがセーブを巻き込まない (SessionSave に epilogue は無い)。
+    // 生成する = 生成の失敗・クラッシュがセーブを巻き込まない。成功したときだけ本文を
+    // session に置いて**もう一度** autosave する (2026-09-19、終幕後に読み返せるように)。
     // 失敗は skip — 結末文 + バナーの従来表示へフォールバック (narration が土台、非致命)。
     if view.accepted && view.goal_reached {
         if let Some(goal) = sess.scenario.reached_goal(&sess.state) {
@@ -4830,7 +4840,11 @@ async fn do_play_turn(
                 );
                 let _ = app.emit("epilogue-writing", ());
                 match harness::generate_epilogue(&sess.client, &req).await {
-                    Ok(text) => view.epilogue = Some(normalize(&text)),
+                    Ok(text) => {
+                        view.epilogue = Some(normalize(&text));
+                        sess.epilogue = Some(text);
+                        autosave(app, sess);
+                    }
                     Err(e) => {
                         // failures #98: eprintln だけだとリリースビルド (コンソール無し) では
                         // 結末文だけ出て黙って幕が下り、ユーザーは「生成されない」としか
@@ -5274,6 +5288,7 @@ async fn current_game_view(
             turn: sess.state.turn,
             last_narration: normalize(sess.last_narration()),
             warnings: Vec::new(),
+            epilogue: sess.epilogue.as_deref().map(normalize),
         }),
         warnings: Vec::new(),
         synopsis: sess.synopsis.entries.iter().map(synopsis_view).collect(),

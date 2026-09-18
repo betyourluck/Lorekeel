@@ -496,6 +496,7 @@ mod tests {
             pending_checks: vec![],
             pending_lore: vec![],
             sustained_cg: None,
+            epilogue: None,
             facts: vec![],
             synopsis: Synopsis::default(),
         };
@@ -1130,6 +1131,7 @@ mod tests {
             pending_checks: vec![],
             pending_lore: vec![],
             sustained_cg: None,
+            epilogue: None,
             facts: vec![FactEntry {
                 id: 1,
                 origin: FactOrigin::User,
@@ -1188,6 +1190,7 @@ mod tests {
             pending_checks: vec![],
             pending_lore: vec![],
             sustained_cg: None,
+            epilogue: None,
             facts: vec![],
             synopsis: Synopsis::default(),
         };
@@ -1199,6 +1202,42 @@ mod tests {
         assert!(loaded.synopsis.entries.is_empty(), "あらすじは空で始まる");
         assert!(loaded.synopsis.pending.is_none());
         assert!(loaded.facts.is_empty(), "既成事実は空で始まる (spec 20 旧セーブ互換)");
+    }
+
+    /// 【エピローグの保存 (spec 11 改訂、2026-09-19 ユーザー要望)】生成したエピローグは
+    /// セーブを跨いで残る (終幕後に再開・スロットをロードしても読み返せる)。欄の無い旧セーブは
+    /// None で読める。
+    #[test]
+    fn epilogue_survives_save_and_old_save_reads_none() {
+        let sc = scenario();
+        let save = SessionSave {
+            version: SAVE_VERSION,
+            content: SavedContent::Package { path: "packages/escape".into() },
+            package_version: String::new(),
+            module: None,
+            state: fresh(&sc),
+            campaign_memory: CampaignMemory::new(),
+            history: vec![],
+            last_narration: "扉が開いた。".into(),
+            recent_narrations: vec![],
+            pending_checks: vec![],
+            pending_lore: vec![],
+            sustained_cg: None,
+            facts: vec![],
+            synopsis: Synopsis::default(),
+            epilogue: Some("三年後、彼女は再び湖畔を訪れた。".into()),
+        };
+        let path = std::env::temp_dir().join("kataribe_poc_session_save_epilogue.yaml");
+        save_session(&path, &save).expect("保存できる");
+        let loaded = load_session(&path).expect("読める");
+        std::fs::remove_file(&path).ok();
+        assert_eq!(loaded.epilogue.as_deref(), Some("三年後、彼女は再び湖畔を訪れた。"));
+
+        // 欄の無い旧セーブ = 終幕していないか、2026-09-19 以前に終幕したセーブ。
+        let mut val = serde_yaml::to_value(&save).expect("直列化できる");
+        val.as_mapping_mut().unwrap().remove("epilogue");
+        let old: SessionSave = serde_yaml::from_value(val).expect("旧形式が読める");
+        assert!(old.epilogue.is_none());
     }
 
     /// 【経緯の予算】history_note は文字予算内で新しい方を残し、古い方から省略する

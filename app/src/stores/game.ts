@@ -2083,6 +2083,12 @@ ${body}`, t("rename.ok"), true);
         if (view.resumed.last_narration) {
           this.log.push({ kind: "narration", text: view.resumed.last_narration });
         }
+        // 終幕後のセーブならエピローグを読み返せる (spec 11、2026-09-19)。受理ターンと同じ
+        // 並び (マーカー → 本文)。読み上げはしない — 再開で勝手に喋り出さない。
+        if (view.resumed.epilogue) {
+          this.log.push({ kind: "system", text: t("store.epilogueMarker") });
+          this.log.push({ kind: "narration", text: view.resumed.epilogue });
+        }
         for (const w of view.resumed.warnings) {
           this.log.push({ kind: "system", text: `⚠ ${w}` });
         }
