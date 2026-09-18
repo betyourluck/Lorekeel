@@ -1,7 +1,7 @@
 # spec 31: マウントテスト — 提示層の部品を DOM ごと立てて、実機より先に不具合を出す
 
-**Status**: rev2（2026-09-18 起草 → 同日査読 2 本を反映。決定 5 点はユーザー承認済み）→ **✅Phase 0（2026-09-19）**。
-Phase A 以降は未着手。
+**Status**: rev2（2026-09-18 起草 → 同日査読 2 本を反映。決定 5 点はユーザー承認済み）→ **✅Phase 0（2026-09-19）** → **✅Phase A（同日）**。
+Phase B 以降は未着手。
 査読の反映は末尾「査読の反映」節に凍結。
 
 ## 動機
@@ -85,6 +85,9 @@ frontend の vitest（2026-08-29 新設、現在 115 本）は**純関数しか�
 
 順序を固定する。**偽装は mount より前**に置く — 部品は `setup` / `onMounted` の中で command を投げるので、
 後から偽装しても間に合わない。
+**←2026-09-19 Phase A で改訂**: IPC の偽装そのものは**import より前に 1 回だけ**張る（`transport.ts` が
+モジュールの最上段で `listen` を呼ぶため）。以下の準備 1 は「偽装の**表**を置く」と読み替え、後始末 2 は
+`clearMocks()` でなく「表を空に戻す」。経緯は「Phase A の実測」節。
 
 **準備（各テストの先頭）**
 1. `mockIPC(handler, { shouldMockEvents: true })` — 既定の handler は `throw new Error(\`unmocked command: ${cmd}\`)`。
@@ -155,6 +158,29 @@ frontend の vitest（2026-08-29 新設、現在 115 本）は**純関数しか�
    プレビューが開かないこと、その間に dblclick が来れば改名の入力欄になりプレビューは開かないこと
    （`advanceTimersByTime(300)` 後にも開いていないことまで見る）。届かない半分（幕への着地）は
    テストの冒頭コメントに書く。
+
+#### ✅Phase A の実測（2026-09-19）
+
+3 件とも、修正を一時的に戻して Red を確かめてから戻した。
+
+| 対象 | テスト | Red の作り方 | Red の出方 |
+|---|---|---|---|
+| #94 | `ConversationLog.mount.test.ts` 2 本（別の判定 2 件 / 同じ出目 2 回） | checks 側 `DiceReveal` の `:key` を消す | 2 本とも `revealed` が **1 のまま**（実機のデッドロックと同じ形） |
+| #92 | `StatePanel.mount.test.ts` 2 本（新規作成 / 改名で `document.activeElement` が入力欄） | `:ref="bindDraft"` を修正前の `ref="draftInput"` + `draftInput.value` へ | 2 本とも落ち、未処理 rejection に **`el.focus is not a function`**（配列に focus が無い = 実機の機序そのもの） |
+| 09-14 dblclick | `StatePanel.mount.test.ts` 2 本（300ms 経つまで開かない / 間の dblclick で改名になり開かない） | 名前の `@click` を修正前の即時プレビューへ | 2 本とも落ちる。**ただし落ちた理由は「プレビューが即座に開いた」で、「幕が 2 回目を奪った」ではない** — happy-dom は hit-testing をしないので Red の状態でも dblclick は名前へ届く（表の「半分」のとおり） |
+
+演出の時間は偽のタイマーで進めた（開帳は `setTimeout` + `performance.now()`、クリックの遅延は `setTimeout`）。
+
+**土台の設計を 1 点変えた（Phase A 初回で判明）**: 共通準備を「テストの中で `mockIPC` を張り、後始末で
+`clearMocks()`」の形で書いていたところ、ConversationLog を import しただけで未処理 rejection が 6 件出た
+（`transformCallback` of undefined）。**`transport.ts` はモジュールの最上段で transport を作り `listen` を
+呼ぶ**（アプリの生涯を通して生きる購読）ので、**「偽装は mount より前」では足りず「import より前」が要る**。
+加えて `clearMocks()` は Tauri の内部ごと消すので、import 時に登録された購読を 2 本目以降のテストで壊す。
+→ 偽装は `mount.setup.ts`（テストファイルの import より前に走る）で **1 回だけ**張り、テストごとには
+**偽装の表だけ**を差し替える形にした。後始末は表を空に戻す（空の表ではどの command も従来どおり例外で落ちる
+= 決定 3 の性質は不変、`harness.mount.test.ts` の後始末テストで固定）。
+**一般化: 部品の外側にもモジュールの最上段で副作用を持つ層がある。偽装の張り時は「部品が動く前」でなく
+「そのモジュールが評価される前」で決める。**
 
 ### Phase B — 保存経路（#103 の両半分）
 

@@ -84,8 +84,9 @@ describe("後始末", () => {
     expect(localStorage.getItem("kataribe.lang")).toBeNull();
     expect(vi.isMockFunction(HTMLMediaElement.prototype.play)).toBe(false);
     expect("mediaDevices" in navigator).toBe(false);
-    // 偽装が外れた後の invoke は偽装の表を通らない (Tauri の内部が無い)
-    await expect(invoke("echo")).rejects.toThrow();
+    // 表が空に戻る = さっきまで在った command も偽装し忘れと同じく落ちる
+    // (Tauri の内部は消さない: transport.ts が import 時に登録した購読を生かすため)
+    await expect(invoke("echo")).rejects.toThrow(unmockedMessage("echo"));
   });
 });
 

@@ -2,21 +2,24 @@
  * マウントテストの共通準備と後始末 (spec 31)。`*.mount.test.ts` だけが使う。
  *
  * 規律 (spec 31「共通の準備と後始末」):
- * - **偽装は mount より前**。部品は setup / onMounted の中で command を投げるので、後から偽装しても
- *   間に合わない。`mountWith` が順序を固定する。
- * - **偽装していない command は例外で落とす**。既定の handler は throw し、テストは使う command だけを
- *   表で渡す。`mockIPC` の invoke は async なので throw は呼び出し側で reject になり、`void` で投げっぱなし
- *   の呼び出しなら vitest が未処理の rejection としてテストを落とす = 偽装し忘れが黙って通らない。
+ * - **IPC の偽装は import より前に 1 回だけ張る** (`installOnce`、`mount.setup.ts` から呼ぶ)。
+ *   `transport.ts` は**モジュールの最上段で** transport を作り `listen` を呼ぶ (アプリの生涯を通して
+ *   生きる購読)。部品を import した瞬間にこれが走るので、テストの中で張ったのでは間に合わない
+ *   (Phase A 初回で `transformCallback` of undefined が未処理 rejection として 6 件出た)。
+ *   同じ理由で `clearMocks()` は使わない — Tauri の内部ごと消すと、import 時に登録された購読が
+ *   2 本目以降のテストで壊れる。
+ * - **テストごとに差し替えるのは偽装の表だけ** (`prepare`)。部品は setup / onMounted の中で
+ *   command を投げるので、表は mount より前に置く (`mountWith` が順序を固定する)。
+ * - **表に無い command は例外で落とす**。mockIPC の invoke は async なので throw は呼び出し側で
+ *   reject になり、`void` の投げっぱなしなら vitest が未処理の rejection として落とす。
  * - **イベントの内部 command は既定で通る**。`shouldMockEvents: true` のとき `plugin:event|*` は
- *   mockIPC 自身がコールバックより前に処理する (mocks.js で確認)。ウィンドウ系 `plugin:window|*` は
- *   コールバックへ届くので、使うテストが表に書く。**既定の allowlist は置かない**。
- * - **store は本物の pinia**。テストごとに作り直し `setActivePinia` する (状態をテスト間で共有しない)。
- * - **メディア API はスタブ**。happy-dom の素の挙動に頼るテストは書かない (素の挙動は
- *   `harness.mount.test.ts` が記録する)。
- * - 後始末は `mount.setup.ts` の afterEach が**無条件**に行う (使わなかったテストでも呼ぶ =
- *   呼び忘れが次のテストへ漏れない)。
+ *   mockIPC 自身がコールバックより前に処理する。ウィンドウ系 `plugin:window|*` はコールバックへ
+ *   届くので、使うテストが表に書く。**既定の allowlist は置かない**。
+ * - **store は本物の pinia**。テストごとに作り直し `setActivePinia` する。
+ * - **メディア API はスタブ** (素の挙動は `harness.mount.test.ts` が記録する)。
+ * - 後始末は `mount.setup.ts` の afterEach が**無条件**に行う。
  */
-import { clearMocks, mockConvertFileSrc, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
+import { mockConvertFileSrc, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { mount, type ComponentMountingOptions, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia, type Pinia } from "pinia";
 import { vi } from "vitest";
@@ -33,21 +36,20 @@ export function unmockedMessage(cmd: string): string {
 /** 呼ばれた command を記録する (どの command が何回呼ばれたかを見たいテスト用)。 */
 export const ipcCalls: { cmd: string; args: Record<string, unknown> | undefined }[] = [];
 
+let table: IpcTable = {};
+let installed = false;
 const mounted: VueWrapper[] = [];
 let mediaDevicesStubbed = false;
 
-/**
- * 準備 1〜4 を行い、作った pinia を返す。`mountWith` を使わず部品以外 (store だけ等) を
- * 試すテストはこれを直接呼ぶ。
- */
-export function prepare(ipc: IpcTable = {}): Pinia {
-  ipcCalls.length = 0;
-  // 1. IPC。表に無い command は既定の handler で落ちる。
+/** IPC・ウィンドウ・asset:// の偽装を張る。テストファイルの import より前に 1 回だけ。 */
+export function installOnce(): void {
+  if (installed) return;
+  installed = true;
   mockIPC(
     (cmd, args) => {
       const a = args as Record<string, unknown> | undefined;
       ipcCalls.push({ cmd, args: a });
-      const handler = ipc[cmd];
+      const handler = table[cmd];
       if (!handler) throw new Error(unmockedMessage(cmd));
       return handler(a);
     },
@@ -55,25 +57,37 @@ export function prepare(ipc: IpcTable = {}): Pinia {
   );
   // getCurrentWindow() が引くメタデータ。これ自体は command を投げない。
   mockWindows("main");
-  // 2. asset:// の URL 化。
   mockConvertFileSrc("windows");
-  // 3. メディア系のスタブ (restoreAllMocks で戻る)。
+}
+
+/**
+ * このテストの偽装の表を置き、メディアをスタブし、pinia を作って返す。
+ * 部品以外 (store だけ等) を試すテストはこれを直接呼ぶ。
+ */
+export function prepare(ipc: IpcTable = {}): Pinia {
+  installOnce();
+  table = ipc;
+  ipcCalls.length = 0;
   vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
   vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
   if (!("mediaDevices" in navigator)) {
     Object.defineProperty(navigator, "mediaDevices", {
       configurable: true,
-      value: { enumerateDevices: async () => [], getUserMedia: async () => { throw new Error("no microphone in tests"); } },
+      value: {
+        enumerateDevices: async () => [],
+        getUserMedia: async () => {
+          throw new Error("no microphone in tests");
+        },
+      },
     });
     mediaDevicesStubbed = true;
   }
-  // 4. store。
   const pinia = createPinia();
   setActivePinia(pinia);
   return pinia;
 }
 
-/** 準備 1〜4 のあとで部品を立てる (準備 5)。後始末で unmount されるよう記録する。 */
+/** 表を置いてから部品を立てる。後始末で unmount されるよう記録する。 */
 export function mountWith<C extends Component>(
   component: C,
   options: ComponentMountingOptions<C> = {} as ComponentMountingOptions<C>,
@@ -90,8 +104,9 @@ export function mountWith<C extends Component>(
 export function teardown(): void {
   // 1. unmount (部品の onBeforeUnmount = タイマー・リスナーの解除を先に走らせる)
   while (mounted.length) mounted.pop()!.unmount();
-  // 2. IPC の偽装を外す (次のテストの準備で張り直す)
-  clearMocks();
+  // 2. 偽装の表を空に戻す (空の表ではどの command も例外で落ちる)
+  table = {};
+  ipcCalls.length = 0;
   // 3. localStorage
   localStorage.clear();
   // 4. 偽のタイマーとスタブ (使わなかったテストでも無条件に戻す)
@@ -101,5 +116,4 @@ export function teardown(): void {
     delete (navigator as unknown as Record<string, unknown>).mediaDevices;
     mediaDevicesStubbed = false;
   }
-  ipcCalls.length = 0;
 }
