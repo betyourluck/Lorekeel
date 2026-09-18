@@ -14,7 +14,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { describe, expect, it, vi } from "vitest";
 
 import HelpNote from "../components/HelpNote.vue";
-import { ipcCalls, mountWith, prepare, teardown, unmockedMessage } from "./mount";
+import { allowUnmocked, ipcCalls, mountWith, prepare, teardown, unmockedMessage } from "./mount";
 
 describe("環境", () => {
   it("mount project は DOM の上で走る", () => {
@@ -43,6 +43,7 @@ describe("環境", () => {
 describe("IPC の偽装 (決定 3)", () => {
   it("表に無い command は例外で落ちる", async () => {
     prepare();
+    allowUnmocked(); // 偽装の性質そのものを見るテストなので、後始末の検出からは外す
     await expect(invoke("no_such_command")).rejects.toThrow(unmockedMessage("no_such_command"));
   });
 
@@ -65,6 +66,7 @@ describe("IPC の偽装 (決定 3)", () => {
 
   it("ウィンドウ系はコールバックへ届く — 表に無ければ落ち、在れば通る", async () => {
     prepare();
+    allowUnmocked();
     await expect(getCurrentWindow().setTitle("t")).rejects.toThrow(/unmocked command: plugin:window\|/);
 
     teardown();
@@ -86,7 +88,21 @@ describe("後始末", () => {
     expect("mediaDevices" in navigator).toBe(false);
     // 表が空に戻る = さっきまで在った command も偽装し忘れと同じく落ちる
     // (Tauri の内部は消さない: transport.ts が import 時に登録した購読を生かすため)
+    allowUnmocked();
     await expect(invoke("echo")).rejects.toThrow(unmockedMessage("echo"));
+  });
+
+  it("表に無い command は、呼び出し側が握り潰していても後始末で落ちる (Phase B)", async () => {
+    prepare();
+    // SettingsDialog のローダーと同じ形 = 失敗を catch で捨てる
+    try {
+      await invoke("get_forgotten");
+    } catch {
+      /* 画面は空欄で出る */
+    }
+    expect(() => teardown()).toThrow(/偽装の表に無い command が呼ばれた.*get_forgotten/);
+    // 一度落としたら記録は空に戻る (次のテストへ持ち越さない)
+    expect(() => teardown()).not.toThrow();
   });
 });
 

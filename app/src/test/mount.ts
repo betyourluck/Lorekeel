@@ -12,6 +12,10 @@
  *   command を投げるので、表は mount より前に置く (`mountWith` が順序を固定する)。
  * - **表に無い command は例外で落とす**。mockIPC の invoke は async なので throw は呼び出し側で
  *   reject になり、`void` の投げっぱなしなら vitest が未処理の rejection として落とす。
+ *   **それだけでは足りない (Phase B で判明)**: 部品のローダーの多くは失敗を try/catch で握り潰す
+ *   (Tauri の外でも画面を出すため) ので、偽装し忘れた command は**黙って通る**。ゆえに表に無い
+ *   呼び出しを記録し、**後始末で 1 件でもあればそのテストを落とす**。意図して表に無い command を
+ *   呼ぶテスト (偽装そのものの性質を見るもの) だけが `allowUnmocked()` で外す。
  * - **イベントの内部 command は既定で通る**。`shouldMockEvents: true` のとき `plugin:event|*` は
  *   mockIPC 自身がコールバックより前に処理する。ウィンドウ系 `plugin:window|*` はコールバックへ
  *   届くので、使うテストが表に書く。**既定の allowlist は置かない**。
@@ -38,6 +42,14 @@ export const ipcCalls: { cmd: string; args: Record<string, unknown> | undefined 
 
 let table: IpcTable = {};
 let installed = false;
+/** 表に無かった command (後始末で検める)。 */
+const unmockedCalls: string[] = [];
+let unmockedAllowed = false;
+
+/** このテストでは表に無い command を呼んでも後始末で落とさない (偽装の性質を見るテスト用)。 */
+export function allowUnmocked(): void {
+  unmockedAllowed = true;
+}
 const mounted: VueWrapper[] = [];
 let mediaDevicesStubbed = false;
 
@@ -50,7 +62,10 @@ export function installOnce(): void {
       const a = args as Record<string, unknown> | undefined;
       ipcCalls.push({ cmd, args: a });
       const handler = table[cmd];
-      if (!handler) throw new Error(unmockedMessage(cmd));
+      if (!handler) {
+        unmockedCalls.push(cmd);
+        throw new Error(unmockedMessage(cmd));
+      }
       return handler(a);
     },
     { shouldMockEvents: true },
@@ -68,6 +83,8 @@ export function prepare(ipc: IpcTable = {}): Pinia {
   installOnce();
   table = ipc;
   ipcCalls.length = 0;
+  unmockedCalls.length = 0;
+  unmockedAllowed = false;
   vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
   vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
   if (!("mediaDevices" in navigator)) {
@@ -104,9 +121,13 @@ export function mountWith<C extends Component>(
 export function teardown(): void {
   // 1. unmount (部品の onBeforeUnmount = タイマー・リスナーの解除を先に走らせる)
   while (mounted.length) mounted.pop()!.unmount();
-  // 2. 偽装の表を空に戻す (空の表ではどの command も例外で落ちる)
+  // 2. 偽装の表を空に戻す (空の表ではどの command も例外で落ちる)。表に無い呼び出しは
+  //    ここで拾っておき、残りの後始末を全部済ませてから落とす (途中で投げると次のテストが汚れる)
+  const missed = unmockedAllowed ? [] : [...new Set(unmockedCalls)];
   table = {};
   ipcCalls.length = 0;
+  unmockedCalls.length = 0;
+  unmockedAllowed = false;
   // 3. localStorage
   localStorage.clear();
   // 4. 偽のタイマーとスタブ (使わなかったテストでも無条件に戻す)
@@ -115,5 +136,10 @@ export function teardown(): void {
   if (mediaDevicesStubbed) {
     delete (navigator as unknown as Record<string, unknown>).mediaDevices;
     mediaDevicesStubbed = false;
+  }
+  if (missed.length) {
+    throw new Error(
+      `偽装の表に無い command が呼ばれた (ローダーが握り潰していても見逃さない): ${missed.join(", ")}`,
+    );
   }
 }
