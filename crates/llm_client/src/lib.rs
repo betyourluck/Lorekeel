@@ -18,6 +18,7 @@ mod client;
 mod config;
 mod error;
 mod gemini;
+pub mod jev;
 #[cfg(test)]
 mod golden;
 #[cfg(test)]
@@ -33,6 +34,7 @@ pub use usage::{ImageLedger, LlmLedger, LoggedUsageEvent, UsageEvent, UsageSink}
 pub use client::{CachePoint, CacheStat, ChatTurn, LlmClient};
 pub use config::{Effort, LlmConfig, Provider, ToolMode};
 pub use error::LlmError;
+pub use jev::{JevClient, JevConfig, JevResponse, NoulCriteria, NoulQuestion};
 pub use parse::strip_reasoning_blocks;
 pub use wire::{ChatMessage, Role, ToolCall};
 
