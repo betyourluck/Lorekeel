@@ -342,6 +342,26 @@ export interface CacheStatView {
   recent: { cached: number; prompt: number }[];
 }
 
+/** 語りの一貫性検査の 1 軸 (spec 32 Phase A)。 */
+export interface ConsistencyFindingView {
+  /** 人が読む軸名 (「不在者の発話」等)。 */
+  axis: string;
+  /** 機械可読な質問 id (秘匿は `secret:{entity}`)。 */
+  question_id: string;
+  score: number;
+  /** 閾値を超えたか。**Phase A では印であって却下条件ではない。** */
+  flagged: boolean;
+  /** 還流に乗せてよいか。秘匿は false (示唆でも漏れるので二値で切れない)。 */
+  advisory: boolean;
+}
+
+/** 検査 1 回の結果 (spec 32 Phase A)。閾値以下の軸も全部入る — 分布を測るのが目的。 */
+export interface ConsistencyView {
+  findings: ConsistencyFindingView[];
+  /** 判定に使ったモデル版 (例 `jev-1.13.0`)。 */
+  model: string;
+}
+
 export interface TurnView {
   accepted: boolean;
   narration: string;
@@ -386,6 +406,9 @@ export interface TurnView {
   decision: DecisionView | null;
   /** 進行中の対決 (spec 18 Phase C)。非 null の間 ⚔ パネルを出し入力を締める。 */
   contest: ContestView | null;
+  /** 語りの事後検査 (spec 32 Phase A)。**開発者モードかつ Jev の鍵が在るときだけ**非 null。
+   *  Phase A は観測だけ — 却下も GM への還流もしない。 */
+  consistency: ConsistencyView | null;
   /** 既成事実 (spec 20): 全量スナップショット。**GM は書かない**のでターン処理では常に null
    *  (変えるのはユーザー編集コマンドだけ)。 */
   facts: FactView[] | null;

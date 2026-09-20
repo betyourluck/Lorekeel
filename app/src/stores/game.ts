@@ -2507,6 +2507,17 @@ ${body}`, t("rename.ok"), true);
             // クリックで「N 回目で筋を通した」+ 却下理由を展開 (author 診断)。
             pushLog({ kind: "selfrepair", attempts: turn.attempts, reasons: turn.retries, expanded: false });
           }
+          // spec 32 Phase A: 一貫性検査。**閾値を超えた軸があるときだけ 1 行**出す —
+          // 全件は app_data/logs/consistency.jsonl にあるので、画面は静かに保つ
+          // (毎ターン 7 行出すと没入を壊し、誤警告が真の警告の信頼を削る)。
+          // 秘匿は示唆でも鳴るので「参考」と明示する (還流対象外なのと同じ理由)。
+          const flagged = (turn.consistency?.findings ?? []).filter((f) => f.flagged);
+          if (flagged.length > 0) {
+            const parts = flagged.map(
+              (f) => `${f.axis} ${f.score.toFixed(2)}${f.advisory ? "(参考)" : ""}`,
+            );
+            pushLog({ kind: "system", text: `⚠ 一貫性検査: ${parts.join(" / ")}` });
+          }
           // goal 到達: 単発/終端なら goal_reached、campaign 継続なら transition で signal。
           if (turn.goal_reached || turn.transition) {
             // 結末ナレーション (authored) があれば語りとして出す (遷移元モジュールの結末)。

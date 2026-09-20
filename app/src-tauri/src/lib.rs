@@ -453,6 +453,33 @@ struct TurnView {
     decision: Option<DecisionView>,
     /// 進行中の対決 (spec 18 Phase C)。Some の間、frontend は ⚔ パネルを出し入力を締める。
     contest: Option<ContestView>,
+    /// 語りの事後検査 (spec 32 Phase A)。**開発者モードかつ Jev の鍵が在るときだけ** Some。
+    /// Phase A は観測だけ — 却下もしないし GM へ還流もしない。
+    consistency: Option<ConsistencyView>,
+}
+
+/// 語りの一貫性検査の結果 (spec 32 Phase A)。
+#[derive(Serialize)]
+struct ConsistencyView {
+    /// スコアの高い順。閾値を超えなかった軸も**全部載せる** — Phase A の目的は
+    /// ベースライン (発生率と分布) の測定なので、閾値以下こそ見たい。
+    findings: Vec<ConsistencyFindingView>,
+    /// 判定に使ったモデル版 (例 `jev-1.13.0`)。
+    model: String,
+}
+
+/// 1 軸の判定。
+#[derive(Serialize)]
+struct ConsistencyFindingView {
+    /// 人が読む軸名 (「不在者の発話」等)。
+    axis: String,
+    /// 機械可読な質問 id (秘匿は `secret:{entity}`)。
+    question_id: String,
+    score: f64,
+    /// 閾値を超えたか。**Phase A では印であって却下条件ではない。**
+    flagged: bool,
+    /// 還流に乗せてよいか。秘匿は false (示唆でも漏れるので二値で切れない)。
+    advisory: bool,
 }
 
 /// campaign のモジュール遷移 (前モジュールの goal 到達 → 次モジュールへ state を糸通しして差し替え)。
@@ -4489,6 +4516,105 @@ async fn play_party_turn(
     Ok(view)
 }
 
+/// 一貫性検査の記録先 (`app_data/logs/consistency.jsonl` 固定)。
+///
+/// **会話ログの保存先設定には従わせない** — 会話ログはユーザーが読む物、こちらは機械が読む物
+/// (spec 30 の `usage.jsonl` と同じ線引き)。
+fn consistency_log_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    default_log_dir(app).map(|d| d.join("consistency.jsonl"))
+}
+
+/// 検査 1 回を jsonl へ 1 行追記する。**失敗は呼び出し側が握り潰す** (計器の失敗で
+/// プレイを止めない)。
+fn append_consistency_line(
+    path: &Path,
+    turn: u64,
+    action: &str,
+    report: &harness::ConsistencyReport,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let t_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    // **語り本文は書かない** — 機械が読む計器であり、本文は会話ログ側にある。
+    let row = serde_json::json!({
+        "t_ms": t_ms,
+        "turn": turn,
+        "action": action,
+        "model": report.model,
+        "prompt_tokens": report.prompt_tokens,
+        "completion_tokens": report.completion_tokens,
+        "findings": report.findings.iter().map(|f| serde_json::json!({
+            "question_id": f.question_id,
+            "score": f.score,
+            "flagged": f.flagged,
+        })).collect::<Vec<_>>(),
+    });
+    let mut line = serde_json::to_string(&row).map_err(std::io::Error::other)?;
+    line.push('\n');
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    f.write_all(line.as_bytes())
+}
+
+/// 受理ターンの語りを検査する (spec 32 Phase A)。
+///
+/// **開発者モードかつ Jev の鍵が在るときだけ**動く。それ以外では Jev クライアントすら作らない
+/// = 機構ごと存在しない (opt-in)。
+///
+/// **失敗は握り潰す。** 検査は観測であってターンの正しさの条件ではない — Gemini 明示キャッシュで
+/// 確立した「最適化と正しさの分離」と同じ規律で、ここが落ちてもターンは通す。
+async fn run_consistency_check(
+    app: &tauri::AppHandle,
+    snapshot: harness::ConsistencySnapshot,
+    narration: &str,
+    moved_by_op: bool,
+    turn: u64,
+    action: &str,
+) -> Option<ConsistencyView> {
+    use harness::ConsistencyChecker;
+
+    let client = llm_client::jev::JevClient::from_env()?;
+    let query = harness::ConsistencyQuery {
+        snapshot,
+        narration: narration.to_string(),
+        moved_by_op,
+    };
+    let report = match client.check(&query).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[consistency] 検査に失敗 (ターンは続行): {e}");
+            return None;
+        }
+    };
+    if let Some(path) = consistency_log_path(app) {
+        if let Err(e) = append_consistency_line(&path, turn, action, &report) {
+            eprintln!("[consistency] jsonl の追記に失敗: {e}");
+        }
+    }
+    let mut findings: Vec<&harness::Finding> = report.findings.iter().collect();
+    findings.sort_by(|a, b| b.score.total_cmp(&a.score));
+    Some(ConsistencyView {
+        findings: findings
+            .into_iter()
+            .map(|f| ConsistencyFindingView {
+                axis: f.axis.label().to_string(),
+                question_id: f.question_id.clone(),
+                score: f.score,
+                flagged: f.flagged,
+                advisory: f.axis.is_advisory(),
+            })
+            .collect(),
+        model: report.model,
+    })
+}
+
 /// 1 ターンの共通実体 (単騎 play_turn / 多人数 play_party_turn の合流点)。
 /// `action` は単騎なら生の行動文、多人数なら発話者名つきの合成文。
 async fn do_play_turn(
@@ -4513,6 +4639,15 @@ async fn do_play_turn(
     // spec 10: このターンで増えた分の差分計上用スナップショット (あらすじ / chronicle)。
     let syn_before = sess.synopsis.entries.len();
     let hist_before = sess.history.len();
+    // spec 32 Phase A: 語りの検査は**ターン開始時**の盤面で行う。移動ターンの語りは
+    // 出発地で始まるので、適用後の presence で判定すると不在発話として誤検出される
+    // (実測: 移動後 0.94 / 出発地 0.13)。dev mode でなければ作らない = コストゼロ。
+    let consistency_before = harness::prompt::dev_mode_enabled().then(|| {
+        (
+            sess.state.location.clone(),
+            harness::consistency_snapshot(&sess.state, &sess.scenario, &sess.recent_narrations),
+        )
+    });
 
     // 前ターンの伏線・判定結果・語りを取り出して注入し、pending を空にする。
     let pending = std::mem::take(&mut sess.pending_lore);
@@ -4632,6 +4767,23 @@ async fn do_play_turn(
             sess.pending_checks = checks;
 
             let (goal_id, goal_title, goal_narration) = goal_view(&sess.state, &sess.scenario);
+            // spec 32 Phase A: 語りを事後に検査する。**観測だけ** — 却下もしないし GM へ
+            // 還流もしない。移動の軸は一方向なので、ここで「op が移動したか」を渡す。
+            let consistency = match consistency_before {
+                Some((loc_before, snap)) => {
+                    let moved_by_op = sess.state.location != loc_before;
+                    run_consistency_check(
+                        app,
+                        snap,
+                        &narration,
+                        moved_by_op,
+                        u64::from(sess.state.turn),
+                        action.trim(),
+                    )
+                    .await
+                }
+                None => None,
+            };
             TurnView {
                 accepted: true,
                 narration: normalize(&narration),
@@ -4683,8 +4835,11 @@ async fn do_play_turn(
                 decision: decision_view(&sess.state, &sess.scenario),
                 // spec 18 Phase C: attempt_contest で対決が開いたらパネル素材を載せる。
                 contest: contest_view(&sess.state, &sess.scenario),
+                consistency,
             }
         }
+        // 却下ターンは検査しない — `Rejected` は narration を持たず (物語は進んでいない)、
+        // 検査対象そのものが存在しない。
         TurnOutcome::Rejected { last_reasons, attempts } => TurnView {
             accepted: false,
             narration: String::new(),
@@ -4718,6 +4873,7 @@ async fn do_play_turn(
             // play_turn 自体をガードで弾く)。
             decision: decision_view(&sess.state, &sess.scenario),
             contest: contest_view(&sess.state, &sess.scenario),
+            consistency: None,
         },
     };
 
@@ -5447,6 +5603,65 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    /// 【一貫性検査の記録 (spec 32 Phase A)】jsonl は**機械が読む計器**なので、
+    /// 語り本文は書かない (本文は会話ログ側にある)。1 検査 1 行で追記され、
+    /// findings は閾値以下も全部載る — Phase A の目的はベースライン (分布) の測定なので、
+    /// 陽性だけ残すと「何ターンに 1 回鳴るか」の分母が取れない。
+    #[test]
+    fn consistency_jsonl_appends_one_line_without_the_narration() {
+        use super::append_consistency_line;
+
+        let dir = std::env::temp_dir().join(format!("lorekeel_consistency_{}", std::process::id()));
+        let path = dir.join("logs").join("consistency.jsonl");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let report = harness::ConsistencyReport {
+            findings: vec![
+                harness::Finding {
+                    axis: harness::Axis::AbsentSpeaker,
+                    question_id: "absent_speaker".into(),
+                    score: 0.93,
+                    flagged: true,
+                },
+                harness::Finding {
+                    axis: harness::Axis::HandedUnowned,
+                    question_id: "handed_unowned".into(),
+                    score: 0.08,
+                    flagged: false,
+                },
+            ],
+            model: "jev-1.13.0".into(),
+            prompt_tokens: 931,
+            completion_tokens: 128,
+        };
+
+        append_consistency_line(&path, 7, "源蔵に話しかける", &report).expect("1 行目");
+        append_consistency_line(&path, 8, "テラスへ行く", &report).expect("2 行目");
+
+        let body = std::fs::read_to_string(&path).expect("読み戻し");
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 2, "1 検査 1 行で追記される");
+
+        let row: serde_json::Value = serde_json::from_str(lines[0]).expect("JSON");
+        assert_eq!(row["turn"], 7);
+        assert_eq!(row["action"], "源蔵に話しかける");
+        assert_eq!(row["model"], "jev-1.13.0");
+        assert_eq!(row["prompt_tokens"], 931);
+        assert!(row["t_ms"].as_u64().unwrap() > 0);
+
+        let findings = row["findings"].as_array().expect("findings");
+        assert_eq!(findings.len(), 2, "閾値以下も載せる (分布を測るため)");
+        assert_eq!(findings[0]["question_id"], "absent_speaker");
+        assert_eq!(findings[0]["flagged"], true);
+        assert_eq!(findings[1]["flagged"], false);
+
+        // 本文を書く欄は存在しない。
+        assert!(row.get("narration").is_none(), "語り本文は計器に書かない");
+        assert!(!body.contains("源蔵が顔を出した"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 【価格表の読み (spec 30 追補 2026-09-13)】prices.json は litellm 由来で欄が行ごとに揃わない —
     /// `max_input_tokens` と `cache_read_per_mtok` は無い行がある (実表 1,732 行中キャッシュ読みは 490 行)。
     /// 無い欄は None で通し、知らない欄 (cache_write) は捨て、**版が違う表・負や非数の単価は拒む**
