@@ -9,6 +9,7 @@
 
 mod asset;
 mod campaign;
+pub mod consistency;
 pub mod docs;
 pub mod edit_assist;
 pub mod edit_tools;
@@ -78,6 +79,10 @@ pub use facts::{
     FactOrigin, FACT_LINE_CHARS, FACTS_MAX,
 };
 pub use memoria::{load_lore, resolve_recall, FiredBeat, LoreStore, Memoria, MemoryFragment};
+pub use consistency::{
+    snapshot as consistency_snapshot, Axis, ConsistencyChecker, ConsistencyQuery, ConsistencyReport,
+    ConsistencySnapshot, Finding,
+};
 pub use proposer::DeltaProposer;
 pub use save::{load_session, save_session, SavedContent, SessionSave, SAVE_VERSION};
 pub use synopsis::{
