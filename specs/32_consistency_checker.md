@@ -1,6 +1,6 @@
 # spec 32 — 一貫性検査 (Jev による語りの事後検査)
 
-Status: **Phase A 実装中** (2026-09-21 起草。llm_client 側 = 実装済み・live Green)
+Status: **Phase A 完了** (2026-09-21 起草・同日実装。**残 = 実プレイでのベースライン観測**)
 
 ---
 
@@ -193,10 +193,34 @@ Phase A が使わないので実装しない = 収縮の Mandate)。
 live を付けた理由は spec 29 の教訓 (failures #99/#100): 「adapter の PoC は wire の形だけでは
 相手の癖を捕まえない」。実際、**live が質問文の一文落ちを捕まえた** (0.87 → 0.51)。
 
+### ✅ harness (2026-09-21)
+
+`crates/harness/src/consistency.rs` — `ConsistencyChecker` trait + `impl for JevClient`
+(`impl Summarizer for LlmClient` と同型)、質問・state の組み立てと解釈はすべて純関数。
+
+- **質問文を PoC で固定した** (`question_text_is_pinned_to_the_measured_wording`)。
+  live で一文を落としたら 0.87 → 0.51 まで動いたので、GM_SYSTEM と同じ扱いにする。
+- **出し分け** — 材料が無い軸は問わない (秘匿 0 件の盤面に秘匿を問えば常に低く出るだけで、
+  jsonl が埋まりトークンも無駄になる)。move op ありなら移動を問わない (一方向)。
+- `Axis::is_advisory()` で「還流に乗せてよいか」を型に持たせた (`SecretLeak` だけ false)。
+- PoC 8 本。うち 2 本は**機構を壊して Red を確認済み** (主人公を present から外す /
+  一方向検査を外す)。
+
+### ✅ app (2026-09-21)
+
+- `do_play_turn` の冒頭で**ターン開始時のスナップショット**。dev mode でなければ作らない。
+- 受理分岐で検査 → 閾値超えがあれば会話ログに 1 行、全件を
+  `app_data/logs/consistency.jsonl` へ。**却下ターンは検査しない** (narration が無い)。
+- **失敗は握り潰す**。jsonl に**語り本文は書かない**。
+- PoC: app backend 1 本 + frontend mount 4 本 (閾値の絞りを外して Red 確認済み)。
+
+**設定 UI は作っていない** — Phase A は dev mode 限定で当面の利用者が限られるため、env だけで
+足りる (収縮の判断)。必要になったら Phase B で足す。
+
 ### 残り
 
-- `harness/src/consistency.rs` (trait + 質問の組み立て + 解釈)
-- app 配線 (設定 / 受理後の呼び出し / dev 表示 / jsonl)
+**実プレイでのベースライン観測** — 何ターンに 1 回、どの軸が鳴るか。これが取れるまで
+Phase B (還流) は始められない (分母が無いと「減った」が言えない)。
 
 ---
 
