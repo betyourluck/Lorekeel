@@ -44,8 +44,15 @@ pub enum Axis {
     MovedWithoutOp,
     /// 過去に語られた事実と食い違う。
     PastContradiction,
-    /// ある人物が別の人物の特徴を見せている (混入)。
-    ProfileMixup,
+    /// profile に書かれた人物像から外れた振る舞いをしている。
+    ///
+    /// **2026-09-21 に「別人の特徴の混入」から差し替えた。** 旧問い (「別の人物の特徴として
+    /// 書かれているものを見せているか") は実プレイ 43 ターンで中央値 0.30・真相開示のターンで
+    /// 0.5 超えを 5 回出し、**分離しなかった** (鳴らすべきでない最大 0.71 / 鳴らすべき最小 0.32
+    /// = 重なる)。ミステリ盤面では**特徴の共有が真相そのもの**で、「同じ指輪」「同じ癖」は
+    /// 作者が置いた手がかりだから — 問いの立て方が盤面と噛み合っていなかった。
+    /// 論点を 1 つに削った現在の問いは 鳴らすべきでない 0.38 / 鳴らすべき 0.56 で分離する。
+    ProfileDeviation,
     /// profile に書かれた設定と食い違う。
     ProfileContradiction,
     /// 秘匿とされた関係を地の文が明かした (#33)。
@@ -67,7 +74,7 @@ impl Axis {
             Axis::HandedUnowned => "未所持物の譲渡",
             Axis::MovedWithoutOp => "語りだけの移動",
             Axis::PastContradiction => "過去の語りとの矛盾",
-            Axis::ProfileMixup => "別人の特徴の混入",
+            Axis::ProfileDeviation => "人物像からの逸脱",
             Axis::ProfileContradiction => "設定との食い違い",
             Axis::SecretLeak => "秘匿の漏洩",
         }
@@ -182,7 +189,7 @@ fn axis_of(id: &str) -> Option<Axis> {
         "handed_unowned" => Some(Axis::HandedUnowned),
         "moved_without_op" => Some(Axis::MovedWithoutOp),
         "past_contradiction" => Some(Axis::PastContradiction),
-        "profile_mixup" => Some(Axis::ProfileMixup),
+        "profile_deviation" => Some(Axis::ProfileDeviation),
         "profile_contradiction" => Some(Axis::ProfileContradiction),
         _ if id.starts_with("secret:") => Some(Axis::SecretLeak),
         _ => None,
@@ -263,17 +270,22 @@ pub fn build_questions(query: &ConsistencyQuery) -> BTreeMap<String, NoulQuestio
             .with_criteria("profile と食い違う記述がある", "profile と矛盾しない"),
         );
     }
-    // 混入は 2 人以上いないと起こりえない。
-    if s.character_profiles.len() >= 2 {
+    // 人物像からの逸脱は**1 人でも成立する** — 旧「混入」と違い「別の人物」を必要としない。
+    //
+    // **論点は 1 つに保つ** (2026-09-21 に実データで確かめた): 旧問いを厳密化して
+    // 「その人物自身の profile に無く・別の人物の profile にあり・共有なら除外」と
+    // 三つ載せた版は、偽陽性も真陽性も一緒に中央へ寄せて判別力を半分にした
+    // (ギャップ 0.50 → 0.25)。削って 1 論点にしたこの問いが分離する側。
+    if !s.character_profiles.is_empty() {
         q.insert(
-            "profile_mixup".to_string(),
+            "profile_deviation".to_string(),
             NoulQuestion::new(
-                "`narration` の中で、ある人物が、`character_profiles` では別の人物の特徴として\
-書かれているもの (口癖・持ち物・好み・習慣・服装) を見せているか。",
+                "`narration` の中で、`character_profiles` に書かれた人物像から外れた振る舞いを\
+している人物がいるか。",
             )
             .with_criteria(
-                "別の人物の特徴が、その人物に現れている",
-                "各人物は自分の特徴のままである",
+                "profile の人物像から外れた振る舞いがある",
+                "各人物は profile どおりに振る舞っている",
             ),
         );
     }
@@ -490,7 +502,7 @@ mod tests {
         assert!(q.contains_key("moved_without_op"), "move op が無いなら問う");
         assert!(q.contains_key("past_contradiction"));
         assert!(q.contains_key("profile_contradiction"));
-        assert!(q.contains_key("profile_mixup"), "profile 2 件なら混入を問う");
+        assert!(q.contains_key("profile_deviation"), "profile があれば逸脱を問う");
         assert!(q.contains_key("secret:genzo"), "秘匿は entity ごとに 1 問");
 
         // move op ありのターンは移動を問わない (一方向検査)。
@@ -508,11 +520,17 @@ mod tests {
         let q2 = build_questions(&bare);
         assert!(!q2.contains_key("past_contradiction"));
         assert!(!q2.keys().any(|k| k.starts_with("secret:")));
-        assert!(
-            !q2.contains_key("profile_mixup"),
-            "1 人しかいないなら混入は起こりえない"
-        );
+        // **1 人でも逸脱は問える** — 旧「混入」は 2 人を要したが、人物像から外れた振る舞いは
+        // その人物 1 人で成立する (2026-09-21 の差し替え)。
+        assert!(q2.contains_key("profile_deviation"), "1 人でも逸脱は問える");
         assert!(q2.contains_key("profile_contradiction"), "1 件でも矛盾は問える");
+
+        // profile が 0 件ならどちらも問わない (材料が無い)。
+        let mut no_profiles = query(false);
+        no_profiles.snapshot.character_profiles.clear();
+        let q3 = build_questions(&no_profiles);
+        assert!(!q3.contains_key("profile_deviation"));
+        assert!(!q3.contains_key("profile_contradiction"));
     }
 
     /// 質問文は実データで測って通った文言。**変えたら再測定する** — live で一文を落としたら
@@ -534,10 +552,15 @@ mod tests {
             "移動の意思と完了を分ける一文 (実測 0.04 / 0.74 の分離)"
         );
 
-        // 混入は「矛盾」でなく「別の人物の特徴」を問う — profile は否定を書かないので
-        // 「A の特徴を B がやる」は厳密には矛盾しない (0.59 → 0.77 の差)。
-        let mixup = &q["profile_mixup"].instructions;
-        assert!(mixup.contains("別の人物の特徴"));
+        // **論点は 1 つ**。「別の人物の特徴として書かれているもの」を問う旧版は実プレイ
+        // 43 ターンで分離しなかった (真相開示のたびに 0.5 超え = ミステリでは特徴の共有が
+        // 手がかりそのもの)。厳密化して条件を足した版は判別力が半分になった。
+        let deviation = &q["profile_deviation"].instructions;
+        assert!(deviation.contains("人物像から外れた"));
+        assert!(
+            !deviation.contains("別の人物"),
+            "論点を 2 つにしない (厳密化は実測で判別力を落とした)"
+        );
 
         // criteria は全問に付ける (付けないと精度が落ちる)。
         for (id, question) in &q {

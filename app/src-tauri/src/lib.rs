@@ -721,6 +721,11 @@ impl GameSession {
 }
 
 struct GameSession {
+    /// このプレイスルーの識別子 (spec 32)。**`turn` は新規ゲームでリセットされる**ので、
+    /// consistency.jsonl を後から読むとき `turn` だけでは別セッションの行が混ざる
+    /// (2026-09-21 の実データで 43 行が 4 セッション混在だった = 分母が数えられない)。
+    /// 開始時刻の unix ミリ秒。セーブには入れない (再開のたびに新しい観測とみなす)。
+    session_id: String,
     state: GameState,
     scenario: Scenario,
     lore: LoreStore,
@@ -3709,6 +3714,7 @@ async fn new_game(
     // 新セッション = 利用量の揮発分 (画像) をリセット (spec 30 Phase B。jsonl は追記のまま)。
     app.state::<UsageState>().reset_session();
     *session.lock().await = Some(GameSession {
+        session_id: new_session_id(),
         state,
         scenario,
         lore,
@@ -3878,6 +3884,7 @@ async fn restore_session(
     // 新セッション = 利用量の揮発分 (画像) をリセット (spec 30 Phase B。jsonl は追記のまま)。
     app.state::<UsageState>().reset_session();
     *session.lock().await = Some(GameSession {
+        session_id: new_session_id(),
         state,
         scenario,
         lore,
@@ -4516,6 +4523,17 @@ async fn play_party_turn(
     Ok(view)
 }
 
+/// プレイスルーの識別子 = 開始時刻の unix ミリ秒。
+///
+/// **`turn` は新規ゲームでリセットされる**ので、これが無いと consistency.jsonl を後から
+/// 読むときに別セッションの行が混ざる (2026-09-21 の実データで 43 行が 4 セッション混在)。
+fn new_session_id() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis().to_string())
+        .unwrap_or_else(|_| "0".to_string())
+}
+
 /// 一貫性検査の記録先 (`app_data/logs/consistency.jsonl` 固定)。
 ///
 /// **会話ログの保存先設定には従わせない** — 会話ログはユーザーが読む物、こちらは機械が読む物
@@ -4528,6 +4546,7 @@ fn consistency_log_path(app: &tauri::AppHandle) -> Option<PathBuf> {
 /// プレイを止めない)。
 fn append_consistency_line(
     path: &Path,
+    session_id: &str,
     turn: u64,
     action: &str,
     report: &harness::ConsistencyReport,
@@ -4543,6 +4562,8 @@ fn append_consistency_line(
     // **語り本文は書かない** — 機械が読む計器であり、本文は会話ログ側にある。
     let row = serde_json::json!({
         "t_ms": t_ms,
+        // **`turn` の前に置く** — 読むときはまずセッションで束ねる (turn は新規ゲームで戻る)。
+        "session": session_id,
         "turn": turn,
         "action": action,
         "model": report.model,
@@ -4572,6 +4593,7 @@ fn append_consistency_line(
 /// 確立した「最適化と正しさの分離」と同じ規律で、ここが落ちてもターンは通す。
 async fn run_consistency_check(
     app: &tauri::AppHandle,
+    session_id: &str,
     snapshot: harness::ConsistencySnapshot,
     narration: &str,
     moved_by_op: bool,
@@ -4594,7 +4616,7 @@ async fn run_consistency_check(
         }
     };
     if let Some(path) = consistency_log_path(app) {
-        if let Err(e) = append_consistency_line(&path, turn, action, &report) {
+        if let Err(e) = append_consistency_line(&path, session_id, turn, action, &report) {
             eprintln!("[consistency] jsonl の追記に失敗: {e}");
         }
     }
@@ -4774,6 +4796,7 @@ async fn do_play_turn(
                     let moved_by_op = sess.state.location != loc_before;
                     run_consistency_check(
                         app,
+                        &sess.session_id,
                         snap,
                         &narration,
                         moved_by_op,
@@ -5635,14 +5658,33 @@ mod tests {
             completion_tokens: 128,
         };
 
-        append_consistency_line(&path, 7, "源蔵に話しかける", &report).expect("1 行目");
-        append_consistency_line(&path, 8, "テラスへ行く", &report).expect("2 行目");
+        append_consistency_line(&path, "1700000000001", 7, "源蔵に話しかける", &report)
+            .expect("1 行目");
+        append_consistency_line(&path, "1700000000001", 8, "テラスへ行く", &report)
+            .expect("2 行目");
+        // **同じ turn 番号でも別セッションなら区別できる**。新規ゲームで turn は 1 に戻るので、
+        // session が無いと後から分母を数えられない (2026-09-21 の実データで 43 行が
+        // 4 セッション混在しており、action を並べて初めて気づいた)。
+        append_consistency_line(&path, "1700000009999", 7, "ここは？", &report)
+            .expect("別セッションの同じ turn");
 
         let body = std::fs::read_to_string(&path).expect("読み戻し");
         let lines: Vec<&str> = body.lines().collect();
-        assert_eq!(lines.len(), 2, "1 検査 1 行で追記される");
+        assert_eq!(lines.len(), 3, "1 検査 1 行で追記される");
 
-        let row: serde_json::Value = serde_json::from_str(lines[0]).expect("JSON");
+        let rows: Vec<serde_json::Value> = lines
+            .iter()
+            .map(|l| serde_json::from_str(l).expect("JSON"))
+            .collect();
+        assert_eq!(rows[0]["session"], "1700000000001");
+        assert_eq!(rows[2]["session"], "1700000009999");
+        assert_eq!(rows[0]["turn"], rows[2]["turn"], "turn は衝突しうる");
+        assert_ne!(
+            rows[0]["session"], rows[2]["session"],
+            "session で束ねれば区別できる"
+        );
+
+        let row = &rows[0];
         assert_eq!(row["turn"], 7);
         assert_eq!(row["action"], "源蔵に話しかける");
         assert_eq!(row["model"], "jev-1.13.0");

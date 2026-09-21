@@ -104,16 +104,16 @@ describe("一貫性検査の表示", () => {
       acceptedTurn({
         model: "jev-1.13.0",
         findings: [
-          { axis: "別人の特徴の混入", question_id: "profile_mixup", score: 0.88, flagged: true, advisory: false },
+          { axis: "人物像からの逸脱", question_id: "profile_deviation", score: 0.88, flagged: true, advisory: false },
           { axis: "秘匿の漏洩", question_id: "secret:genzo", score: 0.61, flagged: true, advisory: true },
         ],
       }),
     );
 
     const line = systemLines(store)[0];
-    expect(line.indexOf("別人の特徴の混入")).toBeLessThan(line.indexOf("秘匿の漏洩"));
+    expect(line.indexOf("人物像からの逸脱")).toBeLessThan(line.indexOf("秘匿の漏洩"));
     // 秘匿だけ「参考」が付く (示唆でも鳴るので二値で切れない = 還流対象外なのと同じ理由)。
     expect(line).toContain("秘匿の漏洩 0.61(参考)");
-    expect(line).not.toContain("別人の特徴の混入 0.88(参考)");
+    expect(line).not.toContain("人物像からの逸脱 0.88(参考)");
   });
 });
