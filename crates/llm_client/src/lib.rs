@@ -1946,6 +1946,28 @@ mod tests {
         assert_eq!(s.total_tokens, 100 + 110 + 120 + 9000 + 200, "累積 prompt = input の総和");
     }
 
+    /// コンテキスト使用率 (2026-09-23) の分子は **`last_prompt` = 直近 1 回の総入力**で、
+    /// 隣の `total_tokens` (累計) とは性質が違う。窓の使用率は「いま 1 回のリクエストが窓の
+    /// どれだけを占めたか」であって、ターンや周の合計ではない — 合計を分子にすると、
+    /// 却下で 2 回呼ばれたターンや複数周のループで 100% を常時超える (Fuseforks spec 49 の
+    /// 「この Spec の最大の罠」)。**却下で 2 回呼ばれたら最後の 1 回が残る**のが正しい。
+    #[test]
+    fn cache_stat_last_prompt_is_assigned_not_accumulated() {
+        let mut s = CacheStat::default();
+        assert_eq!(s.last_prompt, 0, "1 度も呼んでいなければ 0 (= 提示層は出さない)");
+
+        s.record(0, 12_000);
+        assert_eq!(s.last_prompt, 12_000);
+        // 同じターンの 2 回目 (却下 → self-repair の再生成)。
+        s.record(7_793, 12_400);
+        assert_eq!(s.last_prompt, 12_400, "**代入** — 最後の 1 回が残る");
+        assert_eq!(s.total_tokens, 24_400, "累計のほうは従来どおり足し続ける (性質が違う)");
+
+        // 入力が縮んだターン (campaign 遷移であらすじが圧縮された等) でも素直に下がる。
+        s.record(0, 9_900);
+        assert_eq!(s.last_prompt, 9_900, "累計なら下がらない = 代入であることの対照");
+    }
+
     /// 【spec 14 Phase C】per-request のリングバッファは**有界** — 長セッション (100 ターン超)
     /// で常駐メモリが伸びないよう直近 N 件だけ保持し、古い方から捨てる (曲線の可視化用)。
     #[test]

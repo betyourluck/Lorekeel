@@ -47,6 +47,9 @@ use crate::wire::{ChatMessage, ChatRequest, ChatResponse};
 pub struct CacheStat {
     /// 直近リクエストの cache read トークン (0 = miss)。
     pub last_cache_read: u64,
+    /// 直近リクエストの**総入力**トークン (cache 込み)。コンテキスト使用率の分子
+    /// (spec 30 の累計とは性質が違う — こちらは代入・あちらは加算)。
+    pub last_prompt: u64,
     /// 連続で cache read が 0 だった回数 (1 回でもヒットで 0 にリセット)。
     pub consecutive_misses: u32,
     /// 累計リクエスト数。初回は書き込みゆえ miss が正常なので、判定は 2 回目以降を見る。
@@ -82,6 +85,9 @@ impl CacheStat {
     pub(crate) fn record(&mut self, cache_read: u64, prompt: u64) {
         self.total_requests = self.total_requests.saturating_add(1);
         self.last_cache_read = cache_read;
+        // **代入** (隣の累計 3 本とは性質が違う): 窓の使用率は「直近 1 回がどれだけ占めたか」で、
+        // ターンや周の合計ではない。却下で 2 回呼ばれたターンでは最後の 1 回が残るのが正しい。
+        self.last_prompt = prompt;
         if cache_read > 0 {
             self.consecutive_misses = 0;
         } else if prompt >= self.floor {

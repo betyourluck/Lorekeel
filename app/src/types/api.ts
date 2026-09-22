@@ -330,6 +330,8 @@ export interface TransitionView {
 export interface CacheStatView {
   /** 直近リクエストの cache read トークン (0 = miss)。 */
   last_cache_read: number;
+  /** 直近リクエストの総入力トークン (cache 込み)。コンテキスト使用率の分子。 */
+  last_prompt: number;
   /** 連続で cache read が 0 だった回数 (1 回でもヒットで 0 にリセット)。 */
   consecutive_misses: number;
   /** 累計リクエスト数。初回は書き込みゆえ miss が正常なので判定は 2 回目以降を見る。 */

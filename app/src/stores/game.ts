@@ -602,6 +602,8 @@ interface GameState {
   editor: EditorState;
   // 使用中の AI モデル名 (TitleBar バッジ + OS ウィンドウタイトル)。get_llm_config から取得。
   llmModel: string;
+  /** 直近の GM 呼び出しの総入力トークン (コンテキスト使用率の分子)。0 = まだ 1 度も呼んでいない。 */
+  lastPrompt: number;
   /** spec 30: このセッションの利用量 (バッジ hover で取り直す)。Tauri 外では null のまま。 */
   usage: UsageSnapshot | null;
   // 配布サイトに現在版より新しいアプリがあるか (TitleBar の「最新版があります」表示)。
@@ -718,6 +720,7 @@ export const useGameStore = defineStore("game", {
       editorRenameRequest: null,
       editor: freshEditorState(),
       llmModel: "",
+      lastPrompt: 0,
       usage: null,
       updateAvailable: false,
       latestVersion: "",
@@ -2051,6 +2054,7 @@ ${body}`, t("rename.ok"), true);
       this.map = view.map ?? { nodes: [], edges: [] };
       this.log = [{ kind: "opening", text: view.description }];
       this.cacheWarned = false; // 新しいセッション = 新しいクライアント (計測もゼロから)
+      this.lastPrompt = 0;
       // 開帳の保留 (spec 18) は前のプレイの揮発状態 — 新規/再開/ロードで必ず捨てる。
       this.pendingTail = [];
       this.pendingSe = [];
@@ -2567,6 +2571,9 @@ ${body}`, t("rename.ok"), true);
         // 連続 miss が閾値を越えた瞬間に 1 回だけ出す。ヒット復帰で再武装するエッジトリガー。
         // 初回リクエストは書き込みゆえ miss が正常 → total_requests>=2 で除外。
         const cs = turn.cache;
+        // コンテキスト使用率の分子 (2026-09-23)。**代入** — 窓の使用率は直近 1 回の入力が
+        // 窓をどれだけ占めたかで、ターンの合計ではない。却下で 2 回呼んだターンは最後の 1 回。
+        this.lastPrompt = cs.last_prompt ?? 0;
         if (cs.last_cache_read > 0) {
           this.cacheWarned = false;
         } else if (!this.cacheWarned && cs.total_requests >= 2 && cs.consecutive_misses >= 3) {

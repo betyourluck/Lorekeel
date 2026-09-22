@@ -134,6 +134,8 @@ export const messages = {
       send: "送信",
       sendTitle: "送信 (Enter)",
       error: "エラー: {error}",
+      contextTitle: "コンテキスト: 直前のターンの入力 {used} / このモデルの窓 {window}（{pct}）",
+      contextNoWindow: "コンテキスト長が未設定（設定 → AIモデル で登録すると使用率が出ます）",
     },
     settings: {
       title: "設定",
@@ -1061,6 +1063,8 @@ export const messages = {
       send: "Send",
       sendTitle: "Send (Enter)",
       error: "Error: {error}",
+      contextTitle: "Context: last turn's input {used} / this model's window {window} ({pct})",
+      contextNoWindow: "Context length not set (register it in Settings → AI model to see usage)",
     },
     settings: {
       title: "Settings",

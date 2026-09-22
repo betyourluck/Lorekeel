@@ -2,6 +2,7 @@
 import { ref, nextTick, computed } from "vue";
 import { useGameStore } from "../stores/game";
 import { t } from "../i18n";
+import ContextGauge from "./ContextGauge.vue";
 
 const game = useGameStore();
 const text = ref("");
@@ -73,6 +74,11 @@ async function send() {
           <path d="M20 4v7a4 4 0 0 1-4 4H4" />
         </svg>
       </button>
+    </div>
+    <!-- コンテキスト使用率 (2026-09-23)。窓に対してどれだけ余っているかを常時出す。
+         分母 (登録モデルの contextTokens) が無い間は何も描かない。 -->
+    <div class="mt-1.5 flex justify-end">
+      <ContextGauge />
     </div>
     <p v-if="game.error" class="text-ember/80 text-sm mt-2">{{ t("action.error", { error: game.error }) }}</p>
   </div>
