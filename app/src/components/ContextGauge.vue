@@ -73,7 +73,9 @@ const title = computed(() =>
         :class="toneClass"
       />
     </svg>
-    <span class="text-parchment/45">{{ formatTokens(usage.used) }} / {{ formatTokens(usage.window) }}</span>
+    <!-- 狭い窓では畳む — 入力欄の右パディングを食うと placeholder が折り返す (760px で実測)。
+         輪と % は残すので「どれだけ余っているか」は伝わり、実数は hover の title にある。 -->
+    <span class="text-parchment/45 hidden md:inline">{{ formatTokens(usage.used) }} / {{ formatTokens(usage.window) }}</span>
     <span :class="toneClass">{{ formatPercent(usage.ratio) }}</span>
   </div>
 </template>

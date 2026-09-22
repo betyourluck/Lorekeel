@@ -53,11 +53,22 @@ async function send() {
         rows="1"
         :disabled="disabled"
         :placeholder="t('action.placeholder')"
-        class="block w-full resize-none bg-transparent px-3.5 py-2.5 pr-12 text-parchment placeholder-parchment/30 focus:outline-none disabled:cursor-not-allowed leading-relaxed"
+        class="block w-full resize-none bg-transparent px-3.5 py-2.5 text-parchment placeholder-parchment/30 focus:outline-none disabled:cursor-not-allowed leading-relaxed"
+        :class="text.trim() ? 'pr-12' : 'pr-16 md:pr-36'"
         style="max-height: 200px; overflow-y: auto"
         @input="autoGrow"
         @keydown.enter.exact.prevent="send"
       />
+      <!-- コンテキスト使用率 (2026-09-23): 送信マークと**同じ場所に排他で**出す。
+           空欄のとき ↲ は消えているので、その空き地を使う (ユーザー要望)。
+           h-8 は送信マークと同じ高さ = 入れ替わっても中心がずれない。 -->
+      <div
+        v-if="!text.trim()"
+        class="absolute right-3 bottom-2 h-8 flex items-center cursor-text"
+        @click="ta?.focus()"
+      >
+        <ContextGauge />
+      </div>
       <!-- 送信マーク: 中身があると浮き上がる。クリックかショートカット (Enter) で送信。 -->
       <button
         v-show="text.trim()"
@@ -74,11 +85,6 @@ async function send() {
           <path d="M20 4v7a4 4 0 0 1-4 4H4" />
         </svg>
       </button>
-    </div>
-    <!-- コンテキスト使用率 (2026-09-23)。窓に対してどれだけ余っているかを常時出す。
-         分母 (登録モデルの contextTokens) が無い間は何も描かない。 -->
-    <div class="mt-1.5 flex justify-end">
-      <ContextGauge />
     </div>
     <p v-if="game.error" class="text-ember/80 text-sm mt-2">{{ t("action.error", { error: game.error }) }}</p>
   </div>
