@@ -28,6 +28,7 @@ function acceptedTurn(consistency: ConsistencyView | null): TurnView {
     beats: [],
     attempts: 1,
     retries: [],
+    reasons: [],
     state: {} as TurnView["state"],
     background: null,
     bgm: null,
