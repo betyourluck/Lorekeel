@@ -9,13 +9,57 @@ import FactsPanel from "./FactsPanel.vue";
 
 const game = useGameStore();
 
-// 右ペインは縦タブ 5 枚 (progress=進行: ターン/目標/この場 ・ world=状態: 現在地/所持品/フラグ
-// ・ map=マップ: 現在地と、そこから行ける場所のリスト、spec 15 rev2 ・ synopsis=あらすじ: 圧縮済み章 +
-// 最近の出来事、spec 10 ・ facts=既成事実: GM とユーザーの覚え書き、spec 20)。
-// 既成事実は末尾 (ユーザーFB 2026-07-21)。
-const TABS = ["progress", "world", "map", "synopsis", "facts", "files"] as const;
+// 右ペインは縦タブ 4 枚 (progress=進行: ターン/現在地/目標/所持品/フラグ/この場 ・ map=マップ: 現在地と、
+// そこから行ける場所のリスト、spec 15 rev2 ・ synopsis=あらすじ: 圧縮済み章 + 最近の出来事、spec 10 ・
+// facts=既成事実、spec 20)。既成事実は末尾 (ユーザーFB 2026-07-21)。
+// **2026-09-23 に「進行」と「状態」を 1 枚へ戻した** (ユーザーFB「プレイ中に進行と状態をガチャガチャ
+// 切り替える必要があり煩わしい」)。2026-07-02 に全体スクロールを避けて 2 枚に割ったが、見たい情報が
+// 両方にまたがっていた。スクロールの問題は、目標をページ送りに・フラグを畳めるように・この場にいるを
+// 下に固定、で 1 枚の中で解く。
+const TABS = ["progress", "map", "synopsis", "facts", "files"] as const;
 type Tab = (typeof TABS)[number];
 const activeTab = ref<Tab>("progress");
+
+// 目標は 3 件ずつのページ送り (● がページ数ぶん並ぶ)。件数が減ったら範囲に収め、
+// 到達した目標があればそのページへ寄せる (到達の ✓ を見逃させない)。
+const GOALS_PER_PAGE = 3;
+const goalPage = ref(0);
+const goalPageCount = computed(() =>
+  Math.max(1, Math.ceil((game.state?.goals.length ?? 0) / GOALS_PER_PAGE)),
+);
+const pagedGoals = computed(() =>
+  (game.state?.goals ?? []).slice(goalPage.value * GOALS_PER_PAGE, (goalPage.value + 1) * GOALS_PER_PAGE),
+);
+watch(goalPageCount, (n) => {
+  if (goalPage.value >= n) goalPage.value = n - 1;
+});
+watch(
+  () => game.state?.reached_goal,
+  (id) => {
+    const i = id ? (game.state?.goals ?? []).findIndex((g) => g.id === id) : -1;
+    if (i >= 0) goalPage.value = Math.floor(i / GOALS_PER_PAGE);
+  },
+);
+
+// フラグは畳める。開閉は**ビューアごとの好み**なので localStorage (設定ミラーの kataribe.* の射程)。
+// 読み書きできない環境でも既定 (開いている) で動くよう try で包む。
+const FLAGS_COLLAPSED_KEY = "kataribe.flagsCollapsed";
+function readFlagsCollapsed(): boolean {
+  try {
+    return localStorage.getItem(FLAGS_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+const flagsCollapsed = ref(readFlagsCollapsed());
+function toggleFlags() {
+  flagsCollapsed.value = !flagsCollapsed.value;
+  try {
+    localStorage.setItem(FLAGS_COLLAPSED_KEY, flagsCollapsed.value ? "1" : "0");
+  } catch {
+    /* 保存できなくても開閉はこのセッションで効く */
+  }
+}
 
 // facts_policy=locked の盤面では既成事実は GM 専用の内部記憶 — タブごと出さない (spec 20 Phase E)。
 // 表示中に locked へ変わる (campaign 遷移) 場合に備え、選択中なら進行タブへ逃がす。
@@ -316,7 +360,7 @@ function onKeydown(e: KeyboardEvent) {
     const step = e.shiftKey ? tabs.length - 1 : 1;
     activeTab.value = tabs[(i + step) % tabs.length];
   } else if (["1", "2", "3", "4", "5"].includes(e.key)) {
-    // Ctrl+1..5: 直接選択 (5 枚巡回は遠いので直接選択が主導線)。
+    // Ctrl+1..: 直接選択 (巡回は遠いので直接選択が主導線)。
     e.preventDefault();
     const target = tabs[Number(e.key) - 1];
     if (target) activeTab.value = target;
@@ -356,19 +400,6 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
       >
         <Icon name="target" :size="12" />
         <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">{{ t("state.tabProgress") }}</span>
-      </button>
-      <button
-        class="flex flex-col items-center gap-1 py-2 border-l-2 transition-opacity focus:outline-none"
-        :class="
-          activeTab === 'world'
-            ? 'border-ember text-glow'
-            : 'border-transparent text-parchment opacity-40 hover:opacity-90'
-        "
-        :title="t('state.tabWorldTitle')"
-        @click="activeTab = 'world'"
-      >
-        <Icon name="location" :size="12" />
-        <span class="text-[9px] tracking-widest" style="writing-mode: vertical-rl">{{ t("state.tabWorld") }}</span>
       </button>
       <button
         class="flex flex-col items-center gap-1 py-2 border-l-2 transition-opacity focus:outline-none"
@@ -428,7 +459,12 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
       </button>
     </nav>
 
-    <div class="flex-1 min-w-0 p-4 overflow-y-auto scroll-hairline flex flex-col">
+    <!-- 進行タブだけは外側をスクロールさせない — 「この場にいる」を下に固定し、その上の領域だけが
+         スクロールする。他のタブは従来どおり右ペイン全体がスクロールする。 -->
+    <div
+      class="flex-1 min-w-0 flex flex-col"
+      :class="activeTab === 'progress' && game.state ? 'overflow-hidden py-4 pl-4' : 'p-4 overflow-y-auto scroll-hairline'"
+    >
       <!-- ファイル一覧 (spec 28)。**game.state に依存しない** — 編集はプレイしていなくてもできる。 -->
       <template v-if="activeTab === 'files'">
         <!-- テキスト / メディアの切替 (2026-08-28 ユーザーFB)。編集できるのはテキストだけで、
@@ -665,57 +701,153 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
         </template>
       </template>
       <template v-else-if="game.state">
-        <!-- 1枚め「進行」: ターン / 目標 / この場にいる -->
+        <!-- 「進行」(2026-09-23 に旧「状態」を統合): ターン / 現在地 / 目標 / 所持品 / フラグ を
+             スクロール領域に、この場にいる をその下に固定する。 -->
         <template v-if="activeTab === 'progress'">
-          <div class="mb-3 flex items-center">
-            <span class="text-parchment/40 flex items-center gap-1.5"><Icon name="turn" />{{ t("state.turn") }}</span>
-            <span class="ml-2 text-parchment">{{ game.state.turn }}</span>
-          </div>
+          <!-- 外側の右余白を外し、ここが右端まで伸びて pr-4 を持つ = スクロールバーが他のタブと同じく
+               右ペインの右端に付く (2026-09-23 ユーザーFB: 内側に浮いて見えた)。 -->
+          <div class="flex-1 min-h-0 overflow-y-auto scroll-hairline pr-4">
+            <!-- 1. ターン -->
+            <div class="mb-3 flex items-center">
+              <span class="text-parchment/40 flex items-center gap-1.5"><Icon name="turn" />{{ t("state.turn") }}</span>
+              <span class="ml-2 text-parchment">{{ game.state.turn }}</span>
+            </div>
 
-          <!-- 目標 (named goal) の一覧: 「何を目指せる盤面か」をプレイヤーに示す。 -->
-          <!-- when/narration はネタバレゆえ出さず、hint (作者が意図的に開示する道しるべ) を添える。 -->
-          <!-- 増えたら領域内で独立スクロール。バーは常時表示 (overflow-y-scroll) で
-               ガター幅を確保し、出現/消滅による横のカクつきを防ぐ。 -->
-          <div v-if="game.state.goals.length" class="mb-3 flex-1 min-h-0 flex flex-col">
-            <div class="text-parchment/40 mb-2 flex items-center gap-1.5"><Icon name="target" />{{ t("state.goals") }}</div>
-            <ul class="goal-list space-y-1.5 flex-1 min-h-0 overflow-y-scroll scroll-hairline pr-1">
-              <li
-                v-for="g in game.state.goals"
-                :key="g.id"
-                class="rounded border px-2 py-1 text-xs"
-                :class="
-                  g.id === game.state.reached_goal
-                    ? 'border-ember/60 bg-ember/15 text-glow'
-                    : 'border-ash/60 bg-ash/20 text-parchment/70'
-                "
+            <!-- 2. 現在地 + マップへのリンク (クリックでマップのタブへ) -->
+            <div class="mb-3">
+              <div class="text-parchment/40 flex items-center gap-1.5"><Icon name="location" />{{ t("state.location") }}</div>
+              <div class="flex items-baseline gap-2">
+                <!-- 表示は authored title を優先、無ければ id (機械用セレクタ) へフォールバック。hover で id。 -->
+                <span class="text-parchment min-w-0 truncate" :title="game.state.location">
+                  {{ game.state.location_title || game.state.location }}
+                </span>
+                <button
+                  type="button"
+                  class="ml-auto shrink-0 flex items-center gap-1 text-[11px] text-ember/80 hover:text-glow hover:underline focus:outline-none"
+                  @click="activeTab = 'map'"
+                >
+                  <Icon name="map" :size="11" />{{ t("state.viewMap") }}
+                </button>
+              </div>
+            </div>
+
+            <!-- 3. 目標 (named goal): 3 件ずつのページ送り。when/narration はネタバレゆえ出さず、
+                 hint (作者が意図的に開示する道しるべ) を添える。 -->
+            <div v-if="game.state.goals.length" class="mb-3">
+              <div class="text-parchment/40 mb-2 flex items-center gap-1.5"><Icon name="target" />{{ t("state.goals") }}</div>
+              <ul class="space-y-1.5">
+                <li
+                  v-for="g in pagedGoals"
+                  :key="g.id"
+                  class="rounded border px-2 py-1 text-xs"
+                  :class="
+                    g.id === game.state.reached_goal
+                      ? 'border-ember/60 bg-ember/15 text-glow'
+                      : 'border-ash/60 bg-ash/20 text-parchment/70'
+                  "
+                >
+                  <div class="flex items-center gap-2">
+                    <span
+                      class="w-1.5 h-1.5 rounded-full shrink-0"
+                      :class="g.id === game.state.reached_goal ? 'bg-glow' : 'bg-parchment/30'"
+                    ></span>
+                    <span class="truncate">{{ g.title || g.id }}</span>
+                    <span v-if="g.id === game.state.reached_goal" class="ml-auto shrink-0">{{ t("state.reached") }}</span>
+                  </div>
+                  <p v-if="g.hint" class="mt-0.5 pl-3.5 text-[11px] leading-snug text-parchment/50">
+                    {{ g.hint }}
+                  </p>
+                </li>
+              </ul>
+              <!-- ページの ● (1 ページに収まるなら出さない) -->
+              <div v-if="goalPageCount > 1" class="mt-2 flex justify-center gap-2" data-testid="goal-pages">
+                <button
+                  v-for="n in goalPageCount"
+                  :key="n"
+                  type="button"
+                  class="w-2 h-2 rounded-full transition-colors focus:outline-none"
+                  :class="goalPage === n - 1 ? 'bg-ember' : 'bg-parchment/25 hover:bg-parchment/50'"
+                  :title="t('state.goalsPage', { n })"
+                  :aria-label="t('state.goalsPage', { n })"
+                  :aria-current="goalPage === n - 1 ? 'page' : undefined"
+                  @click="goalPage = n - 1"
+                ></button>
+              </div>
+            </div>
+
+            <div
+              v-if="game.state.goal_reached"
+              class="mb-3 rounded bg-ember/20 border border-ember/50 px-3 py-2 text-center text-glow"
+            >
+              {{ t("state.goalReached") }}
+            </div>
+
+            <!-- 4. 所持品 -->
+            <div class="mb-3">
+              <div class="text-parchment/40 flex items-center gap-1.5"><Icon name="bag" />{{ t("state.inventory") }}</div>
+              <div v-if="game.state.inventory.length" class="text-parchment">
+                {{ game.state.inventory.join(t("state.listSep")) }}
+              </div>
+              <div v-else class="text-parchment/50">{{ t("state.none") }}</div>
+            </div>
+
+            <!-- 5. フラグ (畳める)。表示名 (title || key) のチップ。hover で「いつ・何をして立ったか」
+                 (chronicle join) を出す。 -->
+            <div class="mb-3">
+              <button
+                type="button"
+                class="text-parchment/40 flex w-full items-center gap-1.5 hover:text-parchment transition-colors focus:outline-none"
+                :title="flagsCollapsed ? t('state.expand') : t('state.collapse')"
+                :aria-expanded="!flagsCollapsed"
+                data-testid="flags-toggle"
+                @click="toggleFlags"
               >
-                <div class="flex items-center gap-2">
+                <Icon name="flag" />{{ t("state.flags") }}
+                <span v-if="game.state.flags.length" class="text-[10px] text-parchment/35 tabular-nums">{{ game.state.flags.length }}</span>
+                <Icon
+                  name="chevron"
+                  :size="11"
+                  class="ml-auto transition-transform"
+                  :class="flagsCollapsed ? '' : 'rotate-90'"
+                />
+              </button>
+              <template v-if="!flagsCollapsed">
+                <div v-if="game.state.flags.length" class="flex flex-wrap gap-1.5 mt-1" data-testid="flags-body">
                   <span
-                    class="w-1.5 h-1.5 rounded-full shrink-0"
-                    :class="g.id === game.state.reached_goal ? 'bg-glow' : 'bg-parchment/30'"
-                  ></span>
-                  <span class="truncate">{{ g.title || g.id }}</span>
-                  <span v-if="g.id === game.state.reached_goal" class="ml-auto shrink-0">{{ t("state.reached") }}</span>
+                    v-for="f in game.state.flags"
+                    :key="f.key"
+                    class="px-2 py-0.5 rounded bg-ash/40 border border-ash text-xs text-parchment/80"
+                    :title="f.cause ? `T${f.turn}: ${f.cause}` : f.turn ? t('state.flagSetAt', { turn: f.turn }) : ''"
+                  >
+                    {{ f.title || f.key }}
+                  </span>
                 </div>
-                <p v-if="g.hint" class="mt-0.5 pl-3.5 text-[11px] leading-snug text-parchment/50">
-                  {{ g.hint }}
-                </p>
-              </li>
-            </ul>
+                <div v-else class="text-parchment/50" data-testid="flags-body">{{ t("state.none") }}</div>
+              </template>
+            </div>
+
+            <!-- シードリセット (プレイヤーの meta 操作)。セーブ地点からやり直しても出目が
+                 同じ = 決定論の裏返しへの逃げ道。誤爆すると「この先の運命」が黙って変わる
+                 のに見た目は何も動かないので、確認ダイアログを挟む。 -->
+            <div class="pt-1 flex justify-end">
+              <button
+                type="button"
+                class="px-2 py-1 rounded text-[11px] text-parchment/40 hover:text-ember hover:bg-ash/40 transition-colors"
+                :title="t('state.resetSeedHint')"
+                @click="game.resetSeed()"
+              >
+                {{ t("state.resetSeed") }}
+              </button>
+            </div>
           </div>
 
-          <div
-            v-if="game.state.goal_reached"
-            class="rounded bg-ember/20 border border-ember/50 px-3 py-2 text-center text-glow"
-          >
-            {{ t("state.goalReached") }}
-          </div>
-
-          <!-- この場にいる人物 (主人公 + NPC) の顔アイコン行。クリックでプロフィール。 -->
-          <!-- 居ない人物のパラメータは出さない (presence のみ可視)。 -->
-          <div v-if="game.presentCharacters.length" class="mt-auto pt-4 border-t border-ash/60">
+          <!-- 6. この場にいる人物 (主人公 + NPC) の顔アイコン行 — 下に固定。クリックでプロフィール。
+               居ない人物のパラメータは出さない (presence のみ可視)。 -->
+          <footer v-if="game.presentCharacters.length" class="shrink-0 mt-3 mr-4 pt-3 border-t border-ash/60" data-testid="present-footer">
             <div class="text-parchment/40 mb-2">{{ t("state.present") }}</div>
-            <div class="flex flex-wrap gap-3">
+            <!-- 下に固定したので、折り返すとその分スクロール領域が削られる。既定幅 (256px) で 3 人が
+                 1 段に収まるよう横の余白を詰める (gap-3 では 3 人目が 2 段目に落ちた = 実測)。 -->
+            <div class="flex flex-wrap gap-x-2 gap-y-3">
               <button
                 v-for="c in game.presentCharacters"
                 :key="c.id"
@@ -736,56 +868,7 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
                 <span class="text-[10px] text-parchment/60 max-w-[3.5rem] truncate">{{ c.name }}</span>
               </button>
             </div>
-          </div>
-        </template>
-
-        <!-- 2枚め「状態」: 現在地 / 所持品 / フラグ -->
-        <template v-else-if="activeTab === 'world'">
-          <div class="mb-3">
-            <div class="text-parchment/40 flex items-center gap-1.5"><Icon name="location" />{{ t("state.location") }}</div>
-            <!-- 表示は authored title を優先、無ければ id (機械用セレクタ) へフォールバック。hover で id。 -->
-            <div class="text-parchment" :title="game.state.location">
-              {{ game.state.location_title || game.state.location }}
-            </div>
-          </div>
-
-          <div class="mb-3">
-            <div class="text-parchment/40 flex items-center gap-1.5"><Icon name="bag" />{{ t("state.inventory") }}</div>
-            <div v-if="game.state.inventory.length" class="text-parchment">
-              {{ game.state.inventory.join(t("state.listSep")) }}
-            </div>
-            <div v-else class="text-parchment/50">{{ t("state.none") }}</div>
-          </div>
-
-          <div class="mb-3">
-            <div class="text-parchment/40 flex items-center gap-1.5"><Icon name="flag" />{{ t("state.flags") }}</div>
-            <!-- 表示名 (title || key) のチップ。hover で「いつ・何をして立ったか」(chronicle join) を出す。 -->
-            <div v-if="game.state.flags.length" class="flex flex-wrap gap-1.5 mt-1">
-              <span
-                v-for="f in game.state.flags"
-                :key="f.key"
-                class="px-2 py-0.5 rounded bg-ash/40 border border-ash text-xs text-parchment/80"
-                :title="f.cause ? `T${f.turn}: ${f.cause}` : f.turn ? t('state.flagSetAt', { turn: f.turn }) : ''"
-              >
-                {{ f.title || f.key }}
-              </span>
-            </div>
-            <div v-else class="text-parchment/50">{{ t("state.none") }}</div>
-          </div>
-
-          <!-- シードリセット (プレイヤーの meta 操作)。セーブ地点からやり直しても出目が
-               同じ = 決定論の裏返しへの逃げ道。誤爆すると「この先の運命」が黙って変わる
-               のに見た目は何も動かないので、確認ダイアログを挟む。 -->
-          <div class="mt-4 pt-3 border-t border-ash/40 flex justify-end">
-            <button
-              type="button"
-              class="px-2 py-1 rounded text-[11px] text-parchment/40 hover:text-ember hover:bg-ash/40 transition-colors"
-              :title="t('state.resetSeedHint')"
-              @click="game.resetSeed()"
-            >
-              {{ t("state.resetSeed") }}
-            </button>
-          </div>
+          </footer>
         </template>
 
         <!-- 3枚め「マップ」(spec 15 rev2): 現在地と、そこから行ける場所のリスト -->
@@ -1020,21 +1103,6 @@ function onIconDragStart(c: { iconId?: string | null }, e: DragEvent) {
 .profile-enter-from .profile-card,
 .profile-leave-to .profile-card {
   transform: scale(0.96) translateY(8px);
-}
-
-/* 目標一覧の常時表示スクロールバー: 細身・ash でテーマに馴染ませる */
-.goal-list::-webkit-scrollbar {
-  width: 6px;
-}
-.goal-list::-webkit-scrollbar-track {
-  background: transparent;
-}
-.goal-list::-webkit-scrollbar-thumb {
-  background: rgba(58, 50, 43, 0.9); /* ash */
-  border-radius: 3px;
-}
-.goal-list::-webkit-scrollbar-thumb:hover {
-  background: rgba(217, 138, 74, 0.5); /* ember */
 }
 
 /* profile 本文の開閉: ふわっと開く */
