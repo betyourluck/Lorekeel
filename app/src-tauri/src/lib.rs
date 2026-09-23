@@ -4792,8 +4792,13 @@ async fn do_play_turn(
             // spec 32 Phase A: 語りを事後に検査する。**観測だけ** — 却下もしないし GM へ
             // 還流もしない。移動の軸は一方向なので、ここで「op が移動したか」を渡す。
             let consistency = match consistency_before {
-                Some((loc_before, snap)) => {
+                Some((loc_before, mut snap)) => {
                     let moved_by_op = sess.state.location != loc_before;
+                    // 移動したターンは到着地の顔ぶれも「居てよい人」に足す — 出発地だけだと
+                    // 移動先で迎えた人の台詞が不在発話として鳴る (2026-09-23 ユーザー報告)。
+                    if moved_by_op {
+                        harness::widen_present_for_move(&mut snap, &sess.state, &sess.scenario);
+                    }
                     run_consistency_check(
                         app,
                         &sess.session_id,

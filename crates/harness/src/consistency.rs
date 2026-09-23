@@ -11,7 +11,9 @@
 //!   (live で「話題に出るだけ…」を落としたら 0.87 → 0.51) ので、**ここの文言はテストで固定し、
 //!   変更したら実データで再測定する**。
 //! - **presence と location はターン開始時 (出発地) のもの**を使う。移動後で判定すると
-//!   移動ターンの語り (出発地で始まる) が 0.94 で誤検出される。
+//!   移動ターンの語り (出発地で始まる) が 0.94 で誤検出される。ただし**移動したターンの
+//!   presence は到着地の顔ぶれも足す** ([`widen_present_for_move`]、2026-09-23) — 出発地だけだと
+//!   移動先で迎えた人の台詞が不在発話として鳴る。
 //! - **移動検査は一方向** — op なし × 語りが移動、だけ。逆向き (op は移動済みで語りが
 //!   「扉に手をかけた」で止まる) は語りの作法であって違反ではない。
 //!
@@ -164,6 +166,25 @@ pub fn snapshot(
         character_profiles,
         secret_relations,
         past_narrations: past_narrations.to_vec(),
+    }
+}
+
+/// **移動したターン**の `present` を、到着地の顔ぶれで広げる (純関数・2026-09-23)。
+///
+/// 出発地だけで判定すると、**移動先で迎えた人の台詞**が不在発話として鳴る (ユーザー報告
+/// 「移動して挨拶されたとき不在者の発話で警告される」)。移動ターンの語りは出発地で始まり
+/// 到着地で終わるので、居てよいのは**両方の顔ぶれの和**。
+///
+/// 代償: 和にすると「出発地に置いてきた NPC が到着地で喋る」(#49 の破れ) はこの軸で捕まらない
+/// — 語りのどこが出発地でどこが到着地かを割らないと区別できない。#49 は prompt の `moved_note`
+/// (置いていかれた NPC を固有名で否定接地) が塞いでいるので、偽陽性を消す方を採る。
+///
+/// 質問文は変えない (一文の増減で確度が大きく動く = failures #104)。変えるのは材料だけ。
+pub fn widen_present_for_move(snapshot: &mut ConsistencySnapshot, arrival: &GameState, scenario: &Scenario) {
+    for e in scenario.present_at(arrival) {
+        if !snapshot.present.contains(&e) {
+            snapshot.present.push(e);
+        }
     }
 }
 
@@ -660,6 +681,37 @@ mod tests {
         assert!(Axis::SecretLeak.is_advisory());
         assert!(!Axis::AbsentSpeaker.is_advisory());
         assert!(!Axis::PastContradiction.is_advisory());
+    }
+
+    /// 【移動したターン】出発地の顔ぶれだけで判定すると、移動先で迎えた人の台詞が
+    /// 不在発話として鳴る (2026-09-23 ユーザー報告)。到着地の顔ぶれを足し、重複させない。
+    #[test]
+    fn move_turn_present_includes_arrival_faces() {
+        let scenario: Scenario = serde_yaml::from_str(
+            r#"
+title: t
+start: road
+locations:
+  road: { description: d, present: [akari], exits: [{ to: inn }] }
+  inn: { description: d, present: [akari, master] }
+characters:
+  akari: { name: "岬あかり" }
+  master: { name: "宿の主人" }
+goal: { kind: always }
+"#,
+        )
+        .expect("scenario");
+        let before = scenario.initial_state(1);
+        let mut snap = snapshot(&before, &scenario, &[]);
+        assert!(!snap.present.contains(&"master".to_string()), "出発地には居ない (前提)");
+
+        let mut after = before.clone();
+        after.location = "inn".into();
+        widen_present_for_move(&mut snap, &after, &scenario);
+        assert!(snap.present.contains(&"master".to_string()), "迎えた宿の主人は居てよい");
+        assert_eq!(snap.present.iter().filter(|e| e.as_str() == "akari").count(), 1, "重複させない");
+        assert!(snap.present.contains(&"player".to_string()));
+        assert_eq!(snap.location, "road", "location は出発地のまま (移動の軸は一方向)");
     }
 
     /// 盤面からスナップショットを作る。**主人公は present に含める** —

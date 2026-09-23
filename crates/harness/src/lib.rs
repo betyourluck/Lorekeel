@@ -81,7 +81,7 @@ pub use facts::{
 pub use memoria::{load_lore, resolve_recall, FiredBeat, LoreStore, Memoria, MemoryFragment};
 pub use consistency::{
     snapshot as consistency_snapshot, Axis, ConsistencyChecker, ConsistencyQuery, ConsistencyReport,
-    ConsistencySnapshot, Finding,
+    ConsistencySnapshot, Finding, widen_present_for_move,
 };
 pub use proposer::DeltaProposer;
 pub use save::{load_session, save_session, SavedContent, SessionSave, SAVE_VERSION};
