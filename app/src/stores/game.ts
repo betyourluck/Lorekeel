@@ -540,6 +540,10 @@ interface GameState {
   pendingSe: (string | null)[];
   // 保留中の見た目 (イベント CG 背景 / BGM)。発火 CG は結果の漏洩そのものなので開帳まで遅延。
   pendingVisual: { background: string | null; bgm: string | null } | null;
+  // 右ペインが読む盤面 (状態・この場にいる・マップ・あらすじの追記) も開帳まで保留する
+  // (2026-09-23 ユーザーFB「クリック前に結果が分かってしまう」)。成功で立つフラグ・手に入る道具・
+  // 到達した目標・判定の結末つきの要約は、どれも出目の帰結そのもの。null = 保留なし。
+  pendingBoard: PendingBoard | null;
   // 開帳待ちの読み上げ (エピローグ)。**結末を語る文なので、ダイスが伏せられたまま
   // 喋ると出目の帰結を音声で漏らす** — pendingTail と同じ契機で解き放つ。
   pendingSpeech: string | null;
@@ -668,6 +672,15 @@ interface GameState {
 // 確認ダイアログの解決子 (Pinia state に関数を持たせず、モジュールローカルで保持)。
 let confirmResolver: ((ok: boolean) => void) | null = null;
 
+/** 開帳まで保留する右ペインの盤面 (spec 18 Phase A の漏洩防止の続き)。欄が無い = その回は変えない。 */
+interface PendingBoard {
+  state?: StateView;
+  presentCharacters?: CharacterView[];
+  map?: MapView;
+  newLog: LogLineView[];
+  newSynopsis: SynopsisView[];
+}
+
 export const useGameStore = defineStore("game", {
   state: (): GameState => {
     const paths = loadPaths();
@@ -687,6 +700,7 @@ export const useGameStore = defineStore("game", {
       pendingTail: [],
       pendingSe: [],
       pendingVisual: null,
+      pendingBoard: null,
       pendingSpeech: null,
       decision: null,
       deciding: false,
@@ -2059,6 +2073,7 @@ ${body}`, t("rename.ok"), true);
       this.pendingTail = [];
       this.pendingSe = [];
       this.pendingVisual = null;
+      this.pendingBoard = null;
       this.pendingSpeech = null;
       // spec 24/27: 挿絵まわりの揮発物を捨てる (backend も世代を進める)。
       this.dropVolatileImage();
@@ -2291,8 +2306,7 @@ ${body}`, t("rename.ok"), true);
             : t("store.clearedGeneric");
           pushTail({ kind: "system", text: label });
         }
-        this.state = r.state;
-        if (r.map) this.map = r.map;
+        this.putBoard({ state: r.state, map: r.map ?? undefined, newLog: [], newSynopsis: [] }, isPush);
         // 次の決断 (1 ターン複数凍結時) または null。
         this.decision = r.decision;
       } catch (e) {
@@ -2347,8 +2361,7 @@ ${body}`, t("rename.ok"), true);
               : t("store.clearedGeneric"),
           });
         }
-        this.state = r.state;
-        if (r.map) this.map = r.map;
+        this.putBoard({ state: r.state, map: r.map ?? undefined, newLog: [], newSynopsis: [] }, reveal);
         this.contest = r.contest; // 決着後は null → パネルが畳まれ入力が開く
       } catch (e) {
         this.logToast = String(e);
@@ -2357,8 +2370,42 @@ ${body}`, t("rename.ok"), true);
       }
     },
 
+    // 盤面を右ペインへ反映する。開帳待ちなら保留し、複数回ぶん (決断の連鎖など) は**後勝ちで重ねる**
+    // (状態は最新だけが真・あらすじの追記は順に足す)。
+    putBoard(b: PendingBoard, hold: boolean) {
+      if (!hold) {
+        this.applyBoard(b);
+        return;
+      }
+      const prev = this.pendingBoard;
+      this.pendingBoard = prev
+        ? {
+            state: b.state ?? prev.state,
+            presentCharacters: b.presentCharacters ?? prev.presentCharacters,
+            map: b.map ?? prev.map,
+            newLog: [...prev.newLog, ...b.newLog],
+            newSynopsis: [...prev.newSynopsis, ...b.newSynopsis],
+          }
+        : b;
+    },
+    applyBoard(b: PendingBoard) {
+      for (const line of b.newLog) this.recentLog.push(line);
+      for (const s of b.newSynopsis) {
+        this.synopsis.push(s);
+        this.recentLog = this.recentLog.filter((l) => l.turn > s.upto_turn);
+      }
+      if (b.state) this.state = b.state;
+      if (b.presentCharacters) this.presentCharacters = b.presentCharacters;
+      if (b.map) this.map = b.map;
+    },
+
     // 開帳完了: 保留していた後続行 (ビート/goal バナー/エピローグ) と SE・CG を解き放つ。
     flushPendingDice() {
+      if (this.pendingBoard) {
+        const b = this.pendingBoard;
+        this.pendingBoard = null;
+        this.applyBoard(b);
+      }
       for (const entry of this.pendingTail) this.log.push(entry);
       this.pendingTail = [];
       for (const se of this.pendingSe) this.playSe(se);
@@ -2590,15 +2637,18 @@ ${body}`, t("rename.ok"), true);
         // あらすじ (spec 10): 追記差分を push (append-only)。章が確定したら「最近の出来事」から
         // その章に呑まれた行 (turn <= upto_turn) を取り除く。会話ログには出さない
         // (物語の外の帳簿イベント — 更新はタブを見れば分かる、ユーザーFB 2026-07-14)。
-        for (const line of turn.new_log ?? []) this.recentLog.push(line);
-        for (const s of turn.new_synopsis ?? []) {
-          this.synopsis.push(s);
-          this.recentLog = this.recentLog.filter((l) => l.turn > s.upto_turn);
-        }
-        this.state = turn.state;
-        this.presentCharacters = turn.present_characters.map((c) => ({ ...c, iconId: c.icon, icon: assetUrl("images", c.icon) }));
+        // 要約の行には「判定の結末: …」が併記される (chronicle_entry) ので、これも開帳まで保留する。
         // マップ (spec 15) — 移動/遷移で backend が差し替える (却下でも現状スナップショット)。
-        if (turn.map) this.map = turn.map;
+        this.putBoard(
+          {
+            state: turn.state,
+            presentCharacters: turn.present_characters.map((c) => ({ ...c, iconId: c.icon, icon: assetUrl("images", c.icon) })),
+            map: turn.map ?? undefined,
+            newLog: turn.new_log ?? [],
+            newSynopsis: turn.new_synopsis ?? [],
+          },
+          revealing,
+        );
         // 背景は受理ターンのみ更新する。却下 = 物語が進んでいないので現在の背景 (=直前の CG) を保つ。
         // イベント CG は既定で瞬間 (spec 01 #3): 発火ターンに出て、次の受理ターンで場所背景へ復帰。
         // image_hold: show の CG は backend が turn.background に畳んで返すので、次ターン以降も残る。
