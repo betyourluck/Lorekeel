@@ -2909,6 +2909,48 @@ fn set_dev_mode(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
         .map_err(|e| format!(".env の保存に失敗: {e}"))
 }
 
+/// Jev (一貫性検査 = spec 32) の鍵の view。設定「開発者」タブの初期値。
+/// 他の API キー欄 (`get_summary_llm_config` の api_key) と同じく値を返す — 画面は password 欄で伏せる。
+#[derive(Serialize)]
+struct JevConfigView {
+    account_id: String,
+    api_token: String,
+}
+
+#[tauri::command]
+fn get_jev_config() -> JevConfigView {
+    JevConfigView {
+        account_id: std::env::var("JEV_ACCOUNT_ID").unwrap_or_default(),
+        api_token: std::env::var("JEV_API_TOKEN").unwrap_or_default(),
+    }
+}
+
+/// Jev の鍵を書く欄を固定する純関数 (前後の空白は落とす = 貼り付けの改行で鍵が壊れない)。
+/// **この 2 キーだけ**を書く — 開発者モードの ON/OFF (`LOREKEEL_DEV_MODE`) には触らない。
+/// 検査が動くのは「開発者モード ON かつ 2 つとも非空」のときだけで、判定は従来どおり
+/// 呼び出し側 (`play_turn` の `dev_mode_enabled` + `JevClient::from_env`) が持つ。
+fn jev_env_updates(account_id: &str, api_token: &str) -> Vec<(String, String)> {
+    vec![
+        ("JEV_ACCOUNT_ID".to_string(), account_id.trim().to_string()),
+        ("JEV_API_TOKEN".to_string(), api_token.trim().to_string()),
+    ]
+}
+
+/// Jev の鍵を保存する (プロセス env 即時 + app_data/.env 永続 = 開発者モードと同じ経路)。
+/// `JevClient::from_env` は毎ターン env を読むので**次のターンから効く**。空で保存すれば無効。
+#[tauri::command]
+fn set_jev_config(app: tauri::AppHandle, account_id: String, api_token: String) -> Result<(), String> {
+    let updates = jev_env_updates(&account_id, &api_token);
+    for (k, v) in &updates {
+        std::env::set_var(k, v);
+    }
+    let path = config_env_path(&app).ok_or_else(|| "app_data_dir を解決できない".to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("設定フォルダの作成に失敗: {e}"))?;
+    }
+    upsert_env(&path, &updates).map_err(|e| format!(".env の保存に失敗: {e}"))
+}
+
 /// UI 設定ミラーの置き場: `app_data_dir/settings.json` (.env/saves/logs と同じ per-user)。
 /// localStorage (`kataribe.*`) の耐久コピー — WebView プロファイル消失 (identifier 変更・
 /// 破損) からの復元用。正本は localStorage のまま (読み取り経路は不変)。
@@ -5562,6 +5604,8 @@ pub fn run() {
             usage_snapshot,
             get_dev_mode,
             set_dev_mode,
+            get_jev_config,
+            set_jev_config,
             load_ui_settings,
             save_ui_settings,
             rename_notice,
@@ -5631,6 +5675,36 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    /// Jev の鍵の保存 (設定「開発者」タブ、2026-09-23): 書くのは JEV_ACCOUNT_ID / JEV_API_TOKEN の
+    /// **2 つだけ**で、開発者モードの ON/OFF や LLM の鍵を巻き添えにしない (有効条件は
+    /// 「開発者モード ON かつ鍵あり」のまま = ここでは dev mode を書かない)。貼り付けの空白は落とす。
+    #[test]
+    fn jev_config_writes_only_its_two_keys_and_keeps_the_rest() {
+        use super::{jev_env_updates, upsert_env};
+
+        let u = jev_env_updates("  acct123 \n", "\ttok_abc  ");
+        assert_eq!(
+            u,
+            vec![
+                ("JEV_ACCOUNT_ID".to_string(), "acct123".to_string()),
+                ("JEV_API_TOKEN".to_string(), "tok_abc".to_string()),
+            ]
+        );
+
+        let dir = std::env::temp_dir().join(format!("lorekeel_jev_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".env");
+        std::fs::write(&path, "LLM_API_KEY=k\nLOREKEEL_DEV_MODE=false\nJEV_ACCOUNT_ID=old\n").unwrap();
+        upsert_env(&path, &u).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("LLM_API_KEY=k"), "他の鍵を壊さない: {text}");
+        assert!(text.contains("LOREKEEL_DEV_MODE=false"), "開発者モードには触らない: {text}");
+        assert!(text.contains("JEV_ACCOUNT_ID=acct123") && !text.contains("JEV_ACCOUNT_ID=old"), "{text}");
+        assert!(text.contains("JEV_API_TOKEN=tok_abc"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 【一貫性検査の記録 (spec 32 Phase A)】jsonl は**機械が読む計器**なので、
     /// 語り本文は書かない (本文は会話ログ側にある)。1 検査 1 行で追記され、
     /// findings は閾値以下も全部載る — Phase A の目的はベースライン (分布) の測定なので、

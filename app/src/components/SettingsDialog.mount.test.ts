@@ -58,6 +58,7 @@ function ipcFor(env: EnvView): IpcTable {
     usage_snapshot: () => null,
     get_editor_llm_config: () => ({ base_url: "", model: "", enabled: false }),
     get_dev_mode: () => false,
+    get_jev_config: () => ({ account_id: "", api_token: "" }),
     // --- 保存で投げるもの ---
     set_llm_config: (a) => {
       env.base_url = String(a?.baseUrl ?? "");

@@ -185,6 +185,38 @@ async function toggleDevMode(enabled: boolean) {
   }
 }
 
+// --- Jev による一貫性チェック (spec 32) ---
+// 鍵は backend の .env (JEV_ACCOUNT_ID / JEV_API_TOKEN)。**動くのは開発者モード ON かつ鍵が 2 つとも
+// あるときだけ** (判定は backend の play_turn が持つ。ここは状態を表示するだけ)。
+const jevAccount = ref("");
+const jevToken = ref("");
+const jevSaved = ref({ account: "", token: "" });
+const jevStatus = ref("");
+async function loadJev() {
+  try {
+    const v = await invoke<{ account_id: string; api_token: string }>("get_jev_config");
+    jevAccount.value = v.account_id;
+    jevToken.value = v.api_token;
+    jevSaved.value = { account: v.account_id, token: v.api_token };
+  } catch {
+    /* Tauri 外では空のまま */
+  }
+}
+async function saveJev() {
+  jevStatus.value = t("settings.status.saving");
+  try {
+    await invoke("set_jev_config", { accountId: jevAccount.value, apiToken: jevToken.value });
+    jevSaved.value = { account: jevAccount.value.trim(), token: jevToken.value.trim() };
+    jevStatus.value = t("settings.dev.jevSaved");
+  } catch (e) {
+    jevStatus.value = t("settings.status.saveFailed", { error: String(e) });
+  }
+}
+/** いま動くか。保存済みの鍵で判定する (打ちかけの欄では判定しない = 保存前に「有効」と見せない)。 */
+const jevState = computed<"noKeys" | "devOff" | "on">(() =>
+  !jevSaved.value.account || !jevSaved.value.token ? "noKeys" : !game.devMode ? "devOff" : "on",
+);
+
 // --- 画像生成 / 挿絵 (spec 24) ---
 // 非秘密は store (localStorage)、API キーは backend の .env (契約 config_sources)。
 const img = computed(() => game.imageGen);
@@ -785,6 +817,7 @@ onMounted(async () => {
   void loadEditorProfile();
   void refreshSheets();
   game.refreshDevMode();
+  void loadJev();
   void refreshMicDevices(); // 開いた時点で候補を出す (権限前は名前が空 = 案内を出す)
 });
 </script>
@@ -1838,6 +1871,50 @@ onMounted(async () => {
               <p><code class="text-glow">{{ t("settings.dev.example3") }}</code></p>
               <p class="mt-1 text-parchment/40">
                 {{ t("settings.dev.examplesNote") }}
+              </p>
+            </div>
+
+            <!-- Jev による一貫性チェック (spec 32)。開発者モードの下位の道具 = ここに置く。 -->
+            <div class="pt-3 border-t border-ash/60 space-y-2" data-testid="jev-section">
+              <h4 class="text-parchment font-bold text-sm">{{ t("settings.dev.jevHeading") }}</h4>
+              <p class="text-parchment/50 text-xs leading-relaxed">{{ t("settings.dev.jevDesc") }}</p>
+              <HelpNote>{{ t("settings.dev.jevHelp1") }}<br />{{ t("settings.dev.jevHelp2") }}</HelpNote>
+              <label class="block text-xs text-parchment/60">
+                {{ t("settings.dev.jevAccount") }}
+                <input
+                  v-model="jevAccount"
+                  type="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                  class="mt-1 block w-full rounded bg-ink border border-ash px-2 py-1 text-sm text-parchment focus:outline-none focus:border-ember"
+                />
+              </label>
+              <label class="block text-xs text-parchment/60">
+                {{ t("settings.dev.jevToken") }}
+                <input
+                  v-model="jevToken"
+                  type="password"
+                  autocomplete="off"
+                  spellcheck="false"
+                  class="mt-1 block w-full rounded bg-ink border border-ash px-2 py-1 text-sm text-parchment focus:outline-none focus:border-ember"
+                />
+              </label>
+              <div class="flex items-center gap-3">
+                <button
+                  type="button"
+                  class="px-3 py-1 rounded bg-ember/80 text-ink text-xs font-bold hover:bg-ember"
+                  @click="saveJev"
+                >
+                  {{ t("settings.dev.jevSave") }}
+                </button>
+                <span class="text-xs text-ember/80">{{ jevStatus }}</span>
+              </div>
+              <p
+                class="text-xs"
+                :class="jevState === 'on' ? 'text-glow' : 'text-parchment/50'"
+                data-testid="jev-state"
+              >
+                {{ t(`settings.dev.jevState_${jevState}`) }}
               </p>
             </div>
           </section>

@@ -402,6 +402,20 @@ export const messages = {
         example3: "<meta: なぜ今このフラグを立てなかった？>",
         examplesNote:
           "※ メタ質問に答えられるかは LLM のモデルによります（物語から抜けられないモデルもあります）。",
+        jevHeading: "Jev による一貫性チェック",
+        jevDesc:
+          "開発者モードが ON のとき、GM の語りを毎ターン盤面と照らし合わせ、この場にいない人物の発話・持っていない物の受け渡し・設定との食い違いなどを会話ログに ⚠ で知らせます（知らせるだけで、ターンは止めません）。パッケージを作るときのテストプレイ向けです。",
+        jevHelp1:
+          "Jev は TypeSafe の判定専用モデルで、使うには別途アカウントと API トークンが要ります。検査のたびに、そのターンの語り・直前までの語り・登場人物の設定・所持品などが Jev に送られます。",
+        jevHelp2:
+          "結果はすべて app_data/logs/consistency.jsonl に 1 ターン 1 行で記録されます（語りの本文は書きません）。費用の目安は 43 ターンで約 9 円でした。",
+        jevAccount: "アカウント ID",
+        jevToken: "API トークン",
+        jevSave: "保存",
+        jevSaved: "保存しました（次のターンから反映）",
+        jevState_noKeys: "無効 — アカウント ID と API トークンを入力して保存してください",
+        jevState_devOff: "キーは保存済み — 開発者モードが OFF なので動いていません",
+        jevState_on: "有効 — 次のターンから一貫性チェックが動きます",
       },
       help: {
         showNote: "説明を見る",
@@ -1334,6 +1348,20 @@ export const messages = {
         example3: "<meta: why didn't you set that flag just now?>",
         examplesNote:
           "* Whether meta questions get answered depends on the LLM model (some can't step out of the story).",
+        jevHeading: "Consistency check with Jev",
+        jevDesc:
+          "While developer mode is on, the GM's narration is checked against the board every turn, and the chat log shows a ⚠ for things like someone speaking who isn't here, handing over an item you don't have, or contradicting a character's profile (it only warns; the turn is never blocked). Meant for test plays while authoring a package.",
+        jevHelp1:
+          "Jev is TypeSafe's judgment-only model and needs its own account and API token. Each check sends Jev that turn's narration, the preceding narration, character profiles, inventories and similar board data.",
+        jevHelp2:
+          "Every result is logged to app_data/logs/consistency.jsonl, one line per turn (the narration text itself is not written). As a rough cost, 43 turns came to about ¥9.",
+        jevAccount: "Account ID",
+        jevToken: "API token",
+        jevSave: "Save",
+        jevSaved: "Saved (takes effect from the next turn)",
+        jevState_noKeys: "Off — enter the account ID and API token, then save",
+        jevState_devOff: "Keys saved — not running because developer mode is off",
+        jevState_on: "On — the consistency check runs from the next turn",
       },
       help: {
         showNote: "Show details",
