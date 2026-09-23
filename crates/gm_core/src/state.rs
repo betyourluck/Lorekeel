@@ -54,6 +54,7 @@ pub const AUTHORED_ONLY_OPS: &[&str] = &[
     "set_attribute",
     "record_turn",
     "set_presence",
+    "move_character",
     "resolve_vote",
     "roll_stat",
 ];
@@ -83,22 +84,40 @@ pub enum PresenceOverride {
     /// そこを離れた瞬間に破棄される (Move 適用点)。破棄後の実効 presence は
     /// `Location.present` の土台へ戻る。`transition` では持ち越さない。
     Volatile { present: bool, at: LocationId },
+    /// **配置** (`move_character { to }`、2026-09-23)。キャラ本人の居場所が `at` に**ある**。
+    /// 主人公が `at` に居るときだけ居り、それ以外の場所では居ない (`Location.present` に名前が
+    /// あっても消す = 「先に酒場へ行かせた仲間」は元の場所には居ない)。主人公が動いても破棄されない
+    /// (来訪者との差)。合流させるには `set_presence { present: true }` で同行者へ戻す。
+    /// `transition` では持ち越さない (場所の id はモジュール内でしか意味を持たない)。
+    ///
+    /// 並びは untagged の試行順 — `{at}` だけの形は `present` を欠くので Volatile に落ちず、ここに来る。
+    Placed { at: LocationId },
 }
 
 impl PresenceOverride {
-    /// 在 (`true`) / 不在 (`false`)。様式によらない中身。
+    /// 在 (`true`) / 不在 (`false`)。配置は「居場所がある」ので `true` (どこで効くかは [`Self::placed_at`])。
     pub fn present(&self) -> bool {
         match self {
             PresenceOverride::Persistent(p) => *p,
             PresenceOverride::Volatile { present, .. } => *present,
+            PresenceOverride::Placed { .. } => true,
         }
     }
 
-    /// 揮発なら「立てた場所」。永続なら `None` (場所を持たない = どこでも効く)。
+    /// **揮発**なら「立てた場所」。永続と配置は `None` — この値で「主人公が離れたら破棄」を
+    /// 判定するので、配置 (主人公が動いても残る) を `Some` にしてはいけない。
     pub fn at(&self) -> Option<&LocationId> {
         match self {
-            PresenceOverride::Persistent(_) => None,
             PresenceOverride::Volatile { at, .. } => Some(at),
+            PresenceOverride::Persistent(_) | PresenceOverride::Placed { .. } => None,
+        }
+    }
+
+    /// **配置**なら居場所。それ以外は `None`。
+    pub fn placed_at(&self) -> Option<&LocationId> {
+        match self {
+            PresenceOverride::Placed { at } => Some(at),
+            _ => None,
         }
     }
 }
@@ -612,6 +631,17 @@ pub enum StateOp {
         /// 揮発 (この場限り) にするか。既定 false = 従来の永続 override。
         #[serde(default)]
         volatile: bool,
+    },
+    /// **キャラを別の場所へ行かせる** (2026-09-23)。`entity` の居場所を `to` にする — 主人公が
+    /// `to` に着けばそこに居て、それ以外の場所には居ない (同行もしない)。「仲間を先に酒場へ
+    /// 行かせ、酒場に行くとそこに居る」をフラグ無しで書くための op。**authored 専権**
+    /// (set_presence と同じく LLM 提案は却下)。合流させるには `set_presence { present: true }`。
+    ///
+    /// 主人公の `move` と違い**出口も gate も見ない**。`entity` は NPC に限る (主人公は `move`)。
+    /// 状態は [`PresenceOverride::Placed`] で、`transition` では持ち越さない。
+    MoveCharacter {
+        entity: EntityId,
+        to: LocationId,
     },
     /// **可変量ダイス** (spec 16)。エンジンが `count × d(sides) + bonus` を振り、`negate` に
     /// 応じて ± を stat へ clamp 適用する (SAN 1d6 減少・1d8 ダメージ)。**authored 専権** —

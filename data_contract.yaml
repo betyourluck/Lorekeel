@@ -19,7 +19,7 @@ GameState:
   skills: { EntityId: [SkillId] }  # キャラ別の獲得済み能力 (閉世界)。初期=宣言集合、開花は authored トリガーのみ
   attributes: { EntityId: { AttrKey: string } }  # キャラ別の文字列属性(クラス/職業/種族 等。第4の可変状態)。初期=宣言集合、書き換えは authored トリガーの set_attribute のみ(LLM 却下)。未宣言キーは load 時 validate で弾く。値は authored 自由文字列。セーブ対象
   present_overrides: { EntityId: PresenceOverride }  # 画面上の登場/退場のオーバーライド(第5の可変状態, spec 04)。Location.present に重ねて実効 presence を決める。書き換えは authored トリガーの set_presence のみ(LLM 却下)。セーブ対象
-  PresenceOverride: "**二様式** (untagged・2026-07-25)。Persistent(bool) = 旧形式 = **同行者**: 場所を持たずモジュール全域に効き transition で持ち越す / Volatile{present,at:LocationId} = **来訪者**: 立てた場所に居るときだけ効き、Move でその場所を離れた瞬間に破棄され transition でも捨てる。旧セーブ (bool) は untagged で Persistent として読める (LocationItem / StatInit と同じ後方互換パターン)"
+  PresenceOverride: "**二様式** (untagged・2026-07-25)。Persistent(bool) = 旧形式 = **同行者**: 場所を持たずモジュール全域に効き transition で持ち越す / Volatile{present,at:LocationId} = **来訪者**: 立てた場所に居るときだけ効き、Move でその場所を離れた瞬間に破棄され transition でも捨てる。旧セーブ (bool) は untagged で Persistent として読める (LocationItem / StatInit と同じ後方互換パターン) / **Placed{at:LocationId} = 配置** (2026-09-23、move_character): キャラ本人の居場所。主人公が at に居るときだけ居り、それ以外では Location.present に名前があっても消す。主人公の Move で破棄されない (at() は揮発専用で配置は None = 破棄判定に乗らない)。transition では捨てる。untagged の試行順で {at} だけの形は present を欠くので Volatile に落ちず Placed に来る"
 
 # --- LLM が毎ターン返す構造化出力 (これ以外の形を出せない) -------------------
 StateDelta:
@@ -46,6 +46,7 @@ StateOp:                        # 内部タグ "op" 付き列挙
   - { op: set_attribute, entity: EntityId, key: AttrKey, value: string }  # 文字列属性の書き換え(クラス転職 等)。validate_ops は常に却下(クラス捏造遮断)、apply_ops(trigger effects)のみ実行。未宣言キーは load 時 validate で弾く
   - { op: record_turn,  entity: EntityId, key: StatKey }  # 現在ターンを stat に刻む(タイムスタンプ)。validate_ops は常に却下(タイマー詐称遮断)、apply_ops(trigger effects)のみ実行。生値で書く(clamp なし)。Gate::turns_since と対で遅延イベント
   - { op: set_presence, entity: EntityId, present: bool, volatile: bool }  # 画面上の登場(true)/退場(false)。validate_ops は常に却下(キャラ勝手登場の捏造遮断)、apply_ops(trigger effects)のみ実行。volatile(既定 false)が様式を選ぶ: false=同行者(従来・transition 持ち越し) / true=来訪者(適用時の現在地に紐づき、離れた瞬間に破棄。退場トリガーを書かずに「その場限りの登場」が書ける、2026-07-25)
+  - { op: move_character, entity: EntityId, to: LocationId }  # ✅(2026-09-23) キャラを別の場所へ行かせる = PresenceOverride::Placed。主人公が to に着けばそこに居て、それ以外の場所には居ない(同行しない)。「仲間を先に酒場へ行かせ、酒場に着くとそこに居る」をフラグ無しで書く。合流は set_presence{present:true} で同行者に戻す。**authored 専権**(AUTHORED_ONLY_OPS・LLM 提案は PresenceSetNotAllowed で却下)。出口も gate も見ない。entity は NPC のみ(主人公は move)。lint: 幻の行き先 UnknownLocationInMoveCharacter / NPC でない entity MoveCharacterNotACharacter(どちらも沈黙していた = 二度と会えない / 何も起きない)。set_presence に at を足す案は『present:false, at』が『そこに居るがついてこない』とも『そこには居ない』とも読めるので棄却(ユーザーとの対話で実際に逆の意味に読まれた)
   - { op: roll_stat, entity: EntityId, key: StatKey, count: u32, sides: u32, bonus: i64, negate: bool }  # 可変量ダイス (spec 16)。engine が count×d(sides)+bonus を振り negate に応じて ± を stat へ clamp 適用 (SAN 1d6 減少・1d8 ダメージ)。validate_ops は常に却下 (StatRollNotAllowed=ダメージ量捏造遮断、AUTHORED_ONLY_OPS 第6例)、apply_ops(trigger/challenge effects)のみ実行。出目は rolls に surface (「SAN -4 (1d6=4)」)。本流 RNG・apply 時確定 (帰結非射影は spec 09 準拠)。count/sides=0 は load 時 RollStatShapeInvalid
 
 # --- 裁定の不変条件 (engine::adjudicate / apply が守る掟) --------------------

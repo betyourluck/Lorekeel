@@ -335,6 +335,7 @@ fn op_samples() -> Vec<StateOp> {
         StateOp::SetAttribute { entity: e(), key: "a".into(), value: "v".into() },
         StateOp::RecordTurn { entity: e(), key: "s".into() },
         StateOp::SetPresence { entity: e(), present: true, volatile: false },
+        StateOp::MoveCharacter { entity: e(), to: "l".into() },
         StateOp::RollStat { entity: e(), key: "s".into(), count: 1, sides: 6, bonus: 0, negate: false },
         StateOp::CastVote { voter: e(), target: e() },
         StateOp::ResolveVote,
@@ -361,6 +362,7 @@ fn _op_exhaustive_guard(op: &StateOp) {
         | StateOp::SetAttribute { .. }
         | StateOp::RecordTurn { .. }
         | StateOp::SetPresence { .. }
+        | StateOp::MoveCharacter { .. }
         | StateOp::RollStat { .. }
         | StateOp::CastVote { .. }
         | StateOp::ResolveVote => {}

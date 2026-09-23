@@ -52,6 +52,15 @@ pub fn scenario_lint_messages(scenario: &Scenario) -> Vec<String> {
                  主人公はその場所に立ちますが、出口も説明文も無いため先へ進めなくなります（エラーも出ません）。\
                  locations に定義された id を確認してください"
             ),
+            gm_core::ScenarioError::UnknownLocationInMoveCharacter { origin, entity, to } => format!(
+                "{origin} の move_character が、{entity} を宣言されていない場所「{to}」へ行かせています。\
+                 主人公はその場所に立てないので、{entity} には二度と会えなくなります（エラーも出ません）。\
+                 locations に定義された id を確認してください"
+            ),
+            gm_core::ScenarioError::MoveCharacterNotACharacter { origin, entity } => format!(
+                "{origin} の move_character の「{entity}」は、このシナリオの登場人物ではありません。\
+                 何も起きません。主人公を動かすなら move、NPC なら characters / cast の id を確認してください"
+            ),
             // spec 24: 画風指針は先頭だけ使われる (プレイは壊れない)。
             gm_core::ScenarioError::ImageStyleTooLong { chars } => format!(
                 "image_style が {chars} 字あります (上限 {})。先頭 {} 字だけが挿絵のプロンプトに使われます — \

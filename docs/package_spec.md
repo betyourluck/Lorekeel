@@ -622,7 +622,7 @@ challenges:
 表の「作者のみ」の op は trigger / challenge の effects からだけ使えます (GM が提案しても却下されます)。
 それ以外の op は GM (AI) の提案でも effects でも使えます。
 
-19 種類 (エンジンの型から機械生成 — **これ以外の `op` は存在しない**)。「作者のみ」は trigger / challenge の effects からだけ使え、GM (AI) が提案すると却下される。
+20 種類 (エンジンの型から機械生成 — **これ以外の `op` は存在しない**)。「作者のみ」は trigger / challenge の effects からだけ使え、GM (AI) が提案すると却下される。
 
 | op | 欄 | 誰が使えるか | 意味 |
 |---|---|---|---|
@@ -636,6 +636,7 @@ challenges:
 | `give_item` | `from`, `item`, `to` | GM の提案も effects も可 | アイテムを譲渡する。from が所持していなければ却下 (持っていない物は渡せない)。 to は既知の entity でなければ却下。from 省略時は主人公。 |
 | `grant_skill` | `entity`, `skill` | 作者のみ (effects) | 能力の付与 (開花)。authored トリガーの専権 — LLM が提案すると adjudicate が却下する (メアリー・スー遮断)。trigger effects は apply_ops 直行なので付与できる。entity 省略時は主人公。 |
 | `move` | `to` | GM の提案も effects も可 | 現在地から to へ移動する。LLM の提案は現在地の exits に在り gate を満たす行き先だけ 受理 (それ以外は却下)。トリガー効果からは出口も gate も見ずに運ぶ (authored 専権の一貫 — 落とし穴・転移・場面転換)。移動で揮発 presence (来訪者) は破棄される。 |
+| `move_character` | `entity`, `to` | 作者のみ (effects) | キャラを別の場所へ行かせる (2026-09-23)。entity の居場所を to にする — 主人公が to に着けばそこに居て、それ以外の場所には居ない (同行もしない)。「仲間を先に酒場へ 行かせ、酒場に行くとそこに居る」をフラグ無しで書くための op。authored 専権 (set_presence と同じく LLM 提案は却下)。合流させるには set_presence { present: true }。  主人公の move と違い出口も gate も見ない。entity は NPC に限る (主人公は move)。 状態は PresenceOverride::Placed で、transition では持ち越さない。 |
 | `record_turn` | `entity`, `key` | 作者のみ (effects) | 現在ターンを stat に刻む (タイムスタンプ)。authored トリガーの専権 — LLM が提案すると adjudicate が却下する (タイマー詐称遮断、GrantSkill/SetAttribute と同型)。trigger effects は apply_ops 直行なので刻める。Gate::TurnsSince と対で「〇〇から N ターン後に発火」を組む。 値は GameState.turn の生値 (stat 境界で clamp しない)。entity 省略時は主人公。 |
 | `remove_item` | `item` | GM の提案も effects も可 | player がアイテムを手放す。 |
 | `request_roll` | `dc`, `sides` | GM の提案も effects も可 | ダイスを振る要求。結果は含めない — エンジンが振って裁く。 |
@@ -666,6 +667,28 @@ challenges:
 
 `present: false` の側も揮発にできます。「この訪問の間だけ店主が席を外している」— 出直せば
 また居ます。
+
+##### キャラを別の場所へ行かせる (`move_character`)
+
+同行者でも来訪者でもなく、**キャラ本人に居場所を持たせる**ときは `move_character` を使います。
+「仲間を先に酒場へ行かせ、酒場に着くとそこに居る」をフラグ無しで書けます。
+
+```yaml
+# 先に酒場へ行かせる — 酒場に居るときだけ居て、それ以外の場所には居ない (ついてこない)
+- { op: move_character, entity: レイ, to: tavern }
+
+# 合流 — 同行者に戻す (以後はまた付いてくる)
+- { op: set_presence, entity: レイ, present: true }
+```
+
+- 行かせたキャラは、**元の場所の `present` に名前があってもそこには居なくなります**。
+- プレイヤーが移動しても居場所は消えません (来訪者との違い)。合流させるか、また別の場所へ
+  行かせるまで、そこに居続けます。
+- 主人公の `move` と違い、**出口も条件も見ません**。
+- `entity` は NPC だけです (主人公を動かすのは `move`)。
+- 章 (campaign のモジュール) をまたぐと居場所は消えます。場所の id はその章の中でしか意味を持たないためです。
+- 行き先の typo・NPC でない `entity` は、読み込み時に警告が出ます。
+- 作者専用の op です。GM (AI) は提案できません。
 
 - **challenge の帰結 (`on_success` 等) の effects には `attempt_challenge` を書けません**
   (判定 A の帰結で判定 A を呼ぶ無限再帰の芽。判定の連鎖はフラグ→トリガー経由で。ロード時エラー)。

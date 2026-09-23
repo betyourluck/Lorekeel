@@ -121,8 +121,8 @@ topics:
   - id: volatile_presence
     kind: scenario
     slice: 41_ops_volatile_presence
-    summary: 登場のさせ方 — 同行者と来訪者 (set_presence の volatile)
-    keywords: [登場, 退場, 同行者, 来訪者, volatile, set_presence, ついてくる, 消える]
+    summary: 登場のさせ方 — 同行者と来訪者 (set_presence の volatile)・キャラを別の場所へ行かせる (move_character)
+    keywords: [登場, 退場, 同行者, 来訪者, volatile, set_presence, ついてくる, 消える, move_character, 先に行かせる, 居場所, 合流]
   - id: trigger_challenge
     kind: scenario
     slice: 42_ops_trigger_challenge

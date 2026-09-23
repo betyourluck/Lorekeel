@@ -658,9 +658,10 @@ fn validate_op(
                     key: key.clone(),
                 });
             }
-            StateOp::SetPresence { entity, .. } => {
+            StateOp::SetPresence { entity, .. } | StateOp::MoveCharacter { entity, .. } => {
                 // 登場/退場も authored トリガーの専権。LLM 提案は常に却下 (キャラ勝手登場の捏造遮断)。
                 // trigger effects は apply_ops 直行なのでこの検証を通らず登場/退場させられる。
+                // キャラを別の場所へ行かせる (move_character) も presence の変更なので同じ理由で却下。
                 reasons.push(RejectReason::PresenceSetNotAllowed {
                     entity: entity.clone(),
                 });
@@ -1851,6 +1852,13 @@ fn apply_ops(
                     crate::state::PresenceOverride::Persistent(*present)
                 };
                 state.present_overrides.insert(entity.clone(), ov);
+            }
+            StateOp::MoveCharacter { entity, to } => {
+                // ここに到達するのは authored 効果のみ (LLM 提案は adjudicate で却下済)。
+                // キャラの居場所を置く — 主人公の move で破棄されない (at() が None) ので残り続ける。
+                state
+                    .present_overrides
+                    .insert(entity.clone(), crate::state::PresenceOverride::Placed { at: to.clone() });
             }
             StateOp::ResolveVote => {
                 // ここに到達するのは authored トリガーの effect のみ (LLM 提案は adjudicate で却下済)。
@@ -5048,6 +5056,115 @@ locations:
         );
         assert!(s.present_overrides["alice"].at().is_none(), "旧形式は場所を持たない = 永続");
         assert_eq!(s.present_overrides.get("bob").map(|o| o.present()), Some(false));
+    }
+
+    /// 【キャラを別の場所へ行かせる = move_character (2026-09-23)】従来の上書きは
+    /// 同行者 (どこでも付いてくる) と来訪者 (立てた場所を離れたら消える) の 2 つで、
+    /// **キャラ本人の居場所**を持てなかった — 「仲間を先に酒場へ行かせ、酒場に着くとそこに居る」は
+    /// Location.present とフラグの組み合わせでしか書けなかった。配置は主人公が動いても残り、
+    /// その場所に居るときだけ居る。合流は set_presence で同行者に戻す。
+    #[test]
+    fn move_character_places_npc_elsewhere_and_survives_player_moves() {
+        let yaml = r#"
+title: t
+start: square
+goal: { kind: always }
+characters:
+  alice: { name: アリス }
+locations:
+  square: { description: 広場, present: [alice], exits: [{ to: road }] }
+  road: { description: 街道, exits: [{ to: square }, { to: tavern }] }
+  tavern: { description: 酒場, exits: [{ to: road }] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        let mut s = sc.initial_state(1);
+        let authored = |s: &mut GameState, ops: Vec<StateOp>| {
+            apply_ops(
+                s,
+                &sc,
+                &StateDelta::new("", ops),
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut Vec::new(),
+            );
+        };
+        let mv = |s: &mut GameState, to: &str| {
+            apply(s, &sc, &d(vec![StateOp::Move { to: to.into() }])).unwrap();
+        };
+
+        // 先に酒場へ行かせる → 広場 (土台に名前がある) からも消える。
+        authored(&mut s, vec![StateOp::MoveCharacter { entity: "alice".into(), to: "tavern".into() }]);
+        assert!(!sc.present_at(&s).contains("alice"), "行かせた後は元の場所に居ない");
+
+        // 主人公が動いても配置は破棄されない (来訪者との差)。道中には居ない。
+        mv(&mut s, "road");
+        assert!(!sc.present_at(&s).contains("alice"), "付いてこない");
+        assert!(s.present_overrides.contains_key("alice"), "主人公の move で配置が消えない");
+        mv(&mut s, "tavern");
+        assert!(sc.present_at(&s).contains("alice"), "酒場に着くとそこに居る");
+
+        // 合流 = 同行者へ戻す → 以後は付いてくる。
+        authored(&mut s, vec![StateOp::SetPresence { entity: "alice".into(), present: true, volatile: false }]);
+        mv(&mut s, "road");
+        assert!(sc.present_at(&s).contains("alice"), "合流後は同行する");
+
+        // LLM 提案は set_presence と同じく却下 (キャラの居場所の捏造遮断)。
+        let v = adjudicate(
+            &s,
+            &sc,
+            &d(vec![StateOp::MoveCharacter { entity: "alice".into(), to: "tavern".into() }]),
+        );
+        match v {
+            Verdict::Reject { reasons: rs } => assert!(
+                rs.iter().any(|r| matches!(r, RejectReason::PresenceSetNotAllowed { entity } if entity == "alice")),
+                "PresenceSetNotAllowed で却下: {rs:?}"
+            ),
+            other => panic!("却下されるべき: {other:?}"),
+        }
+        assert!(crate::AUTHORED_ONLY_OPS.contains(&"move_character"), "schema からも除外される");
+
+        // セーブの往復: 配置は {at} だけの形で、来訪者 {present, at} と取り違えない。
+        authored(&mut s, vec![StateOp::MoveCharacter { entity: "alice".into(), to: "tavern".into() }]);
+        let back: GameState = serde_yaml::from_str(&serde_yaml::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.present_overrides["alice"], crate::state::PresenceOverride::Placed { at: "tavern".into() });
+
+        // 章をまたぐと配置は捨てる (場所の id はモジュール内でしか意味を持たない)。
+        let next = sc.transition(&s, &sc);
+        assert!(!next.present_overrides.contains_key("alice"), "transition で配置は持ち越さない");
+    }
+
+    /// move_character の死んだ参照 (幻の行き先・NPC でない entity) は lint で名指しする。
+    /// どちらもエラーも出ず「二度と会えない / 何も起きない」になるので、沈黙させない。
+    #[test]
+    fn move_character_dead_references_are_linted() {
+        let yaml = r#"
+title: t
+start: square
+allowed_flags: [f]
+goal: { kind: always }
+characters:
+  alice: { name: アリス }
+triggers:
+  - id: send
+    when: { kind: flag_is, key: f, value: true }
+    effects:
+      - { op: move_character, entity: alice, to: tavernX }
+      - { op: move_character, entity: player, to: tavern }
+      - { op: move_character, entity: alice, to: tavern }
+locations:
+  square: { description: d }
+  tavern: { description: d }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "lint は load を拒否しない: {:?}", sc.validate());
+        let lints = sc.lints();
+        assert!(lints.iter().any(|l| matches!(l,
+            crate::ScenarioError::UnknownLocationInMoveCharacter { origin, entity, to }
+                if to == "tavernX" && entity == "alice" && origin.contains("send"))), "{lints:?}");
+        assert!(lints.iter().any(|l| matches!(l,
+            crate::ScenarioError::MoveCharacterNotACharacter { entity, .. } if entity == "player")), "{lints:?}");
+        assert_eq!(lints.len(), 2, "正しい行き先・NPC には出ない = 偽陽性なし: {lints:?}");
     }
 
     /// 【登場/退場 (spec 04)】authored トリガーの set_presence で entity が登場/退場し、

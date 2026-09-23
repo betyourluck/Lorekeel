@@ -935,6 +935,14 @@ pub enum ScenarioError {
     /// 拒否しない ([`ScenarioError::UnknownChallengeInEffects`] と同じ「死んだ参照」の一族)。
     /// `origin` は `trigger:{id}` / `challenge:{id}` / `contest:{id}`。
     UnknownLocationInEffects { origin: String, to: LocationId },
+    /// authored effects の `move_character` が**宣言されていない場所**を指している (2026-09-23)。
+    /// そのキャラは主人公がどこへ行っても二度と会えなくなる (配置先に主人公は立てない)。
+    /// **lint** ([`ScenarioError::UnknownLocationInEffects`] と同じ死んだ参照の一族)。
+    UnknownLocationInMoveCharacter { origin: String, entity: EntityId, to: LocationId },
+    /// authored effects の `move_character` の `entity` が、このシナリオの NPC (`characters`) でない
+    /// (主人公・未注入・typo)。実効 presence は characters に絞られるので**何も起きない**。
+    /// 主人公を動かすなら `move`。**lint**。
+    MoveCharacterNotACharacter { origin: String, entity: EntityId },
     /// challenge の authored 判定主体 (`ChallengeDef::entity`) が、判定に使う stat を宣言して
     /// いない (幻主体/幻ステータス)。player は `initial_stats`、NPC は `CharacterDef::stats` で宣言。
     ChallengeStatUndeclared {
@@ -1321,6 +1329,16 @@ impl Scenario {
             if ov.at().is_some_and(|at| at != &state.location) {
                 continue;
             }
+            // 配置 (move_character) は**居場所そのもの**なので、そこ以外では土台に名前があっても消す
+            // (先に酒場へ行かせた仲間は元の場所には居ない)。
+            if let Some(at) = ov.placed_at() {
+                if at == &state.location {
+                    set.insert(entity.clone());
+                } else {
+                    set.remove(entity);
+                }
+                continue;
+            }
             if ov.present() {
                 set.insert(entity.clone());
             } else {
@@ -1525,6 +1543,21 @@ impl Scenario {
                             origin: origin.clone(),
                             contest: contest.clone(),
                         });
+                    }
+                    StateOp::MoveCharacter { entity, to } => {
+                        if !self.characters.contains_key(entity) {
+                            warns.push(ScenarioError::MoveCharacterNotACharacter {
+                                origin: origin.clone(),
+                                entity: entity.clone(),
+                            });
+                        }
+                        if !known.contains(to) {
+                            warns.push(ScenarioError::UnknownLocationInMoveCharacter {
+                                origin: origin.clone(),
+                                entity: entity.clone(),
+                                to: to.clone(),
+                            });
+                        }
                     }
                     _ => {}
                 }
@@ -2081,11 +2114,12 @@ impl Scenario {
         }
         // 登場/退場のオーバーライド: **永続 (同行者) だけ**持ち越す (登場させた仲間が次の画面にも
         // 同行する、spec 04)。揮発 (来訪者) は前モジュールの場所に紐づいており、location は
-        // 遷移先の start へリセットされるので捨てる (2026-07-25)。
+        // 遷移先の start へリセットされるので捨てる (2026-07-25)。配置 (move_character) も捨てる —
+        // 場所の id はモジュール内でしか意味を持たない (taken_items と同じ扱い、2026-09-23)。
         s.present_overrides = prev
             .present_overrides
             .iter()
-            .filter(|(_, ov)| ov.at().is_none())
+            .filter(|(_, ov)| matches!(ov, crate::state::PresenceOverride::Persistent(_)))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         // フラグ: source が global と宣言したものだけ運ぶ (局所は捨てる)。
