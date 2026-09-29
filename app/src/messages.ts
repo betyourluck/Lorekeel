@@ -262,7 +262,7 @@ export const messages = {
         baseUrl: "サーバー URL",
         model: "モデル",
         apiKey: "API キー（このプロバイダ用）",
-        keyNote: "キーはアプリのデータフォルダの .env に保存され、画面側には置かれません。入力して欄を離れると保存されます。",
+        keyNote: "キーは OS の資格情報ストア（Windows: 資格情報マネージャー / macOS: キーチェーン）に保存されます。入力して欄を離れると保存されます。",
         keySaved: "API キーを保存しました。",
         shape: "形",
         shapeSquare: "正方形",
@@ -336,7 +336,7 @@ export const messages = {
         register: "登録",
         cancel: "キャンセル",
         intro:
-          "下の欄が現在の接続先です。登録モデルを選ぶとここに反映されます。「保存」で .env に書き込みます。",
+          "下の欄が現在の接続先です。登録モデルを選ぶとここに反映されます。「保存」で書き込みます（API キーは OS の資格情報ストアへ、それ以外は .env へ）。",
         modelName: "モデル名 (LLM_MODEL)",
         modelPlaceholder: "claude-opus-4-8 / gpt-4o-mini 等",
         endpoint: "エンドポイント (LLM_BASE_URL)",
@@ -373,7 +373,7 @@ export const messages = {
         saveWithProfile: "保存 + 登録モデルを更新",
         saveWithProfileTitle: "選択中の登録モデルの中身を、いまのフォーム値で書き換えます（表示名はそのまま）",
         saveNote:
-          ".env を書き換えます（プロセスへ即時反映＋ファイル永続化）。次の「新しいゲーム」から新モデルで接続します。右の「保存 + 登録モデルを更新」は、選択中の登録モデルの中身（モデル名・エンドポイント・API キー）も同じ値に書き換えます — キーを変えるのに一度消して作り直す必要はありません。",
+          "接続設定を書き換えます（プロセスへ即時反映＋永続化。API キーは OS の資格情報ストアへ、それ以外は .env へ）。次の「新しいゲーム」から新モデルで接続します。右の「保存 + 登録モデルを更新」は、選択中の登録モデルの中身（モデル名・エンドポイント・API キー）も同じ値に書き換えます — キーを変えるのに一度消して作り直す必要はありません。",
         summaryHeading: "あらすじ要約用モデル",
         summarySameAsGm: "GM と同じ（既定）",
         summaryTimeout: "要約 1 回の待ち時間の上限",
@@ -412,7 +412,7 @@ export const messages = {
         jevDesc:
           "開発者モードが ON のとき、GM の語りを毎ターン盤面と照らし合わせ、この場にいない人物の発話・持っていない物の受け渡し・設定との食い違いなどを会話ログに ⚠ で知らせます（知らせるだけで、ターンは止めません）。パッケージを作るときのテストプレイ向けです。",
         jevHelp1:
-          "Jev は TypeSafe の判定専用モデルで、使うには別途アカウントと API トークンが要ります。検査のたびに、そのターンの語り・直前までの語り・登場人物の設定・所持品などが Jev に送られます。",
+          "Jev は TypeSafe の判定専用モデルで、使うには別途アカウントと API トークンが要ります。検査のたびに、そのターンの語り・直前までの語り・登場人物の設定・所持品などが Jev に送られます。API トークンは OS の資格情報ストアに保存されます（アカウント ID は .env）。",
         jevHelp2:
           "結果はすべて app_data/logs/consistency.jsonl に 1 ターン 1 行で記録されます（語りの本文は書きません）。費用の目安は 43 ターンで約 9 円でした。",
         jevAccount: "アカウント ID",
@@ -435,7 +435,7 @@ export const messages = {
         line2Post: "がパッケージ一覧です。",
         line3Pre: "・パッケージ一覧では、配布フォルダのパスを追加/削除できます（例:",
         line3Post: "）。",
-        line4: "・AIモデルタブで接続先・モデル・API キーを切り替えられます（.env を書き換え）。",
+        line4: "・AIモデルタブで接続先・モデル・API キーを切り替えられます（API キーは OS の資格情報ストアに保存）。",
         line5:
           "・タイトルバーの記録アイコンで会話ログをテキスト保存できます（保存先は「ログ」タブで指定）。",
         tagline:
@@ -472,14 +472,14 @@ export const messages = {
         loadFailed: "読込失敗: {error}",
         devOn: "開発者モード ON（次のあなたの行動から有効）",
         devOff: "開発者モード OFF",
-        llmSaved: "保存しました（.env に永続化／次の『新しいゲーム』から有効）",
-        profileShowing: "「{name}」を表示中（「保存」で .env に反映）",
+        llmSaved: "保存しました（次の『新しいゲーム』から有効）",
+        profileShowing: "「{name}」を表示中（「保存」で反映）",
         nameRequired: "表示名を入力してください",
-        profileAdded: "「{name}」を登録しました（「保存」で .env に反映）",
+        profileAdded: "「{name}」を登録しました（「保存」で反映）",
         profileAddedPricingIncomplete: "「{name}」を登録しました。単価は 3 欄すべて書いたときだけ保存されます（今回は保存していません）",
         selectToDelete: "削除するモデルを選択してください",
         selectToUpdate: "書き換える登録モデルを選択してください",
-        profileUpdated: "「{name}」を書き換えました（.env にも反映）",
+        profileUpdated: "「{name}」を書き換えました（接続設定にも反映）",
         profileUpdatedPricingIncomplete: "「{name}」を更新しました。単価は 3 欄すべて書いたときだけ保存されます（今回は保存していません）",
         confirmDelete: "登録モデル「{name}」を削除しますか？",
         profileDeleted: "「{name}」を削除しました",
@@ -1213,7 +1213,7 @@ export const messages = {
         baseUrl: "Server URL",
         model: "Model",
         apiKey: "API key (for this provider)",
-        keyNote: "The key is stored in the app data .env, never in the page. It is saved when you leave the field.",
+        keyNote: "The key is stored in the OS credential store (Windows: Credential Manager / macOS: Keychain). It is saved when you leave the field.",
         keySaved: "API key saved.",
         shape: "Shape",
         shapeSquare: "Square",
@@ -1288,7 +1288,7 @@ export const messages = {
         register: "Add",
         cancel: "Cancel",
         intro:
-          "The fields below are the current connection. Choosing a saved model fills them in. “Save” writes to .env.",
+          "The fields below are the current connection. Choosing a saved model fills them in. “Save” writes them (the API key to the OS credential store, everything else to .env).",
         modelName: "Model name (LLM_MODEL)",
         modelPlaceholder: "claude-opus-4-8 / gpt-4o-mini, etc.",
         endpoint: "Endpoint (LLM_BASE_URL)",
@@ -1325,7 +1325,7 @@ export const messages = {
         saveWithProfile: "Save + update saved model",
         saveWithProfileTitle: "Also rewrite the selected saved model with the current form values (its name is kept)",
         saveNote:
-          "Rewrites .env (applied to the process immediately and persisted to file). Connects with the new model from the next “New game”. “Save + update saved model” also rewrites the selected entry (model, endpoint, API key), so you no longer have to delete and re-create it just to change a key.",
+          "Rewrites the connection settings (applied to the process immediately and persisted — the API key to the OS credential store, everything else to .env). Connects with the new model from the next “New game”. “Save + update saved model” also rewrites the selected entry (model, endpoint, API key), so you no longer have to delete and re-create it just to change a key.",
         summaryHeading: "Synopsis-summary model",
         summarySameAsGm: "Same as GM (default)",
         summaryTimeout: "Time limit for one summary",
@@ -1364,7 +1364,7 @@ export const messages = {
         jevDesc:
           "While developer mode is on, the GM's narration is checked against the board every turn, and the chat log shows a ⚠ for things like someone speaking who isn't here, handing over an item you don't have, or contradicting a character's profile (it only warns; the turn is never blocked). Meant for test plays while authoring a package.",
         jevHelp1:
-          "Jev is TypeSafe's judgment-only model and needs its own account and API token. Each check sends Jev that turn's narration, the preceding narration, character profiles, inventories and similar board data.",
+          "Jev is TypeSafe's judgment-only model and needs its own account and API token. Each check sends Jev that turn's narration, the preceding narration, character profiles, inventories and similar board data. The API token is stored in the OS credential store (the account ID in .env).",
         jevHelp2:
           "Every result is logged to app_data/logs/consistency.jsonl, one line per turn (the narration text itself is not written). As a rough cost, 43 turns came to about ¥9.",
         jevAccount: "Account ID",
@@ -1388,7 +1388,7 @@ export const messages = {
         line3Pre: "・In the package list you can add/remove distribution folder paths (e.g.",
         line3Post: ").",
         line4:
-          "・The AI Model tab lets you switch the endpoint, model, and API key (rewrites .env).",
+          "・The AI Model tab lets you switch the endpoint, model, and API key (the key is stored in the OS credential store).",
         line5:
           "・The record icon in the title bar saves the conversation log as text (destination set in the “Log” tab).",
         tagline:
@@ -1425,14 +1425,14 @@ export const messages = {
         loadFailed: "Load failed: {error}",
         devOn: "Developer mode ON (applies from your next action)",
         devOff: "Developer mode OFF",
-        llmSaved: "Saved (persisted to .env / applies from the next “New game”).",
-        profileShowing: "Showing “{name}” (press “Save” to write it to .env)",
+        llmSaved: "Saved (applies from the next “New game”).",
+        profileShowing: "Showing “{name}” (press “Save” to apply it)",
         nameRequired: "Please enter a display name",
-        profileAdded: "Added “{name}” (press “Save” to write it to .env)",
+        profileAdded: "Added “{name}” (press “Save” to apply it)",
         profileAddedPricingIncomplete: "Registered “{name}”. Pricing is saved only when all three fields are filled (not saved this time).",
         selectToDelete: "Please select a model to delete",
         selectToUpdate: "Please select a saved model to rewrite",
-        profileUpdated: "Rewrote “{name}” (also written to .env)",
+        profileUpdated: "Rewrote “{name}” (also applied to the connection)",
         profileUpdatedPricingIncomplete: "Updated “{name}”. Pricing is saved only when all three fields are filled (not saved this time).",
         confirmDelete: "Delete the saved model “{name}”?",
         profileDeleted: "Deleted “{name}”",
