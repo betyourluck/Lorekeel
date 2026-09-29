@@ -2851,7 +2851,7 @@ fn profile_env_updates(prefix: &str, base_url: String, model: String, api_key: S
     ]
 }
 
-/// プロファイル別 LLM 設定の書き込み実体 (プロセス env 即時 + app_data/.env 永続)。
+/// プロファイル別 LLM 設定の書き込み実体 (プロセス env 即時 + 永続化。鍵は OS の資格情報ストア・他は app_data/.env = spec 34)。
 fn set_profile_llm_config(
     app: &tauri::AppHandle,
     prefix: &str,
@@ -2914,7 +2914,8 @@ fn jev_env_updates(account_id: &str, api_token: &str) -> Vec<(String, String)> {
     ]
 }
 
-/// Jev の鍵を保存する (プロセス env 即時 + app_data/.env 永続 = 開発者モードと同じ経路)。
+/// Jev の鍵を保存する (プロセス env 即時 + 永続化 = 開発者モードと同じ経路)。spec 34: `JEV_API_TOKEN` は
+/// OS の資格情報ストアへ、`JEV_ACCOUNT_ID` (識別子で秘密ではない) は app_data/.env へ振り分けられる。
 /// `JevClient::from_env` は毎ターン env を読むので**次のターンから効く**。空で保存すれば無効。
 #[tauri::command]
 fn set_jev_config(app: tauri::AppHandle, account_id: String, api_token: String) -> Result<(), String> {
