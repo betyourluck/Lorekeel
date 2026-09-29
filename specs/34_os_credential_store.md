@@ -1,6 +1,6 @@
 # spec 34 — API キーを OS の資格情報ストアへ
 
-**Status**: 実装済み (2026-09-30 起草・同日実装)。残 = 実機での移行確認 (ユーザー) / macOS・Linux 実機は未確認。
+**Status**: Done (2026-09-30 起草・同日実装・Windows 実機 Green・v0.7.0 で配布・PRIVACY.md 公開・winget の PR へ PrivacyUrl)。macOS・Linux 実機は未確認。
 
 ---
 
