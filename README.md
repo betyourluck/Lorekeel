@@ -99,6 +99,10 @@ Lorekeel/
 └── CLAUDE.md            # Project ledger (architecture, north star, mandates)
 ```
 
+## Privacy
+
+Lorekeel collects no telemetry. API keys are stored in your OS credential store, and game content is sent only to the AI provider you configure. See [PRIVACY.md](PRIVACY.md) for what is stored, what is sent, and how to delete it.
+
 ## License
 
 [MIT License](LICENSE). The engine and the bundled scenarios can be freely used, modified, and redistributed. **It's worth something only when it's used** — fork it and build your own world.
