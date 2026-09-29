@@ -7,7 +7,10 @@
  */
 
 // プロファイルから選んで「決定」で .env へ反映する形にする。**.env の書き込みは決定時のみ**
-// (選択変更だけでは書かない)。API キーは平文で localStorage に入る (BYO-key・ローカル app)。
+// (選択変更だけでは書かない)。
+// **API キーは localStorage に置かない (spec 34)** — 鍵は OS の資格情報ストア (`profile:<id>`) に居て、
+// 設定ダイアログを開いたときにメモリへ取り寄せる (`profileSecrets.ts`)。localStorage は
+// 設定ミラー (settings.json) へ写されるので、ここに書くと平文の置き場が 2 つ増える。
 import { readContextTokens } from "./prices";
 import { readPricing, type Pricing } from "./usage";
 
@@ -17,7 +20,7 @@ export interface AiModelProfile {
   name: string; // 表示名 (重複可)
   model: string; // LLM_MODEL
   baseUrl: string; // LLM_BASE_URL
-  apiKey: string; // LLM_API_KEY (平文・表示時マスク)
+  apiKey: string; // LLM_API_KEY。**メモリ上だけ** — localStorage には空で書く (spec 34・表示時マスク)
   useTools: boolean; // LLM_USE_TOOLS (ツール呼び出し)
   // 以下 2 つは **モデルごとに変えたい調整** (2026-09-10 ユーザー要望「他のモデルでは
   // LLM_EFFORT を効かせて Opus では効かせない」)。どちらも **空文字 = 未設定**で、
@@ -57,8 +60,20 @@ export function loadAiProfiles(): AiModelProfile[] {
     return [];
   }
 }
-export function saveAiProfiles(list: AiModelProfile[]) {
-  localStorage.setItem(AI_PROFILES_KEY, JSON.stringify(list));
+/** localStorage へ書く。**既定では `apiKey` を空にして書く** (spec 34)。`keepKeys` は資格情報ストアが
+ *  使えない環境の退避だけに使う (`persistProfiles` の失敗経路) — 鍵を黙って捨てないため。 */
+export function saveAiProfiles(list: AiModelProfile[], opts: { keepKeys?: boolean } = {}) {
+  const rows = opts.keepKeys ? list : list.map((p) => ({ ...p, apiKey: "" }));
+  localStorage.setItem(AI_PROFILES_KEY, JSON.stringify(rows));
+}
+/** localStorage に鍵が残っている登録 (spec 34 より前の形式・または退避中)。起動時の移行が拾う。 */
+export function profilesWithStoredKeys(list: AiModelProfile[]): AiModelProfile[] {
+  return list.filter((p) => p.apiKey.trim() !== "");
+}
+/** 資格情報ストアから取り寄せた鍵をメモリ上の登録へ重ねる。ストアに無い登録は手元の値のまま
+ *  (退避中の鍵・旧形式の鍵を消さない)。 */
+export function mergeProfileSecrets(list: AiModelProfile[], secrets: Record<string, string>): AiModelProfile[] {
+  return list.map((p) => (secrets[p.id] !== undefined ? { ...p, apiKey: secrets[p.id] } : p));
 }
 // アプリ側の主キー生成 (name 重複を許すため)。WebView2 は crypto.randomUUID 対応。
 export function newProfileId(): string {

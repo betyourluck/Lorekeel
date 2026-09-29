@@ -22,7 +22,6 @@ import {
   MESSAGE_FONTS,
   useGameStore,
   loadAiProfiles,
-  saveAiProfiles,
   newProfileId,
   selectionAfterSave,
   type AiModelProfile,
@@ -66,6 +65,7 @@ import {
 } from "../imageGen";
 // 卓の音声 (mesh)。この file の `voice` は TTS 設定の ref なので別名で取る。
 import { listMicDevices, micDeviceId, voice as voiceMesh } from "../voice";
+import { deleteProfileSecret, hydrateProfiles, persistProfiles } from "../profileSecrets";
 
 const emit = defineEmits<{ (e: "close"): void; (e: "open-tour"): void }>();
 const game = useGameStore();
@@ -208,6 +208,7 @@ async function saveJev() {
     await invoke("set_jev_config", { accountId: jevAccount.value, apiToken: jevToken.value });
     jevSaved.value = { account: jevAccount.value.trim(), token: jevToken.value.trim() };
     jevStatus.value = t("settings.dev.jevSaved");
+    void loadSecretStatus();
   } catch (e) {
     jevStatus.value = t("settings.status.saveFailed", { error: String(e) });
   }
@@ -234,6 +235,40 @@ function setSlot(patch: Partial<ProviderSlot>) {
 function onImageProviderChange(p: ImageProvider) {
   setImg({ provider: p });
 }
+// --- API キーの保存先 (spec 34) ---
+// 鍵は OS の資格情報ストアに置く。使えない環境では .env / localStorage に平文で退避するので、
+// **退避中であることを画面で言う** (真実は backend が .env から数える + 登録モデルの退避はこの画面が知る)。
+const secretFallbackKeys = ref<string[]>([]);
+const profileKeyFallback = ref(false);
+const deleteKeysStatus = ref("");
+async function loadSecretStatus() {
+  try {
+    const st = await invoke<{ fallback_keys: string[] }>("secret_store_status");
+    secretFallbackKeys.value = st.fallback_keys;
+  } catch {
+    /* Tauri 外 */
+  }
+}
+/** 登録の保存 (3 経路共通)。退避したら状態行に出す。 */
+async function saveProfiles(list: AiModelProfile[]) {
+  profileKeyFallback.value = (await persistProfiles(list)) === "fallback";
+}
+async function deleteAllKeys() {
+  if (!(await game.askConfirm(t("settings.model.deleteKeysConfirm"), t("store.deleteConfirmOk")))) return;
+  try {
+    await invoke("delete_all_secrets", { profileIds: profiles.value.map((p) => p.id) });
+    profiles.value = profiles.value.map((p) => ({ ...p, apiKey: "" }));
+    await saveProfiles(profiles.value);
+    llm.value = { ...llm.value, api_key: "" };
+    imageKeys.value = { openai: "", gemini: "" };
+    jevToken.value = "";
+    jevSaved.value = { ...jevSaved.value, token: "" };
+    deleteKeysStatus.value = t("settings.model.deleteKeysDone");
+  } catch (e) {
+    deleteKeysStatus.value = t("settings.status.saveFailed", { error: String(e) });
+  }
+  await loadSecretStatus();
+}
 const imageKeys = ref<{ openai: string; gemini: string }>({ openai: "", gemini: "" });
 const imageKeyStatus = ref("");
 async function loadImageKeys() {
@@ -249,6 +284,7 @@ async function saveImageKey() {
   try {
     await invoke("set_image_api_key", { provider: p, apiKey: imageKeys.value[p].trim() });
     imageKeyStatus.value = t("settings.image.keySaved");
+    void loadSecretStatus();
   } catch (e) {
     imageKeyStatus.value = t("settings.status.saveFailed", { error: String(e) });
   }
@@ -563,7 +599,7 @@ function cancelAddForm() {
   showAddForm.value = false;
 }
 // 下のフォームの現在値 + 入力した表示名で新規プロファイルを登録し、選択状態にする。
-function saveDraft() {
+async function saveDraft() {
   const name = draftName.value.trim();
   if (!name) {
     llmStatus.value = t("settings.status.nameRequired");
@@ -582,7 +618,7 @@ function saveDraft() {
     contextTokens: parseContextTokens(contextForm.value),
   };
   profiles.value = [...profiles.value, profile];
-  saveAiProfiles(profiles.value);
+  await saveProfiles(profiles.value);
   selectedProfileId.value = profile.id;
   showAddForm.value = false;
   const typed = [pricingForm.value.input, pricingForm.value.cacheRead, pricingForm.value.output].some((s) => s.trim() !== "");
@@ -601,7 +637,8 @@ async function deleteProfile() {
   }
   if (!(await game.askConfirm(t("settings.status.confirmDelete", { name: p.name }), t("store.deleteConfirmOk")))) return;
   profiles.value = profiles.value.filter((x) => x.id !== p.id);
-  saveAiProfiles(profiles.value);
+  await deleteProfileSecret(p.id);
+  await saveProfiles(profiles.value);
   selectedProfileId.value = "";
   llmStatus.value = t("settings.status.profileDeleted", { name: p.name });
 }
@@ -755,6 +792,7 @@ async function saveLlm(sync = true): Promise<boolean> {
     llmStatus.value = t("settings.status.llmSaved");
     if (sync) syncSelectionToConfig(); // 直接編集が登録済みと一致すればコンボの選択に反映
     game.refreshLlmModel(); // TitleBar のバッジ + ウィンドウタイトルへ即時反映
+    void loadSecretStatus(); // spec 34: 鍵が資格情報ストアに入ったか (.env へ退避したか)
     return true;
   } catch (e) {
     llmWarnings.value = []; // 書けていないので前回の警告は嘘になる
@@ -791,7 +829,7 @@ async function saveLlmAndProfile() {
     contextTokens,
   };
   profiles.value = profiles.value.map((x) => (x.id === p.id ? updated : x));
-  saveAiProfiles(profiles.value);
+  await saveProfiles(profiles.value);
   selectedProfileId.value = p.id; // 一致するようになったので選択が戻る
   // このモデルをあらすじ要約に使っているなら、そちらの env も追随させる。
   // (追随させないと GM だけ直り、要約は古いキーのまま静かに失敗し続ける)
@@ -805,7 +843,9 @@ async function saveLlmAndProfile() {
 }
 
 onMounted(async () => {
-  profiles.value = loadAiProfiles();
+  // spec 34: 鍵は localStorage に無いので資格情報ストアから取り寄せてから突き合わせる
+  // (取り寄せる前に syncSelectionToConfig を走らせると、鍵が空の登録はどれも .env と一致しない)。
+  profiles.value = await hydrateProfiles(loadAiProfiles());
   await loadLlm(); // .env を読んでから一致プロファイルを選択状態にする
   syncSelectionToConfig();
   loadDefaultLogDir();
@@ -818,6 +858,7 @@ onMounted(async () => {
   void refreshSheets();
   game.refreshDevMode();
   void loadJev();
+  void loadSecretStatus();
   void refreshMicDevices(); // 開いた時点で候補を出す (権限前は名前が空 = 案内を出す)
 });
 </script>
@@ -1630,6 +1671,20 @@ onMounted(async () => {
               <input v-model="llm.api_key" type="password" :placeholder="t('settings.model.apiKeyPlaceholder')"
                 class="mt-1 block w-full rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none" />
             </label>
+            <!-- spec 34: 鍵の保存先。退避中 (資格情報ストアが使えない) なら何が平文かを言う。 -->
+            <div class="flex flex-wrap items-center gap-2 text-xs" data-testid="key-store-status">
+              <span v-if="secretFallbackKeys.length === 0 && !profileKeyFallback" class="text-parchment/60">
+                {{ t("settings.model.keysInStore") }}
+              </span>
+              <span v-else class="text-warn">
+                {{ t("settings.model.keysFallback", { keys: [...secretFallbackKeys, ...(profileKeyFallback ? [t("settings.model.keysFallbackProfiles")] : [])].join(", ") }) }}
+              </span>
+              <button type="button" class="ml-auto rounded px-2 py-0.5 text-parchment/70 hover:text-warn hover:bg-warn/10"
+                data-testid="delete-all-keys" @click="deleteAllKeys">
+                {{ t("settings.model.deleteKeys") }}
+              </button>
+            </div>
+            <p v-if="deleteKeysStatus" class="text-xs text-parchment/60">{{ deleteKeysStatus }}</p>
             <label class="flex items-center gap-2 text-sm text-parchment/70">
               <input v-model="llm.use_tools" type="checkbox" class="accent-ember" />
               {{ t("settings.model.useTools") }}

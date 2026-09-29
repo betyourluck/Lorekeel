@@ -6,7 +6,15 @@
  * **前方互換** (欄を持たない古い登録が壊れない) と、**選択表示が嘘をつかない**こと。
  */
 import { beforeEach, describe, expect, it } from "vitest";
-import { loadAiProfiles, profileMatchesConfig, selectionAfterSave, type AiModelProfile } from "./aiProfiles";
+import {
+  loadAiProfiles,
+  mergeProfileSecrets,
+  profileMatchesConfig,
+  profilesWithStoredKeys,
+  saveAiProfiles,
+  selectionAfterSave,
+  type AiModelProfile,
+} from "./aiProfiles";
 
 /** node 環境なので localStorage を素朴に立てる (loadAiProfiles はグローバルを直に見る)。 */
 function stubStorage(init: Record<string, string> = {}) {
@@ -132,5 +140,39 @@ describe("loadAiProfiles", () => {
     expect(a.contextTokens).toBe(1048576);
     expect(b.contextTokens).toBeUndefined();
     expect(c.contextTokens).toBeUndefined();
+  });
+});
+
+describe("API キーを localStorage に置かない (spec 34)", () => {
+  const base: AiModelProfile = {
+    id: "a",
+    name: "A",
+    model: "m",
+    baseUrl: "u",
+    apiKey: "sk-a",
+    useTools: true,
+    effort: "",
+    maxTokens: "",
+  };
+  beforeEach(() => stubStorage());
+
+  it("既定の保存は鍵を空にして書く (設定ミラーにも平文が写らない)", () => {
+    saveAiProfiles([base]);
+    const raw = localStorage.getItem("kataribe.aiModelProfiles") ?? "";
+    expect(raw).not.toContain("sk-a");
+    expect(loadAiProfiles()[0].apiKey).toBe("");
+  });
+
+  it("退避 (keepKeys) のときだけ鍵ごと書く — 資格情報ストアが使えない環境で鍵を捨てない", () => {
+    saveAiProfiles([base], { keepKeys: true });
+    expect(loadAiProfiles()[0].apiKey).toBe("sk-a");
+  });
+
+  it("鍵の残った登録 (旧形式・退避中) を拾い、取り寄せた鍵を重ねる", () => {
+    const b = { ...base, id: "b", apiKey: "" };
+    expect(profilesWithStoredKeys([base, b]).map((p) => p.id)).toEqual(["a"]);
+    // ストアに無い登録は手元の値のまま (退避中の鍵を消さない)
+    const merged = mergeProfileSecrets([base, b], { b: "sk-b" });
+    expect(merged.map((p) => p.apiKey)).toEqual(["sk-a", "sk-b"]);
   });
 });

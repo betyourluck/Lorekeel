@@ -16,6 +16,7 @@ mod editor_vocab;
 mod image_gen;
 mod ref_stock;
 mod rename;
+mod secret_store;
 pub use rename::migrate_webview_storage;
 mod relay;
 mod settings_store;
@@ -1359,11 +1360,7 @@ fn set_image_api_key(
         return Ok(()); // comfy は鍵を持たない
     };
     std::env::set_var(key_name, &api_key);
-    let path = config_env_path(&app).ok_or_else(|| "app_data_dir を解決できない".to_string())?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("設定フォルダの作成に失敗: {e}"))?;
-    }
-    upsert_env(&path, &[(key_name.to_string(), api_key)]).map_err(|e| format!(".env の保存に失敗: {e}"))
+    persist_config(&app, &[(key_name.to_string(), api_key)]).map(|_| ())
 }
 
 /// 接続テスト (画像は作らない)。
@@ -2708,16 +2705,15 @@ fn set_llm_config(
         ("LLM_EFFORT".to_string(), effort),
         ("LLM_MAX_TOKENS".to_string(), max_tokens),
     ];
-    let path = config_env_path(&app).ok_or_else(|| "app_data_dir を解決できない".to_string())?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("設定フォルダの作成に失敗: {e}"))?;
-    }
-    upsert_env(&path, &updates).map_err(|e| format!(".env の保存に失敗: {e}"))?;
+    let store_warnings = persist_config(&app, &updates)?;
     // 3) 組み合わせの警告を返す (`LlmConfig::warnings`)。**この呼び出しが production 初**
     //    — 守り自体は spec 12 Phase B から在ったのにテストからしか呼ばれておらず、
     //    「思考が本文を食い潰す」も「effort + temperature で 400」も人に届いていなかった。
     //    設定を書き換えた直後がこれを見せる唯一の適時。
-    Ok(llm_client::LlmConfig::from_env().map(|c| c.warnings()).unwrap_or_default())
+    //    spec 34: 鍵を資格情報ストアに置けず .env へ退避したときも同じ経路で言う。
+    let mut warnings = store_warnings;
+    warnings.extend(llm_client::LlmConfig::from_env().map(|c| c.warnings()).unwrap_or_default());
+    Ok(warnings)
 }
 
 /// あらすじ要約用 LLM 設定の view (spec 10)。enabled=false なら GM と同じ client を共用する。
@@ -2760,11 +2756,7 @@ fn set_recent_turns(app: tauri::AppHandle, turns: u32) -> Result<(), String> {
         turns.min(harness::RECENT_NARRATIONS_MAX as u32).to_string()
     };
     std::env::set_var(&key, &v);
-    let path = config_env_path(&app).ok_or_else(|| "app_data_dir を解決できない".to_string())?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("設定フォルダの作成に失敗: {e}"))?;
-    }
-    upsert_env(&path, &[(key, v)]).map_err(|e| format!(".env の保存に失敗: {e}"))
+    persist_config(&app, &[(key, v)]).map(|_| ())
 }
 
 /// 現在のあらすじ要約用設定を返す。設定「AIモデル」タブの初期値。
@@ -2796,12 +2788,7 @@ fn get_summary_llm_config() -> SummaryLlmConfigView {
 fn set_summary_timeout(app: tauri::AppHandle, secs: u64) -> Result<(), String> {
     let v = if secs == 0 { String::new() } else { secs.to_string() };
     std::env::set_var("SUMMARY_LLM_TIMEOUT_SECS", &v);
-    let path = config_env_path(&app).ok_or_else(|| "app_data_dir を解決できない".to_string())?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("設定フォルダの作成に失敗: {e}"))?;
-    }
-    upsert_env(&path, &[("SUMMARY_LLM_TIMEOUT_SECS".to_string(), v)])
-        .map_err(|e| format!(".env の保存に失敗: {e}"))
+    persist_config(&app, &[("SUMMARY_LLM_TIMEOUT_SECS".to_string(), v)]).map(|_| ())
 }
 
 /// あらすじ要約用 LLM 設定を更新する (`set_llm_config` と同経路 = プロセス env 即時 +
@@ -2876,11 +2863,7 @@ fn set_profile_llm_config(
     for (k, v) in &updates {
         std::env::set_var(k, v);
     }
-    let path = config_env_path(app).ok_or_else(|| "app_data_dir を解決できない".to_string())?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("設定フォルダの作成に失敗: {e}"))?;
-    }
-    upsert_env(&path, &updates).map_err(|e| format!(".env の保存に失敗: {e}"))
+    persist_config(app, &updates).map(|_| ())
 }
 
 /// env フラグの truthy 判定 (harness::prompt::is_truthy と同基準)。`1`/`true`/`yes`/`on`。
@@ -2901,12 +2884,7 @@ fn get_dev_mode() -> bool {
 fn set_dev_mode(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     let v = if enabled { "true" } else { "false" };
     std::env::set_var(harness::env_name("DEV_MODE"), v);
-    let path = config_env_path(&app).ok_or_else(|| "app_data_dir を解決できない".to_string())?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("設定フォルダの作成に失敗: {e}"))?;
-    }
-    upsert_env(&path, &[(harness::env_name("DEV_MODE"), v.to_string())])
-        .map_err(|e| format!(".env の保存に失敗: {e}"))
+    persist_config(&app, &[(harness::env_name("DEV_MODE"), v.to_string())]).map(|_| ())
 }
 
 /// Jev (一貫性検査 = spec 32) の鍵の view。設定「開発者」タブの初期値。
@@ -2944,11 +2922,7 @@ fn set_jev_config(app: tauri::AppHandle, account_id: String, api_token: String) 
     for (k, v) in &updates {
         std::env::set_var(k, v);
     }
-    let path = config_env_path(&app).ok_or_else(|| "app_data_dir を解決できない".to_string())?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("設定フォルダの作成に失敗: {e}"))?;
-    }
-    upsert_env(&path, &updates).map_err(|e| format!(".env の保存に失敗: {e}"))
+    persist_config(&app, &updates).map(|_| ())
 }
 
 /// UI 設定ミラーの置き場: `app_data_dir/settings.json` (.env/saves/logs と同じ per-user)。
@@ -2975,35 +2949,79 @@ fn save_ui_settings(app: tauri::AppHandle, json: String) -> Result<(), String> {
     settings_store::write_atomic(&path, &json)
 }
 
-/// `.env` の指定キーを upsert する。既存行は値だけ差し替え、無ければ末尾に追記。
-/// コメント行・他キー・順序は保つ (鍵以外の設定を壊さない)。
+/// 登録モデルの鍵を取り寄せる (spec 34)。設定ダイアログを開いたときに呼ぶ。ストアに無い id は含めない。
+#[tauri::command]
+fn get_profile_secrets(ids: Vec<String>) -> Result<std::collections::BTreeMap<String, String>, String> {
+    secret_store::get_profile_secrets(&secret_store::KeyringStore::new(), &ids)
+}
+
+/// 登録モデルの鍵を保存する (空は削除)。失敗したら Err — frontend は localStorage への退避に切り替える。
+#[derive(Deserialize)]
+struct ProfileSecret {
+    id: String,
+    key: String,
+}
+
+#[tauri::command]
+fn set_profile_secrets(entries: Vec<ProfileSecret>) -> Result<(), String> {
+    let pairs: Vec<(String, String)> = entries.into_iter().map(|e| (e.id, e.key)).collect();
+    secret_store::set_profile_secrets(&secret_store::KeyringStore::new(), &pairs)
+}
+
+#[tauri::command]
+fn delete_profile_secrets(ids: Vec<String>) -> Result<(), String> {
+    secret_store::delete_profile_secrets(&secret_store::KeyringStore::new(), &ids)
+}
+
+/// 鍵の保存状態 (spec 34)。`fallback_keys` = 資格情報ストアが使えず `.env` に平文で退避している鍵。
+/// **真実は `.env` から数える** (状態を別に持つと file とずれる)。
+#[derive(Serialize)]
+struct SecretStoreStatus {
+    fallback_keys: Vec<String>,
+}
+
+#[tauri::command]
+fn secret_store_status(app: tauri::AppHandle) -> SecretStoreStatus {
+    let fallback_keys = config_env_path(&app).map(|p| secret_store::fallback_keys(&p)).unwrap_or_default();
+    SecretStoreStatus { fallback_keys }
+}
+
+/// 保存した API キーをすべて消す (spec 34)。6 つの env 鍵 + 渡された登録モデルの鍵を
+/// ストアから消し、プロセス env を空にし、`.env` に空行を書く (退避していた平文もこれで消える)。
+#[tauri::command]
+fn delete_all_secrets(app: tauri::AppHandle, profile_ids: Vec<String>) -> Result<(), String> {
+    let updates: Vec<(String, String)> =
+        secret_store::SECRET_ENV_KEYS.iter().map(|k| (k.to_string(), String::new())).collect();
+    for (k, _) in &updates {
+        std::env::set_var(k, "");
+    }
+    let warnings = persist_config(&app, &updates)?;
+    secret_store::delete_profile_secrets(&secret_store::KeyringStore::new(), &profile_ids)?;
+    if warnings.is_empty() {
+        Ok(())
+    } else {
+        Err(warnings.join(" / "))
+    }
+}
+
+/// `.env` の書き込みの唯一の出口 (spec 34)。鍵は OS の資格情報ストアへ、鍵以外は `.env` へ
+/// 振り分ける ([`secret_store::persist_env`])。返り値は警告 (ストアが使えず `.env` へ退避した鍵)。
+/// **警告は必ず stderr にも出す** — 返り値を捨てる command があるので、ここで黙らせない
+/// (failures #98 の一族)。画面側の真実は `secret_store_status` が `.env` から数える。
+fn persist_config(app: &tauri::AppHandle, updates: &[(String, String)]) -> Result<Vec<String>, String> {
+    let path = config_env_path(app).ok_or_else(|| "app_data_dir を解決できない".to_string())?;
+    let warnings = secret_store::persist_env(&secret_store::KeyringStore::new(), &path, updates)
+        .map_err(|e| format!(".env の保存に失敗: {e}"))?;
+    for w in &warnings {
+        eprintln!("[secret_store] {w}");
+    }
+    Ok(warnings)
+}
+
+/// `.env` の指定キーを upsert する (テスト用。production の書き込みは [`persist_config`] を通す)。
+#[cfg(test)]
 fn upsert_env(path: &Path, updates: &[(String, String)]) -> std::io::Result<()> {
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let mut out: Vec<String> = Vec::new();
-    let mut seen: Vec<String> = Vec::new();
-    for line in existing.lines() {
-        let t = line.trim_start();
-        let mut replaced = false;
-        if !t.starts_with('#') {
-            if let Some(eq) = t.find('=') {
-                let key = t[..eq].trim_end();
-                if let Some((k, v)) = updates.iter().find(|(k, _)| k.as_str() == key) {
-                    out.push(format!("{k}={v}"));
-                    seen.push(k.clone());
-                    replaced = true;
-                }
-            }
-        }
-        if !replaced {
-            out.push(line.to_string());
-        }
-    }
-    for (k, v) in updates {
-        if !seen.contains(k) {
-            out.push(format!("{k}={v}"));
-        }
-    }
-    std::fs::write(path, out.join("\n") + "\n")
+    secret_store::rewrite_env(path, updates, &[])
 }
 
 // =============================================================================
@@ -5575,6 +5593,18 @@ pub fn run() {
                     }
                 }
                 app.manage(notice);
+                // spec 34: .env に平文で残っている鍵を資格情報ストアへ移し (読み戻して一致した
+                // ものだけ .env から消す)、ストアにある鍵をプロセス env へ載せる。**.env を読んだ後**
+                // でなければならない — ストアの値が .env の値 (移行前の平文・dev の repo .env) に勝つ。
+                let store = secret_store::KeyringStore::new();
+                if let Some(p) = config_env_path(app.handle()) {
+                    for w in secret_store::migrate_env_secrets(&store, &p) {
+                        eprintln!("[secret_store] {w}");
+                    }
+                }
+                for w in secret_store::load_secrets_into_env(&store, secret_store::SECRET_ENV_KEYS) {
+                    eprintln!("[secret_store] {w}");
+                }
                 // spec 30: 利用量 jsonl の置き場 (固定。会話ログの保存先設定には従わせない)。
                 app.state::<UsageState>().set_log_path(dir.join("logs").join("usage.jsonl"));
             }
@@ -5593,6 +5623,11 @@ pub fn run() {
             save_slot,
             load_slot,
             get_llm_config,
+            get_profile_secrets,
+            set_profile_secrets,
+            delete_profile_secrets,
+            secret_store_status,
+            delete_all_secrets,
             set_llm_config,
             get_summary_llm_config,
             set_summary_llm_config,

@@ -23,6 +23,7 @@ import { describe, expect, it } from "vitest";
 import type { AiModelProfile } from "../aiProfiles";
 import { t } from "../i18n";
 import { ipcCalls, mountWith, type IpcTable } from "../test/mount";
+import { useGameStore } from "../stores/game";
 import SettingsDialog from "./SettingsDialog.vue";
 
 /** backend 側の .env の写し。set_llm_config で書き換わり get_llm_config で読める。 */
@@ -46,8 +47,22 @@ const OPUS: AiModelProfile = {
   maxTokens: "",
 };
 
-function ipcFor(env: EnvView): IpcTable {
+/** 資格情報ストアの写し (spec 34)。登録モデルの鍵は `profile:<id>` ではなく id をそのまま鍵にして持つ。 */
+export type Keyring = Record<string, string>;
+
+function ipcFor(env: EnvView, keyring: Keyring = {}): IpcTable {
   return {
+    // --- spec 34: 登録モデルの鍵は資格情報ストア ---
+    get_profile_secrets: (a) =>
+      Object.fromEntries(((a?.ids as string[]) ?? []).filter((id) => id in keyring).map((id) => [id, keyring[id]])),
+    set_profile_secrets: (a) => {
+      for (const e of (a?.entries as { id: string; key: string }[]) ?? []) {
+        if (e.key) keyring[e.id] = e.key;
+        else delete keyring[e.id];
+      }
+      return null;
+    },
+    secret_store_status: () => ({ fallback_keys: [] }),
     // --- 開いた瞬間に投げるもの (onMounted のローダー群) ---
     get_llm_config: () => ({ ...env }),
     get_default_log_dir: () => "C:\\logs",
@@ -75,8 +90,11 @@ function ipcFor(env: EnvView): IpcTable {
 }
 
 /** 登録 1 件と、それに一致する .env を置いて設定を開き、AIモデル タブへ移る。 */
-async function openModelTab(): Promise<{ wrapper: VueWrapper; env: EnvView }> {
-  localStorage.setItem("kataribe.aiModelProfiles", JSON.stringify([OPUS]));
+async function openModelTab(): Promise<{ wrapper: VueWrapper; env: EnvView; keyring: Keyring }> {
+  // spec 34 の形: localStorage の登録に鍵は無く、鍵は資格情報ストアに居る。開いたときに取り寄せてから
+  // 突き合わせないと、鍵が空の登録は .env と一致せず選択が外れる (下の最初の expect が落ちる)。
+  localStorage.setItem("kataribe.aiModelProfiles", JSON.stringify([{ ...OPUS, apiKey: "" }]));
+  const keyring: Keyring = { [OPUS.id]: OPUS.apiKey };
   const env: EnvView = {
     base_url: OPUS.baseUrl,
     model: OPUS.model,
@@ -85,13 +103,13 @@ async function openModelTab(): Promise<{ wrapper: VueWrapper; env: EnvView }> {
     effort: "",
     max_tokens: "",
   };
-  const wrapper = mountWith(SettingsDialog, {}, ipcFor(env));
+  const wrapper = mountWith(SettingsDialog, {}, ipcFor(env, keyring));
   await flushPromises();
   const tab = wrapper.findAll("button").find((b) => b.text() === t("settings.tabs.model"));
   if (!tab) throw new Error("AIモデル のタブが見つからない");
   await tab.trigger("click");
   await flushPromises();
-  return { wrapper, env };
+  return { wrapper, env, keyring };
 }
 
 const pricingInput = (w: VueWrapper, placeholder: string) => w.get(`input[placeholder="${placeholder}"]`);
@@ -128,7 +146,7 @@ function expectFormKept(w: VueWrapper): void {
 
 describe("保存 + 登録モデルを更新 (#103)", () => {
   it("単価とコンテキスト長が、フォームにも登録簿にも残る", async () => {
-    const { wrapper } = await openModelTab();
+    const { wrapper, keyring } = await openModelTab();
     // 開いた時点で .env に一致する登録が選ばれている (更新ボタンが押せる前提)
     const select = wrapper.findAll("select").find((s) => s.find(`option[value="${OPUS.id}"]`).exists());
     expect((select?.element as HTMLSelectElement | undefined)?.value).toBe(OPUS.id);
@@ -140,6 +158,9 @@ describe("保存 + 登録モデルを更新 (#103)", () => {
     const p = storedProfile();
     expect(p.pricing).toEqual({ inputPerMtokUsd: 3, cacheReadPerMtokUsd: 0.3, outputPerMtokUsd: 15 });
     expect(p.contextTokens).toBe(200000);
+    // spec 34: 保存しても localStorage に鍵は書かれず、鍵は資格情報ストアに居る
+    expect(p.apiKey).toBe("");
+    expect(keyring[OPUS.id]).toBe(OPUS.apiKey);
   });
 
   it("思考の深さを変えて押しても同じ (残り半分 = 一致が外れる経路)", async () => {
@@ -158,3 +179,51 @@ describe("保存 + 登録モデルを更新 (#103)", () => {
     expectFormKept(wrapper);
   });
 });
+
+describe("API キーの保存先 (spec 34)", () => {
+  it("資格情報ストアが使えなければ鍵ごと localStorage へ退避し、そう言う", async () => {
+    const { wrapper } = await openModelTabWith({
+      set_profile_secrets: () => {
+        throw new Error("unavailable");
+      },
+    });
+    await typePricingAndSave(wrapper);
+    expect(storedProfile().apiKey).toBe(OPUS.apiKey); // 鍵を黙って捨てない
+    const status = wrapper.get('[data-testid="key-store-status"]').text();
+    expect(status).toContain(t("settings.model.keysFallbackProfiles"));
+  });
+
+  it("「保存した API キーをすべて削除」は登録の id を渡し、画面の鍵も空にする", async () => {
+    const { wrapper } = await openModelTabWith({ delete_all_secrets: () => null });
+    await wrapper.get('[data-testid="delete-all-keys"]').trigger("click");
+    await flushPromises();
+    // 確認ダイアログ (store.askConfirm) を承認する
+    const game = useGameStore();
+    game.resolveConfirm(true);
+    await flushPromises();
+    const call = ipcCalls.find((c) => c.cmd === "delete_all_secrets");
+    expect(call?.args?.profileIds).toEqual([OPUS.id]);
+    expect((wrapper.get('input[type="password"]').element as HTMLInputElement).value).toBe("");
+    expect(storedProfile().apiKey).toBe("");
+  });
+});
+
+/** openModelTab と同じ盤面で、偽装の表の一部を差し替えて開く。 */
+async function openModelTabWith(extra: IpcTable): Promise<{ wrapper: VueWrapper }> {
+  localStorage.setItem("kataribe.aiModelProfiles", JSON.stringify([{ ...OPUS, apiKey: "" }]));
+  const env: EnvView = {
+    base_url: OPUS.baseUrl,
+    model: OPUS.model,
+    api_key: OPUS.apiKey,
+    use_tools: true,
+    effort: "",
+    max_tokens: "",
+  };
+  const wrapper = mountWith(SettingsDialog, {}, { ...ipcFor(env, { [OPUS.id]: OPUS.apiKey }), ...extra });
+  await flushPromises();
+  const tab = wrapper.findAll("button").find((b) => b.text() === t("settings.tabs.model"));
+  if (!tab) throw new Error("AIモデル のタブが見つからない");
+  await tab.trigger("click");
+  await flushPromises();
+  return { wrapper };
+}

@@ -35,6 +35,9 @@ sha2 = "0.10"
 # 足さず custom command で完結させる (open_log_folder が tauri-plugin-shell を避けたのと
 # 同じ「追加権限ゼロ」方針)。Linux 既定は xdg-portal (libdbus 依存は Tauri 側で既に在る)。
 rfd = "0.17"
+# spec 34: API キーの保存先 = OS の資格情報ストア (Windows 資格情報マネージャー / macOS キーチェーン /
+# Linux Secret Service)。features は Fuseforks と同じ (Linux CI は既存の apt 一覧のままビルドできている)。
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 gm_core = { path = "../../crates/gm_core" }
 llm_client = { path = "../../crates/llm_client" }
 harness = { path = "../../crates/harness" }

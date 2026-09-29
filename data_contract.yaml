@@ -736,7 +736,20 @@ ui_settings_mirror:
   restore: "起動時 (mount 前・main.ts)、「localStorage に kataribe.* ゼロ (新プロファイル) ∧ file 非空」のときだけ全量書き戻し → reload 1 回 (import 時の同期読み群 = i18n/theme 等に値を行き渡らせる最も安い形。通常起動では reload しない)。sessionStorage ガード (kataribe.mirror.restored) で storage が書けない環境の無限 reload を封鎖。Tauri IPC が無い環境 (素の vite dev) はミラー無しで通常起動"
   commands: "load_ui_settings() -> Option<String> (不在・壊れは None) / save_ui_settings(json) (検証 → 原子書き込み)"
   no_delete_button: "「移行後に localStorage を削除」ボタンは不採用 (ユーザー提案 → 対話で撤回) — ミラーでは localStorage が生きた作業コピーなので、削除は無意味 (次回起動で file から復元される) か有害 (file 書き込みが失敗していた場合に本当に消える)。削除ボタンが意味を持つのは完全移行の意味論"
-  secrets: "aiModelProfiles の API キーは従来から localStorage 平文 (BYO-key ローカル app)。file も app_data/.env と同じ信頼水準に置く (脅威モデル不変)"
+  secrets: "**←2026-09-30 spec 34 で改訂**: aiModelProfiles の API キーは localStorage に置かない (saveAiProfiles が apiKey を空にして書く・鍵は OS の資格情報ストア `profile:<id>`) ので、このミラーにも鍵は載らない。資格情報ストアが使えない環境の退避時だけ鍵ごと書く。以下は旧記述: aiModelProfiles の API キーは従来から localStorage 平文 (BYO-key ローカル app)。file も app_data/.env と同じ信頼水準に置く (脅威モデル不変) — **言い換えると平文の置き場を 1 つ増やしていた**"
+
+# --- API キーの保存先 (spec 34、2026-09-30) ----------------------------------
+CredentialStore:
+  motive: "winget レビュー (PrivacyUrl に鍵の保存と保護を書け) + ユーザーの懸念。実測で鍵は平文 3 箇所 (app_data/.env・localStorage aiModelProfiles・settings.json ミラー)"
+  scope: "**保存時 (at rest) の平文をやめる。実行時のメモリは従来どおり** — 鍵は起動時にストアから読みプロセス env と WebView のメモリへ載る。Fuseforks の『値を UI に返さない』形は採らない (登録モデルの突き合わせ・切り替えを作り替えることになり、不具合の集中した提示層を大きく触る)"
+  store: "keyring 3 (apple-native / windows-native / sync-secret-service = Fuseforks と同じ)。サービス名 jp.lorekeel.app。エントリ名 = env 名そのもの / 登録モデルは profile:<id> (id は [A-Za-z0-9_-]{1,64})"
+  secret_env_keys: "LLM_API_KEY / SUMMARY_LLM_API_KEY / EDITOR_LLM_API_KEY / IMAGE_API_KEY_OPENAI / IMAGE_API_KEY_GEMINI / JEV_API_TOKEN の 6 つ (SECRET_ENV_KEYS の一箇所)。JEV_ACCOUNT_ID は秘密ではない"
+  persist_env: ".env を書く production の出口は persist_env 一本 (鍵を書かない呼び出しも通す = 後から足した書き込みが鍵を .env に落とす経路を構造で塞ぐ)。鍵・値あり → ストア set + .env の行を消す / 鍵・値が空 → ストア delete + .env に `KEY=` の空行 (dev で repo .env の鍵が生き返らない = failures #46 の『GUI の保存値が最後の明示意思』) / 鍵以外 → upsert_env / **ストアが失敗した鍵 → .env へ平文で退避 + 警告** (保存そのものは落とさない)。プロセス env の set_var は各 command が従来どおり行う"
+  startup: "app_data/.env を override で読む → 改名の移行 → migrate_env_secrets (値のある鍵行をストアへ書き**読み戻して一致したものだけ** .env から消す・失敗は残して次回再試行) → load_secrets_into_env (ストアにある鍵だけ set_var・無い鍵は触らない = dev の repo .env は従来どおり)"
+  profiles: "command get_profile_secrets(ids) -> {id: key} / set_profile_secrets([{id,key}]) (空は delete・書いた後に読み戻して検める) / delete_profile_secrets(ids)。frontend: saveAiProfiles は apiKey を空にして書く、鍵は persistProfiles が先にストアへ (失敗したら鍵ごと localStorage へ退避・警告) / 設定ダイアログを開いたとき hydrate / **旧形式の移行は起動時** (設定を開かないユーザーの settings.json に平文が残り続けないように)"
+  status: "secret_store_status() -> { fallback_keys: [env 名] } = .env に値のある鍵行 (退避中) を file から数える (状態を別に持たない)。設定 AI モデルタブに表示"
+  delete_all: "delete_all_secrets(profile_ids) = 6 つの env 鍵 + 登録モデルの鍵をストアから消し、プロセス env を空に、.env に空行。確認ダイアログつき"
+  limits: "実行中のメモリには載る / WebView LevelDB のログに旧値がコンパクションまで残りうる / 旧フォルダ jp.kataribe.app の平文 .env は自動では消さない (改名の退路) / アンインストールでストアのエントリは消えない / CLI play (開発者向け) は repo .env のまま"
 
 ConsistencyChecker:                 # spec 32 (2026-09-21 起草・Phase A 実装中): narration を事後に検査する第三の層。**opt-in**
   motive: "#23 が名指しした唯一の構造的な穴 — 「正本 > 文章力」は ops にしか効かず、narration は engine が原理的に検証できない。以後 15 ヶ月でこの穴から 8 件の失敗クラスが出た (#23 #27 #28 #33 #41 #42 #47 #49) が、処方はすべて『規律を書く』と『事実を還流する』の二層で、**事後に検査する層だけが存在しなかった**"

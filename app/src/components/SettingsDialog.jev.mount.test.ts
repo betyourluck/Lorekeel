@@ -26,6 +26,7 @@ function ipcFor(saved: { account_id: string; api_token: string }, devMode: boole
     get_editor_llm_config: () => ({ base_url: "", model: "", enabled: false }),
     get_dev_mode: () => devMode,
     get_jev_config: () => ({ ...saved }),
+    secret_store_status: () => ({ fallback_keys: [] }),
     set_jev_config: (a) => {
       saved.account_id = String(a?.accountId ?? "").trim();
       saved.api_token = String(a?.apiToken ?? "").trim();
