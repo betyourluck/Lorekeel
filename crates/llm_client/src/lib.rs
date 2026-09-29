@@ -1281,6 +1281,76 @@ mod tests {
         assert_eq!(ToolMode::Off.downgrade(), None, "底では降格せず 400 をそのまま返す");
     }
 
+    /// 【Anthropic: 名指しの強制を受け付けないモデル (2026-09-30 実機)】Claude Opus 5.5 /
+    /// Sonnet 5.5 / Fable 5.1 / Mythos 5.1 は `tool_choice` の `tool`/`any` を 400 で拒む
+    /// (モデル固有の制約。思考の有無とは無関係)。**実際に強制を送った周の、`tool_choice` を
+    /// 名指しした 400 だけ**で auto へ降格し、auto では最後の user ターンで emit_delta を名指しする。
+    /// キャッシュの安定プレフィックス (system・tools) は強制のときと 1 バイトも変わらない。
+    #[test]
+    fn anthropic_falls_back_to_auto_when_forced_tool_choice_is_rejected() {
+        let mk = |messages: Vec<ChatMessage>| canonical::ChatRequest {
+            model: "claude-opus-5-5".into(),
+            messages,
+            tools: vec![canonical::ToolSpec {
+                name: EMIT_DELTA_TOOL.into(),
+                description: "d".into(),
+                parameters: state_delta_schema(),
+            }],
+            tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
+            temperature: None,
+            max_tokens: 4096,
+            effort: None,
+        };
+        let req = mk(user_msgs());
+
+        // 強制を送ってよい間は従来と同一バイト (golden と同じ経路)。
+        let forced = serde_json::to_value(anthropic::encode_with(&req, true)).unwrap();
+        assert_eq!(forced, serde_json::to_value(anthropic::encode(&req)).unwrap());
+        assert_eq!(forced["tool_choice"]["type"], "tool");
+
+        // 降格後: auto + 最後の user ターンの末尾で emit_delta を名指し。
+        let auto = serde_json::to_value(anthropic::encode_with(&req, false)).unwrap();
+        assert_eq!(auto["tool_choice"], serde_json::json!({"type": "auto"}));
+        let last = auto["messages"].as_array().unwrap().last().unwrap();
+        assert_eq!(last["role"], "user");
+        let text = last["content"].as_str().expect("user ターンは文字列のまま");
+        assert!(text.ends_with(&anthropic::forced_tool_note(EMIT_DELTA_TOOL)), "{text}");
+        assert!(text.contains(EMIT_DELTA_TOOL));
+        // キャッシュされる側 (system と tools) は強制のときと同じ。
+        assert_eq!(auto["system"], forced["system"]);
+        assert_eq!(auto["tools"], forced["tools"]);
+        // user ターンの数は増えない (末尾に足すだけ)。
+        assert_eq!(auto["messages"].as_array().unwrap().len(), forced["messages"].as_array().unwrap().len());
+
+        // 最後がツール結果 (ブロック) なら text ブロックとして足す。
+        let mut tool_msgs = user_msgs();
+        tool_msgs.push(ChatMessage {
+            role: Role::Tool,
+            content: "ok".into(),
+            tool_calls: vec![],
+            tool_call_id: Some("tu_1".into()),
+            tool_name: Some("read".into()),
+        });
+        let blocks = serde_json::to_value(anthropic::encode_with(&mk(tool_msgs), false)).unwrap();
+        let last = blocks["messages"].as_array().unwrap().last().unwrap();
+        let parts = last["content"].as_array().expect("ブロック配列");
+        assert_eq!(parts[0]["type"], "tool_result");
+        assert_eq!(parts.last().unwrap()["type"], "text");
+
+        // 降格の判定: 実機の 400 本文 (2026-09-30、Opus 5.5)。
+        let opus55 = r#"{"type":"error","error":{"type":"invalid_request_error","message":"tool_choice: type \"tool\" and \"any\" are not supported for this model."},"request_id":"req_011CfYN2LLoVzp1gF3dVq8EU"}"#;
+        assert!(anthropic::rejects_forced_tool_choice(true, 400, opus55));
+        // auto で送って来た 400 は別の原因 = 降格しても直らないので本文を返す。
+        assert!(!anthropic::rejects_forced_tool_choice(false, 400, opus55));
+        // 無関係な 400・400 以外では降格しない。
+        assert!(!anthropic::rejects_forced_tool_choice(
+            true,
+            400,
+            r#"{"error":{"message":"temperature is not supported for this model"}}"#
+        ));
+        assert!(!anthropic::rejects_forced_tool_choice(true, 500, opus55));
+    }
+
     /// 【出力上限の検出 (2026-08-08 で EmptyResponse から分離)】text 空 ∧ tool_calls 空 ∧
     /// finish==length だけを `OutputTruncated` にする。**一過性にしない** — 上限は入力に対して
     /// 決定的なので再送すれば同じ所で切れる (リトライはバックオフと課金だけを増やし、画面には

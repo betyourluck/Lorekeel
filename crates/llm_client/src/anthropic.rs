@@ -133,9 +133,34 @@ pub(crate) struct ToolChoice {
 /// - 先頭の連続 system → `system` ブロック配列 (各ブロックに cache_control、先頭から 4 個まで)。
 /// - 先頭以外の system (万一混じった場合) → user に降格 (ネイティブは先頭 system のみ)。
 /// - tools があれば ToolDef + `{type: tool, name}` で強制 (ネイティブは tool_choice を確実に
-///   尊重するので use_tools は関係ない = 常に tool-use)。
+///   尊重するので use_tools は関係ない = 常に tool-use)。**強制を受け付けないモデル**
+///   (Opus 5.5 / Sonnet 5.5 / Fable 5.1 / Mythos 5.1) は [`encode_with`] の側で扱う。
 /// - effort 設定時のみ `thinking: adaptive` + `output_config.effort` (Phase B、opt-in)。
+#[cfg(test)]
 pub(crate) fn encode(req: &canonical::ChatRequest) -> MessagesRequest {
+    encode_with(req, true)
+}
+
+/// 強制できないモデル向けに、最後の user ターンの末尾へ足す一行。GM_SYSTEM にも提出の規律は
+/// あるが、アプリがこのターンの呼び出しを必要とするときは「最新の user ターンの後で名指しする」
+/// のが Anthropic の推奨の形 (model-migration: Breaking change — forced tool use is rejected)。
+/// 可変側 (最後の breakpoint より後) に置くのでキャッシュの安定プレフィックスは動かない。
+pub(crate) fn forced_tool_note(name: &str) -> String {
+    format!(
+        "（この応答は必ず {name} ツールを呼び出して提出してください。\
+         ツールを使わずに本文だけで答えてはいけません。）"
+    )
+}
+
+/// `encode` の本体。`forced_ok = false` のとき、名指しの強制 (`Specific`) を
+/// `{type: "auto"}` + 最後の user ターンへの一行 ([`forced_tool_note`]) に置き換える。
+///
+/// 動機 (2026-09-30 実機): Claude Opus 5.5 が `tool_choice: type "tool" and "any" are not
+/// supported for this model.` の 400 を返した。**モデル固有の制約**で、思考の有無とは無関係
+/// (Opus 5 も思考するが強制は通る)。モデル名の一覧では判定しない — 一覧は新しいモデルが
+/// 出るたびに古くなるので、実際の 400 から学んで latch する (client 側、Meta の
+/// `tool_mode_downgrade` と同じ考え方)。
+pub(crate) fn encode_with(req: &canonical::ChatRequest, forced_ok: bool) -> MessagesRequest {
     let mut system: Vec<SystemBlock> = Vec::new();
     let mut turns: Vec<TurnMessage> = Vec::new();
     for m in &req.messages {
@@ -203,8 +228,13 @@ pub(crate) fn encode(req: &canonical::ChatRequest) -> MessagesRequest {
         None
     } else {
         match &req.tool_choice {
-            canonical::ToolChoice::Specific(name) => {
+            canonical::ToolChoice::Specific(name) if forced_ok => {
                 Some(ToolChoice { kind: "tool", name: Some(name.clone()) })
+            }
+            // 強制を受け付けないモデル: auto にして、呼び出しが必要なことを最後の user ターンで言う。
+            canonical::ToolChoice::Specific(name) => {
+                append_to_last_user(&mut turns, forced_tool_note(name));
+                Some(ToolChoice { kind: "auto", name: None })
             }
             canonical::ToolChoice::Auto | canonical::ToolChoice::Required => {
                 Some(ToolChoice { kind: "auto", name: None })
@@ -234,6 +264,26 @@ pub(crate) fn encode(req: &canonical::ChatRequest) -> MessagesRequest {
         thinking,
         output_config,
     }
+}
+
+/// 最後の user ターンの末尾へ text を足す。最後が user でなければ user ターンを 1 つ足す。
+fn append_to_last_user(turns: &mut Vec<TurnMessage>, text: String) {
+    match turns.last_mut() {
+        Some(TurnMessage { role: "user", content: TurnContent::Text(body) }) => {
+            body.push_str("\n\n");
+            body.push_str(&text);
+        }
+        Some(TurnMessage { role: "user", content: TurnContent::Blocks(blocks) }) => {
+            blocks.push(RequestBlock::Text { text });
+        }
+        _ => turns.push(TurnMessage { role: "user", content: TurnContent::Text(text) }),
+    }
+}
+
+/// この 400 は「名指しの強制を受け付けない」という拒否か。**実際に強制を送った周だけ**真を返す
+/// (auto で送って 400 が来たなら原因は別 = 降格しても直らないので、本文をそのまま返す)。
+pub(crate) fn rejects_forced_tool_choice(sent_forced: bool, status: u16, body: &str) -> bool {
+    sent_forced && status == 400 && body.to_ascii_lowercase().contains("tool_choice")
 }
 
 // --- レスポンス ---------------------------------------------------------------

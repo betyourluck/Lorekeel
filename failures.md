@@ -2873,3 +2873,36 @@ assistant メッセージへ移せば Meta のキャッシュが効く」と見�
 
 **接地の限界**: 各セル n=1〜2。Meta の遅延は 2 周の差からの推定。Anthropic は 3 本目の breakpoint の
 コード変更が要るので未測定 (滑る窓で読めないのは推論)。t1 の state はセーブ時点のものを流用 (可変 user にだけ影響)。
+
+## crates/llm_client (2026-09-30 — Claude Opus 5.5 が名指しの tool_choice を 400 で拒む)
+
+### 108. 「このプロバイダは確実に尊重する」は、次のモデルで外れる前提だった
+
+**観察**: 登録モデルに `claude-opus-5-5` を入れると、ターン開始直後に
+`400 invalid_request_error: tool_choice: type "tool" and "any" are not supported for this model.`
+で落ちた。Anthropic ネイティブ経路は `emit_delta` を常に `{type: "tool", name}` で名指ししており、
+コードのコメントには「ネイティブは tool_choice を確実に尊重するので常に tool-use」とあった。
+
+**仮説棄却**: 思考 (always-on) との衝突ではない — Anthropic の移行ガイドが「モデル固有の制約で、
+Opus 5 も思考するが強制は通る」と明記している。鍵の移行 (spec 34) とも無関係 (同日の変更だが
+400 の本文が tool_choice を名指ししている)。
+
+**処方**: Meta の `tool_mode_downgrade` (#78) と同じく **実際の 400 から学んで latch** する。
+強制を送った周の tool_choice 名指しの 400 だけで auto へ降格し、最後の user ターン末尾で
+emit_delta を名指しする (Anthropic 推奨の形)。system・tools は同一バイトなのでキャッシュは不変。
+モデル名の一覧は持たない — 対象は既に 4 モデル (Opus 5.5 / Sonnet 5.5 / Fable 5.1 / Mythos 5.1) あり、
+一覧は次のモデルで必ず古くなる。PoC は実機の 400 本文をそのまま Red の条件にした
+(強制の形に戻すと `{"type":"tool","name":"emit_delta"}` で落ちる)。
+
+**一般化**: 「このプロバイダは X を確実に尊重する」は**プロバイダの性質ではなくモデル世代の性質**
+だった。#78 で「tool_choice の実装範囲はサーバで割れる」と学んだとき、ネイティブ経路は射程外に
+置いた — 同じ問いが**同じサーバの次のモデル**で出た。能力の差を 400 から学ぶ仕組みは、経路ごとに
+持つか、持たない経路には「持たない理由」を書いておく (書いてあれば今回の読み直しで気づけた)。
+
+**接地の限界 / 次に踏みうるもの**: 降格後の auto で Opus 5.5 が毎ターン emit_delta を呼ぶかは
+実機未確認 (呼ばずに本文で答えた場合は content の JSON 救済 → self-repair へ落ちる)。
+**Opus 5.5 は思考を切れず既定 effort は medium** — 思考は max_tokens を食うので、
+`LLM_MAX_TOKENS` 未設定 (4096) だと `OutputTruncated` になりうる。**AI 編集 (spec 29) の
+ツール往復**は、思考ブロックを捨てて assistant ターンを送り返しているので、Opus 5.5 では
+別の 400 になりうる (「tool_use を待つ assistant ターンは思考を付けたまま返す」が API の規則)。
+どちらも未測定。

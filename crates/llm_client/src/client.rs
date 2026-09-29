@@ -139,6 +139,11 @@ pub struct LlmClient {
     /// spec 13: Gemini 明示キャッシュのセッションハンドル。fingerprint が現在の静的プレフィックスと
     /// 一致すれば reuse、違えば作り直す (campaign 遷移等)。失効時はクリアして full request へ透過。
     gemini_cache: Mutex<Option<gemini::CacheHandle>>,
+    /// Anthropic ネイティブ経路で名指しの `tool_choice` を送ってよいか (セッション内 latch)。
+    /// 初期値 true。`tool_choice: type "tool" and "any" are not supported for this model.` の
+    /// 400 を受けたら false に倒し、以後は auto + 一行の指示で送る (Opus 5.5 / Sonnet 5.5 /
+    /// Fable 5.1 / Mythos 5.1)。余計な往復はセッションで高々 1 回 (400 は課金されない)。
+    anthropic_forced: std::sync::atomic::AtomicBool,
     /// 盤面の判定様式による **追加除外 op** (spec 16)。`check_style: percentile` の盤面は
     /// `["check"]`、additive (既定) は `["check_under"]` — 使わない様式の判定 op を schema から
     /// 落とし、LLM に様式を混ぜさせない (AUTHORED_ONLY_OPS の除外に合算)。セッション内不変
@@ -173,6 +178,7 @@ impl LlmClient {
             cache_stat: Mutex::new(CacheStat { floor, ..CacheStat::default() }),
             call_seq: std::sync::atomic::AtomicU64::new(0),
             gemini_cache: Mutex::new(None),
+            anthropic_forced: std::sync::atomic::AtomicBool::new(true),
             role: String::new(),
             usage: Mutex::new(LlmLedger::default()),
             usage_sink: None,
@@ -389,13 +395,27 @@ impl LlmClient {
     ) -> Result<canonical::ChatResponse, LlmError> {
         let resp = match self.config.provider {
             // Anthropic ネイティブ経路 (#44): 安定プレフィックス末尾の cache_control で
-            // schema+system がキャッシュされる。tool_choice を確実に尊重するので常に tool-use
+            // schema+system がキャッシュされる。常に tool-use (名指しの強制を受け付けないモデルは auto へ降格)
             // (use_tools は無視 = 従来動作)。effort 方言 (Phase B) も encode が持つ。
-            Provider::Anthropic => {
-                let native = anthropic::encode(&req);
-                let raw = self.messages_with_retry(&native).await?;
-                anthropic::decode(raw)
-            }
+            // 名指しの強制を受け付けないモデル (Opus 5.5 等) は 400 から学んで auto へ降格する。
+            Provider::Anthropic => loop {
+                use std::sync::atomic::Ordering::Relaxed;
+                let forced = self.anthropic_forced.load(Relaxed);
+                let native = anthropic::encode_with(&req, forced);
+                match self.messages_with_retry(&native).await {
+                    Ok(raw) => break anthropic::decode(raw),
+                    Err(LlmError::Api { status, body })
+                        if anthropic::rejects_forced_tool_choice(forced, status, &body) =>
+                    {
+                        eprintln!(
+                            "[LLM_TOOL_MODE] このモデルは tool_choice の名指しを受け付けないため \
+                             auto へ切り替えます (このセッションでは以後 auto で送ります): {body}"
+                        );
+                        self.anthropic_forced.store(false, Relaxed);
+                    }
+                    Err(e) => return Err(e),
+                }
+            },
             // OpenAI 互換経路: ToolMode 三値 (#29 / Meta) の分岐は encode が担う。
             // decode + 出力上限の検出は試行毎に掛かる。tool_choice 起因の 400 は降格して再送。
             Provider::OpenAiCompat => self.compat_complete(&req).await?,

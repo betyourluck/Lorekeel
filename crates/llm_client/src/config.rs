@@ -16,7 +16,8 @@ pub enum Provider {
     /// `POST {base_url}/chat/completions` + Bearer (OpenAI / Grok / さくら / ローカル互換サーバ)。
     OpenAiCompat,
     /// `POST {base_url}/messages` + x-api-key + anthropic-version (キャッシュの効く経路)。
-    /// tool-use を常に使う (`use_tools=false` は無視 — Anthropic は tool_choice を確実に尊重する)。
+    /// tool-use を常に使う (`use_tools=false` は無視)。名指しの強制 (`tool_choice: tool`) を 400 で拒む
+    /// モデル (Opus 5.5 / Sonnet 5.5 / Fable 5.1 / Mythos 5.1) は client が auto へ降格する (failures #108)。
     Anthropic,
     /// `POST {base}/v1beta/models/{model}:generateContent` + x-goog-api-key (spec 12 Phase C)。
     /// tool-use を常に使う (tool_choice = functionCallingConfig を確実に尊重する)。
