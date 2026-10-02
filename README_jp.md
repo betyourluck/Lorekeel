@@ -18,9 +18,23 @@ AI Dungeon 系の LLM-GM が必ず崩れる死因は、文章力ではなく**�
 
 | OS | ファイル | 状態 |
 |---|---|---|
-| **Windows** | `Lorekeel_x.y.z_x64-setup.exe`（インストーラ）/ `.msi` | ✅ 動作確認済み |
+| **Windows** | `Lorekeel_x.y.z_x64-setup.exe`（インストーラ）/ `.msi` / winget | ✅ 動作確認済み |
 | macOS (Apple Silicon) | `.dmg` / Homebrew | ✅ 署名・公証あり。実機 Mac で起動確認済み (v0.5.17) |
 | Linux | `.deb` / `.AppImage` / `.rpm` | CI ビルドのみ・未検証 |
+
+Windows は winget でも入れられる:
+
+```powershell
+winget install Outcasts.Lorekeel
+```
+
+winget は `.msi` を全ユーザー向けに入れるので、管理者権限の確認が出る。
+更新は `winget upgrade Outcasts.Lorekeel`。新しい版は winget-pkgs にマニフェストが
+マージされてから winget に届くので、Releases より遅れることがある。
+以前 `-setup.exe` で入れていた場合は、先にそちらをアンインストールすること — 2 つの
+インストーラは互いを置き換えず、同じデータを共有するアプリが 2 つ並ぶ。
+`winget uninstall Outcasts.Lorekeel` はセーブデータ・パッケージ・API キーを残す
+（消し方は [PRIVACY_jp.md](PRIVACY_jp.md#データの削除)）。
 
 macOS は Homebrew でも入れられる:
 

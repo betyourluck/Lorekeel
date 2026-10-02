@@ -18,9 +18,22 @@ AI Dungeon 这类 LLM-GM 一定会崩溃的死因，不是文笔，而是**遗�
 
 | 操作系统 | 文件 | 状态 |
 |---|---|---|
-| **Windows** | `Lorekeel_x.y.z_x64-setup.exe`（安装程序）/ `.msi` | ✅ 已验证可用 |
+| **Windows** | `Lorekeel_x.y.z_x64-setup.exe`（安装程序）/ `.msi` / winget | ✅ 已验证可用 |
 | macOS（Apple Silicon） | `.dmg` / Homebrew | ✅ 已签名并公证，且在真机 Mac 上确认可启动（v0.5.17） |
 | Linux | `.deb` / `.AppImage` / `.rpm` | 仅 CI 构建，未验证 |
+
+Windows 也可以通过 winget 安装：
+
+```powershell
+winget install Outcasts.Lorekeel
+```
+
+winget 会为所有用户安装 `.msi`，因此 Windows 会请求管理员权限。
+使用 `winget upgrade Outcasts.Lorekeel` 更新。新版本要等清单合并进 winget-pkgs 后才会出现在
+winget 中，因此可能晚于 Releases 页面。
+如果之前用 `-setup.exe` 安装过，请先卸载那一份 —— 两种安装程序不会互相替换，
+会出现共享同一份数据的两个副本。`winget uninstall Outcasts.Lorekeel` 会保留存档、
+剧本包和 API 密钥（删除方法见 [PRIVACY.md](PRIVACY.md#deleting-your-data)，英文）。
 
 macOS 也可以通过 Homebrew 安装：
 

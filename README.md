@@ -18,9 +18,23 @@ Get the installer for your OS from the [**latest release**](https://github.com/b
 
 | OS | File | Status |
 |---|---|---|
-| **Windows** | `Lorekeel_x.y.z_x64-setup.exe` (installer) / `.msi` | ✅ Verified working |
+| **Windows** | `Lorekeel_x.y.z_x64-setup.exe` (installer) / `.msi` / winget | ✅ Verified working |
 | macOS (Apple Silicon) | `.dmg` / Homebrew | ✅ Signed, notarized, and launched on a real Mac (v0.5.17) |
 | Linux | `.deb` / `.AppImage` / `.rpm` | CI build only, unverified |
+
+On Windows you can install it with winget instead:
+
+```powershell
+winget install Outcasts.Lorekeel
+```
+
+winget installs the `.msi` for all users, so Windows asks for administrator permission.
+`winget upgrade Outcasts.Lorekeel` updates it. A new release reaches winget only after its
+manifest is merged into winget-pkgs, so winget can lag behind the Releases page.
+If you installed with the `-setup.exe` before, uninstall that copy first — the two installers
+do not replace each other, and you would end up with two copies sharing the same data.
+`winget uninstall Outcasts.Lorekeel` leaves your saves, packages and API keys in place
+(see [PRIVACY.md](PRIVACY.md#deleting-your-data) to remove them).
 
 On macOS you can install it with Homebrew instead:
 
