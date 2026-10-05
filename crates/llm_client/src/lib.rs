@@ -1387,6 +1387,99 @@ mod tests {
         assert!(openai_compat::reject_empty_reasoning(resp, 4096).is_ok());
     }
 
+    /// 台本どおりの本文を 1 接続 1 応答で返すローカル HTTP サーバ (200 固定・`Connection: close`)。
+    /// adapter の純関数だけでなく `complete()` の**配線**まで通すために使う — 出力上限の判定を
+    /// 互換経路にだけ入れて Anthropic / Gemini 経路に入れ忘れていた (2026-10-05) のは、まさに
+    /// 純関数のテストでは見えない配線の穴だった。
+    fn serve_scripted(bodies: Vec<&'static str>) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for body in bodies {
+                let (mut s, _) = listener.accept().unwrap();
+                // ヘッダ終端まで読み、Content-Length 分の本文を読み切ってから返す
+                // (読み残すと送信側がリセットを受けうる)。
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let head_end = loop {
+                    let n = s.read(&mut chunk).unwrap();
+                    buf.extend_from_slice(&chunk[..n]);
+                    if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break i + 4;
+                    }
+                };
+                let head = String::from_utf8_lossy(&buf[..head_end]).to_ascii_lowercase();
+                let len: usize = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .map(|v| v.trim().parse().unwrap())
+                    .unwrap_or(0);
+                while buf.len() < head_end + len {
+                    let n = s.read(&mut chunk).unwrap();
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                s.write_all(resp.as_bytes()).unwrap();
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    fn scripted_client(provider: crate::config::Provider, bodies: Vec<&'static str>) -> LlmClient {
+        let mut cfg = LlmConfig::new(serve_scripted(bodies), "sk-test", "claude-opus-5-5");
+        cfg.provider = provider;
+        cfg.max_retries = 1;
+        cfg.gemini_cache_enabled = false; // cachedContents を作りに行かせない
+        LlmClient::new(cfg).unwrap()
+    }
+
+    /// 【出力上限の検出を Anthropic / Gemini 経路にも (2026-10-05)】Opus 5.5 は思考を止められず
+    /// (省略しても adaptive・effort 既定 medium)、`max_tokens` は思考+本文の合算上限。
+    /// `LLM_MAX_TOKENS` 未設定 (4096) だと思考が枠を使い切りうる。2026-08-08 の
+    /// `reject_empty_reasoning` は互換経路と Responses 経路にしか掛かっておらず、Anthropic では
+    /// 「thinking ブロックだけ + stop_reason max_tokens」が `NoStructuredOutput` に落ち、
+    /// 再生成ループが同じ所で切れ続けて画面には解析失敗としか出なかった。
+    #[tokio::test]
+    async fn anthropic_and_gemini_surface_output_truncation() {
+        use crate::config::Provider;
+        // (a) 思考が枠を使い切った: thinking ブロック (表示は omitted = 空) だけが返る。
+        const THINKING_ONLY: &str = r#"{"content":[{"type":"thinking","thinking":"","signature":"sig"}],"stop_reason":"max_tokens","usage":{"input_tokens":10,"output_tokens":4096}}"#;
+        let c = scripted_client(Provider::Anthropic, vec![THINKING_ONLY]);
+        let err = c.generate_delta(user_msgs()).await.unwrap_err();
+        assert!(matches!(err, LlmError::OutputTruncated { limit: 4096 }), "{err:?}");
+
+        // (b) ツール呼び出しの途中で切れた: 引数は途中まで。StateDelta は欄が全部省略可なので
+        // そのまま通すと「語りが途中で切れ ops の落ちたデルタ」が黙って受理される。
+        // claude-api リファレンス: ツールを実行する前に max_tokens の停止理由を確かめよ。
+        const CUT_TOOL_USE: &str = r#"{"content":[{"type":"thinking","thinking":"","signature":"sig"},{"type":"tool_use","id":"toolu_1","name":"emit_delta","input":{"narration":"扉に手をかけ"}}],"stop_reason":"max_tokens","usage":{"input_tokens":10,"output_tokens":4096}}"#;
+        let c = scripted_client(Provider::Anthropic, vec![CUT_TOOL_USE]);
+        let err = c.generate_delta(user_msgs()).await.unwrap_err();
+        assert!(matches!(err, LlmError::OutputTruncated { limit: 4096 }), "{err:?}");
+
+        // 対照: 同じ形でも stop_reason が tool_use なら正常に受理する (偽陽性なし)。
+        const DONE_TOOL_USE: &str = r#"{"content":[{"type":"thinking","thinking":"","signature":"sig"},{"type":"tool_use","id":"toolu_1","name":"emit_delta","input":{"narration":"扉が開いた","ops":[]}}],"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":300}}"#;
+        let c = scripted_client(Provider::Anthropic, vec![DONE_TOOL_USE]);
+        assert_eq!(c.generate_delta(user_msgs()).await.unwrap().narration, "扉が開いた");
+
+        // 素の文章生成 (あらすじ・エピローグ) は、本文があれば途中切れでも従来どおり返す
+        // (他の経路と同じ扱い)。空なら上限の理由で落とす。
+        const CUT_TEXT: &str = r#"{"content":[{"type":"text","text":"途中まで"}],"stop_reason":"max_tokens","usage":{"input_tokens":10,"output_tokens":4096}}"#;
+        let c = scripted_client(Provider::Anthropic, vec![CUT_TEXT, THINKING_ONLY]);
+        assert_eq!(c.generate(user_msgs()).await.unwrap(), "途中まで");
+        let err = c.generate(user_msgs()).await.unwrap_err();
+        assert!(matches!(err, LlmError::OutputTruncated { limit: 4096 }), "{err:?}");
+
+        // (c) Gemini も思考込みで上限を数える (2026-09-04 probe: 上限 40 で思考だけ使い切り本文空)。
+        const GEMINI_THINKING_ONLY: &str = r#"{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"MAX_TOKENS"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":0,"thoughtsTokenCount":4096}}"#;
+        let c = scripted_client(Provider::Gemini, vec![GEMINI_THINKING_ONLY]);
+        let err = c.generate_delta(user_msgs()).await.unwrap_err();
+        assert!(matches!(err, LlmError::OutputTruncated { limit: 4096 }), "{err:?}");
+    }
+
     // --- Gemini ネイティブ経路 (spec 12 Phase C) --------------------------------------
 
     /// 【Phase C 判定】Provider 三値化の境界。Gemini ネイティブは

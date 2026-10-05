@@ -393,35 +393,49 @@ impl LlmClient {
         &self,
         req: canonical::ChatRequest,
     ) -> Result<canonical::ChatResponse, LlmError> {
+        // 出力上限の判定に要る現在値 (Gemini 経路は req を move するので先に取る)。
+        let limit = req.max_tokens;
         let resp = match self.config.provider {
             // Anthropic ネイティブ経路 (#44): 安定プレフィックス末尾の cache_control で
             // schema+system がキャッシュされる。常に tool-use (名指しの強制を受け付けないモデルは auto へ降格)
             // (use_tools は無視 = 従来動作)。effort 方言 (Phase B) も encode が持つ。
             // 名指しの強制を受け付けないモデル (Opus 5.5 等) は 400 から学んで auto へ降格する。
-            Provider::Anthropic => loop {
-                use std::sync::atomic::Ordering::Relaxed;
-                let forced = self.anthropic_forced.load(Relaxed);
-                let native = anthropic::encode_with(&req, forced);
-                match self.messages_with_retry(&native).await {
-                    Ok(raw) => break anthropic::decode(raw),
-                    Err(LlmError::Api { status, body })
-                        if anthropic::rejects_forced_tool_choice(forced, status, &body) =>
-                    {
-                        eprintln!(
-                            "[LLM_TOOL_MODE] このモデルは tool_choice の名指しを受け付けないため \
-                             auto へ切り替えます (このセッションでは以後 auto で送ります): {body}"
-                        );
-                        self.anthropic_forced.store(false, Relaxed);
+            // 出力上限で切れた応答は OutputTruncated へ (2026-10-05)。思考を止められないモデル
+            // (Opus 5.5 等) では既定の上限で起きうるので、互換経路と同じく理由を名指しする。
+            Provider::Anthropic => {
+                let raw = loop {
+                    use std::sync::atomic::Ordering::Relaxed;
+                    let forced = self.anthropic_forced.load(Relaxed);
+                    let native = anthropic::encode_with(&req, forced);
+                    match self.messages_with_retry(&native).await {
+                        Ok(raw) => break anthropic::decode(raw),
+                        Err(LlmError::Api { status, body })
+                            if anthropic::rejects_forced_tool_choice(forced, status, &body) =>
+                        {
+                            eprintln!(
+                                "[LLM_TOOL_MODE] このモデルは tool_choice の名指しを受け付けないため \
+                                 auto へ切り替えます (このセッションでは以後 auto で送ります): {body}"
+                            );
+                            self.anthropic_forced.store(false, Relaxed);
+                        }
+                        Err(e) => return Err(e),
                     }
-                    Err(e) => return Err(e),
-                }
-            },
+                };
+                // usage は切れた応答でも課金されているので、判定より先に記録する。
+                self.record_usage(&raw.usage);
+                return anthropic::reject_truncated(raw, limit);
+            }
             // OpenAI 互換経路: ToolMode 三値 (#29 / Meta) の分岐は encode が担う。
             // decode + 出力上限の検出は試行毎に掛かる。tool_choice 起因の 400 は降格して再送。
             Provider::OpenAiCompat => self.compat_complete(&req).await?,
             // Gemini ネイティブ経路 (Phase C) + 明示キャッシュ (spec 13): 静的プレフィックスを
             // cachedContent に pin し、暗黙キャッシュの ~8000 崖 (failures #54) を迂回する。
-            Provider::Gemini => self.gemini_complete(req).await?,
+            // 思考込みで上限を数えるのは Gemini も同じ (2026-09-04 probe) — 空なら OutputTruncated。
+            Provider::Gemini => {
+                let raw = self.gemini_complete(req).await?;
+                self.record_usage(&raw.usage);
+                return openai_compat::reject_empty_reasoning(raw, limit);
+            }
             // OpenAI Responses 形 (2026-08-20): Perplexity Agent API の `/v1/responses`。
             // 常に tool-use (`required` が効く)。ToolMode の降格は持たない — tool_choice で
             // 400 を返す口ではなく (名指しは黙殺)、Off へ落ちる道が無い。

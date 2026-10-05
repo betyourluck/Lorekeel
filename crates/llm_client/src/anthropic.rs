@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::canonical;
+use crate::error::LlmError;
 use crate::wire::Role;
 
 /// 必須ヘッダ `anthropic-version` の値。
@@ -331,6 +332,29 @@ pub(crate) struct Usage {
     pub cache_creation_input_tokens: u64,
     #[serde(default)]
     pub cache_read_input_tokens: u64,
+}
+
+/// 出力上限で切れた応答を [`LlmError::OutputTruncated`] にする (2026-10-05)。
+///
+/// 2 つの形を拾う:
+/// 1. **本文もツール呼び出しも空** — 思考が枠を使い切った (互換経路と同じ判定 =
+///    [`crate::openai_compat::reject_empty_reasoning`] を共有する)。Opus 5.5 以降は思考を
+///    止められず (`thinking` 省略でも adaptive)、`max_tokens` は思考+本文の合算上限なので、
+///    既定の 4096 で起きうる。
+/// 2. **ツール呼び出しがあるのに `stop_reason: max_tokens`** — 引数が途中で切れている。
+///    `StateDelta` は欄が全部省略可なので、通すと途中で切れた語り・落ちた ops が黙って受理される
+///    (claude-api リファレンス: ツールを実行する前に max_tokens の停止理由を確かめよ)。
+///
+/// 本文だけの途中切れ (素の文章生成) は従来どおり通す — 他の経路と同じ扱い。
+pub(crate) fn reject_truncated(
+    resp: canonical::ChatResponse,
+    limit: u32,
+) -> Result<canonical::ChatResponse, LlmError> {
+    let resp = crate::openai_compat::reject_empty_reasoning(resp, limit)?;
+    if resp.finish == canonical::Finish::Length && !resp.tool_calls.is_empty() {
+        return Err(LlmError::OutputTruncated { limit });
+    }
+    Ok(resp)
 }
 
 /// ネイティブ応答 → canonical (spec 12 Phase A)。
