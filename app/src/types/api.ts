@@ -513,6 +513,6 @@ export interface EditAssistView {
   prompt_tokens: number;
   completion_tokens: number;
   cache_read: number;
-  stopped: "limit" | "repeat" | "cancel" | null;
+  stopped: "limit" | "repeat" | "cancel" | "error" | null;
   model: string;
 }

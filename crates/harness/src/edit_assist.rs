@@ -284,6 +284,9 @@ pub enum Stopped {
     Limit,
     Repeat,
     Cancel,
+    /// LLM の呼び出しが失敗した (拒否・出力上限・通信など)。**本文が既に変わっているときだけ**
+    /// この形で返し、適用済みの編集を捨てない (変わっていなければ Err のまま、2026-10-05)。
+    Error,
 }
 
 /// 進行ログ 1 行 (呼び出し 1 本)。
@@ -402,6 +405,26 @@ pub async fn run_edit_loop<C: ToolChat>(
         false
     }
 
+    // LLM の呼び出しが失敗したときの扱い (2026-10-05、failures #111): 本文が既に変わっていれば
+    // 打ち切りとして返し適用済みを捨てない / 変わっていなければ Err のまま (失うものが無い)。
+    // 拒否・出力上限は 2026-10-05 まで「空の応答 = 完了」として通っていたので、エラーに変えた
+    // ことで `?` で抜けると編集ごと失われる形になっていた。
+    fn on_llm_error(
+        e: LlmError,
+        exec: &(dyn ToolExecutor + Send),
+        initial_text: &str,
+        out: &mut EditOutcome,
+    ) -> Result<(), LlmError> {
+        if exec.text() == initial_text {
+            return Err(e);
+        }
+        out.stopped = Some(Stopped::Error);
+        out.summary = format!(
+            "LLM の呼び出しが失敗したので打ち切りました ({e})。ここまでに適用した分は本文に残っています。"
+        );
+        Ok(())
+    }
+
     for it in 0..MAX_ITERATIONS {
         if cancel.load(Ordering::Relaxed) {
             out.stopped = Some(Stopped::Cancel);
@@ -415,14 +438,26 @@ pub async fn run_edit_loop<C: ToolChat>(
                 "道具の呼び出しが上限に達しました。これ以上は書き換えられません。ここまでに何をどう直したか (残っていることがあれば何が残っているか) を 2〜3 行で報告してください。",
             ));
             progress("まとめの 1 周 (上限)".into());
-            let turn = chat.wrap_up(messages.clone(), tools.clone()).await?;
+            let turn = match chat.wrap_up(messages.clone(), tools.clone()).await {
+                Ok(t) => t,
+                Err(e) => {
+                    on_llm_error(e, exec, initial_text, &mut out)?;
+                    break;
+                }
+            };
             out.iterations += 1;
             add_usage(&mut out, &turn);
             out.summary = turn.text.unwrap_or_default();
             out.stopped = Some(Stopped::Limit);
             break;
         }
-        let turn = chat.chat(messages.clone(), tools.clone()).await?;
+        let turn = match chat.chat(messages.clone(), tools.clone()).await {
+            Ok(t) => t,
+            Err(e) => {
+                on_llm_error(e, exec, initial_text, &mut out)?;
+                break;
+            }
+        };
         out.iterations += 1;
         add_usage(&mut out, &turn);
         if turn.tool_calls.is_empty() {
@@ -458,15 +493,20 @@ pub async fn run_edit_loop<C: ToolChat>(
                 list.join("\n")
             )));
             progress("修復の 1 周".into());
-            let turn = chat.chat(messages.clone(), tools.clone()).await?;
-            out.iterations += 1;
-            add_usage(&mut out, &turn);
-            if turn.tool_calls.is_empty() {
-                if let Some(t) = turn.text.filter(|t| !t.trim().is_empty()) {
-                    out.summary = t;
+            match chat.chat(messages.clone(), tools.clone()).await {
+                Ok(turn) => {
+                    out.iterations += 1;
+                    add_usage(&mut out, &turn);
+                    if turn.tool_calls.is_empty() {
+                        if let Some(t) = turn.text.filter(|t| !t.trim().is_empty()) {
+                            out.summary = t;
+                        }
+                    } else {
+                        execute_round(&turn, exec, &mut messages, &mut out, &mut last_key, progress);
+                    }
                 }
-            } else {
-                execute_round(&turn, exec, &mut messages, &mut out, &mut last_key, progress);
+                // 修復の周の失敗も同じ扱い (本文が変わっていれば打ち切りとして返す)。
+                Err(e) => on_llm_error(e, exec, initial_text, &mut out)?,
             }
         }
     }
@@ -483,6 +523,8 @@ pub async fn run_edit_loop<C: ToolChat>(
             Some(Stopped::Limit) => format!("道具の呼び出しが上限 ({MAX_ITERATIONS} 周) に達したので打ち切りました (まとめの報告なし)。{kept}"),
             Some(Stopped::Repeat) => format!("同じ呼び出しが同じ結果で繰り返されたので打ち切りました。{kept}"),
             Some(Stopped::Cancel) => format!("取り消されました。{kept}"),
+            // 理由つきの文面は打ち切った時点で summary に入れている (ここには来ない)。
+            Some(Stopped::Error) => format!("LLM の呼び出しが失敗したので打ち切りました。{kept}"),
             None => "(報告なし)".into(),
         };
     }
@@ -578,10 +620,13 @@ mod tests {
 
     // --- fake ---
     /// 台本どおりに返し、各周が「どの入口で・道具を何本」受け取ったかを記録する。
-    struct Scripted(Mutex<Vec<ChatTurn>>, Mutex<Vec<(&'static str, usize)>>);
+    struct Scripted(Mutex<Vec<Result<ChatTurn, LlmError>>>, Mutex<Vec<(&'static str, usize)>>);
     impl Scripted {
         fn new(turns: Vec<ChatTurn>) -> Self {
-            Self(Mutex::new(turns), Mutex::new(Vec::new()))
+            Self::with_results(turns.into_iter().map(Ok).collect())
+        }
+        fn with_results(results: Vec<Result<ChatTurn, LlmError>>) -> Self {
+            Self(Mutex::new(results), Mutex::new(Vec::new()))
         }
         fn next(&self, kind: &'static str, tools: usize) -> Result<ChatTurn, LlmError> {
             self.1.lock().unwrap().push((kind, tools));
@@ -589,7 +634,7 @@ mod tests {
             if q.is_empty() {
                 return Ok(text_turn("(台本切れ)"));
             }
-            Ok(q.remove(0))
+            q.remove(0)
         }
     }
     impl ToolChat for Scripted {
@@ -785,6 +830,51 @@ mod tests {
         assert_eq!(log.last(), Some(&("wrap_up", n)), "{log:?}");
         assert!(log[..log.len() - 1].iter().all(|e| *e == ("chat", n)), "{log:?}");
         assert_eq!(out.summary, "ここまでで 2 箇所を直しました。");
+    }
+
+    /// 【途中の LLM エラーで適用済みを捨てない (2026-10-05、failures #111)】拒否 (Blocked) や
+    /// 出力上限 (OutputTruncated) は、2026-10-05 までは「空の応答 = 完了」として通っており、
+    /// 適用済みの本文はそのまま返っていた。理由を出すためにエラーへ変えたので、ループが `?` で
+    /// 抜けると**それまでの編集ごと失われる**形になった。本文が変わっていれば打ち切りとして返す。
+    /// 何も変わっていなければ従来どおり Err (失うものが無く、呼び出し側がエラーとして出せる)。
+    #[test]
+    fn llm_error_after_edits_returns_the_edited_text() {
+        let blocked = || LlmError::Blocked { reason: "refusal / reasoning_extraction".into() };
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let go = |results: Vec<Result<ChatTurn, LlmError>>, exec: &mut FakeExec| {
+            let chat = Scripted::with_results(results);
+            let initial = exec.text.clone();
+            rt.block_on(run_edit_loop(
+                &chat,
+                vec![ChatMessage::system("s"), ChatMessage::user("u")],
+                tool_specs(),
+                exec,
+                &initial,
+                &AtomicBool::new(false),
+                &mut |_| {},
+            ))
+        };
+
+        // apply の後の周で拒否 → 打ち切りとして返り、本文は適用後のまま。
+        let mut exec = FakeExec { text: "hp: 10".into(), log: vec![] };
+        let out = go(
+            vec![
+                Ok(call_turn(vec![("c1", "sd", json!({"pattern": "10", "replacement": "hp: 12", "apply": true}))])),
+                Err(blocked()),
+            ],
+            &mut exec,
+        )
+        .expect("適用済みがあるのでエラーにしない");
+        assert_eq!(out.stopped, Some(Stopped::Error));
+        assert_eq!(out.text, "hp: 12");
+        assert!(out.changed);
+        assert!(out.summary.contains("reasoning_extraction"), "理由を報告に載せる: {}", out.summary);
+        assert!(out.summary.contains("残っています"), "{}", out.summary);
+
+        // 何も変わっていないうちの失敗は従来どおり Err。
+        let mut exec = FakeExec { text: "hp: 10".into(), log: vec![] };
+        let err = go(vec![Err(blocked())], &mut exec).unwrap_err();
+        assert!(matches!(err, LlmError::Blocked { .. }), "{err:?}");
     }
 
     /// 【修復 1 周】正常終了しても error 診断が残れば上限の外で 1 周だけ投げ、直れば diagnostics が空になる。

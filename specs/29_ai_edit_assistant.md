@@ -181,7 +181,9 @@ case_insensitive)>` を持ち、`apply: true` は `last_preview` と一致する
   「まだ壊れている: …」を投げる。それでも残れば診断つきで返す（決定 9）。
 - 返り: `{ text: 作業バッファ, changed: bool（初期バッファと異なるか）, summary: 報告文,
   calls: [{tool, args_brief, ok}], diagnostics: [...], usage: {prompt, completion, cache_read},
-  stopped: null | "limit" | "repeat" | "cancel" }`。
+  stopped: null | "limit" | "repeat" | "cancel" | "error" }`。**`"error"` は 2026-10-05 に追加** — LLM の呼び出しが
+  失敗したとき (拒否・出力上限・通信)、本文が既に変わっていれば打ち切りとして返して適用済みを捨てない
+  (変わっていなければ Err のまま。failures #111)。
 - 進行は `edit-assist-progress` イベント（1 呼び出し 1 行）。**backend の emit 名 ⊆ frontend
   `GAME_EVENTS`** は既存テスト（failures #98）が固定する。
 

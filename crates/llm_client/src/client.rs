@@ -446,7 +446,7 @@ impl LlmClient {
                     let forced = self.anthropic_forced.load(Relaxed);
                     let native = anthropic::encode_with(&req, forced);
                     match self.messages_with_retry(&native).await {
-                        Ok(raw) => break anthropic::decode(raw),
+                        Ok(raw) => break raw,
                         Err(LlmError::Api { status, body })
                             if anthropic::rejects_forced_tool_choice(forced, status, &body) =>
                         {
@@ -459,9 +459,15 @@ impl LlmClient {
                         Err(e) => return Err(e),
                     }
                 };
-                // usage は切れた応答でも課金されているので、判定より先に記録する。
-                self.record_usage(&raw.usage);
-                return anthropic::reject_truncated(raw, limit);
+                // 拒否は 200 で返る — 理由を捨てずに Blocked へ (非一過性、failures #111)。
+                let refusal = anthropic::refusal_reason(&raw);
+                let resp = anthropic::decode(raw);
+                // usage は切れた・拒否された応答でも課金されうるので、判定より先に記録する。
+                self.record_usage(&resp.usage);
+                if let Some(reason) = refusal {
+                    return Err(LlmError::Blocked { reason });
+                }
+                return anthropic::reject_truncated(resp, limit);
             }
             // OpenAI 互換経路: ToolMode 三値 (#29 / Meta) の分岐は encode が担う。
             // decode + 出力上限の検出は試行毎に掛かる。tool_choice 起因の 400 は降格して再送。

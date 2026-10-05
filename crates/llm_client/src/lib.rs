@@ -1485,6 +1485,32 @@ mod tests {
         assert!(matches!(err, LlmError::OutputTruncated { limit: 4096 }), "{err:?}");
     }
 
+    /// 【Anthropic の拒否を理由つきで (2026-10-05、failures #111)】安全分類器の拒否は HTTP 200 +
+    /// `stop_reason: refusal` + `stop_details{category, explanation}` で返る。従来は `refusal` を
+    /// `Finish::Other` に写して捨てており、GM のターンは「構造化出力が得られなかった」、AI 編集の
+    /// まとめの周は空の報告になって**理由がどこにも出なかった** (Gemini のブロック #61 と同じ穴)。
+    /// 実測 (Opus 5.5): AI 編集のまとめの周で tools を外すと 3 回中 2 回 `reasoning_extraction`。
+    #[tokio::test]
+    async fn anthropic_refusal_surfaces_as_blocked_with_category() {
+        use crate::config::Provider;
+        const REFUSAL: &str = r#"{"content":[],"stop_reason":"refusal","stop_details":{"type":"refusal","category":"reasoning_extraction","explanation":"推論の抜き出しの試みと判断しました"},"usage":{"input_tokens":120,"output_tokens":3}}"#;
+        let c = scripted_client(Provider::Anthropic, vec![REFUSAL, REFUSAL]);
+        for err in [c.generate_delta(user_msgs()).await.unwrap_err(), c.generate(user_msgs()).await.unwrap_err()] {
+            let LlmError::Blocked { reason } = &err else { panic!("Blocked で返る: {err:?}") };
+            assert!(reason.contains("reasoning_extraction"), "分類を名指しする: {reason}");
+            assert!(reason.contains("推論の抜き出し"), "説明があれば載せる: {reason}");
+            assert!(!err.is_transient(), "同じ内容の再送では回復しない");
+        }
+        // 拒否された応答も課金されうるので usage は記録する (計器が拒否の分を落とさない)。
+        assert_eq!(c.usage_ledger().requests, 2);
+
+        // 分類が無い拒否でも理由は「refusal」として出る (空にしない)。
+        const BARE: &str = r#"{"content":[],"stop_reason":"refusal","usage":{"input_tokens":1,"output_tokens":0}}"#;
+        let c = scripted_client(Provider::Anthropic, vec![BARE]);
+        let err = c.generate(user_msgs()).await.unwrap_err();
+        assert!(matches!(&err, LlmError::Blocked { reason } if reason.contains("refusal")), "{err:?}");
+    }
+
     // --- Gemini ネイティブ経路 (spec 12 Phase C) --------------------------------------
 
     /// 【Phase C 判定】Provider 三値化の境界。Gemini ネイティブは

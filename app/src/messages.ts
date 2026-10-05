@@ -875,6 +875,7 @@ export const messages = {
       stopped_limit: "道具の呼び出しが上限に達したので打ち切りました (途中までの変更は入っています)",
       stopped_repeat: "同じ呼び出しが繰り返されたので打ち切りました",
       stopped_cancel: "取り消しました (途中までの変更は入っています)",
+      stopped_error: "AI の呼び出しが失敗したので打ち切りました (途中までの変更は入っています)",
       stats: "{model} / {iterations} 周 / 入力 {prompt} tok (キャッシュ {cached}) / 出力 {completion} tok",
     },
     editor: {
@@ -1824,6 +1825,7 @@ export const messages = {
       stopped_limit: "Stopped at the tool-call limit (changes so far are kept)",
       stopped_repeat: "Stopped because the same call kept repeating",
       stopped_cancel: "Cancelled (changes so far are kept)",
+      stopped_error: "Stopped because the AI call failed (changes so far are kept)",
       stats: "{model} / {iterations} rounds / input {prompt} tok (cached {cached}) / output {completion} tok",
     },
     editor: {

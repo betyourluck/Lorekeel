@@ -325,9 +325,42 @@ pub(crate) struct MessagesResponse {
     pub content: Vec<ContentBlock>,
     #[serde(default)]
     pub usage: Option<Usage>,
-    /// 終了理由 (`end_turn`/`tool_use`/`max_tokens`/...)。canonical `Finish` の材料。
+    /// 終了理由 (`end_turn`/`tool_use`/`max_tokens`/`refusal`/...)。canonical `Finish` の材料。
     #[serde(default)]
     pub stop_reason: Option<String>,
+    /// `stop_reason: refusal` のときだけ入る拒否の内訳 (分類と説明)。それ以外では null。
+    #[serde(default)]
+    pub stop_details: Option<StopDetails>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct StopDetails {
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub explanation: Option<String>,
+}
+
+/// 安全分類器の拒否なら理由を返す (純粋、2026-10-05、failures #111)。
+///
+/// 拒否は HTTP 200 で返る (`stop_reason: refusal`)。`decode` は `refusal` を `Finish::Other` に
+/// 写すだけなので、ここで拾わないと理由が捨てられ、GM のターンは「構造化出力が得られなかった」・
+/// 素の生成は「空の応答」になる (Gemini のブロック #61 と同じ穴)。分類と説明を両方載せる —
+/// 分類は機械的な切り分け (`reasoning_extraction` / `cyber` / `bio` …)、説明は人が読む手がかり。
+pub(crate) fn refusal_reason(resp: &MessagesResponse) -> Option<String> {
+    if resp.stop_reason.as_deref() != Some("refusal") {
+        return None;
+    }
+    let d = resp.stop_details.clone().unwrap_or_default();
+    let mut reason = match d.category.filter(|c| !c.is_empty()) {
+        Some(c) => format!("refusal / {c}"),
+        None => "refusal".to_string(),
+    };
+    if let Some(e) = d.explanation.filter(|e| !e.trim().is_empty()) {
+        reason.push_str(": ");
+        reason.push_str(e.trim());
+    }
+    Some(reason)
 }
 
 #[derive(Debug, Clone, Deserialize)]
