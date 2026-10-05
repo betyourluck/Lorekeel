@@ -61,7 +61,8 @@ describe("画像生成のプロバイダ Meta", () => {
     await flushPromises();
 
     expect(selectBy(w, t("settings.image.detail")).attributes("disabled")).toBeDefined();
-    const key = w.findAll('input[type="password"]').at(-1);
+    const passwords = w.findAll('input[type="password"]');
+    const key = passwords[passwords.length - 1];
     if (!key) throw new Error("API キー欄が無い");
     await key.setValue("meta-key");
     await key.trigger("change");
