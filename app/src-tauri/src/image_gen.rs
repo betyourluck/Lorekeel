@@ -21,6 +21,9 @@ pub enum Provider {
     Openai,
     Gemini,
     Comfy,
+    /// Meta の `muse-image-1.0` (2026-10-05)。LLM と同じ `POST /v1/responses` に
+    /// `image_generation` ツールを渡す形。
+    Meta,
 }
 
 impl Provider {
@@ -30,6 +33,7 @@ impl Provider {
             Provider::Openai => "openai",
             Provider::Gemini => "gemini",
             Provider::Comfy => "comfy",
+            Provider::Meta => "meta",
         }
     }
 }
@@ -66,7 +70,7 @@ impl PromptStyle {
     /// 既定はプロバイダに倒す (openai/gemini=自然文、comfy=タグ)。
     pub fn default_for(provider: Provider) -> Self {
         match provider {
-            Provider::Openai | Provider::Gemini => PromptStyle::Prose,
+            Provider::Openai | Provider::Gemini | Provider::Meta => PromptStyle::Prose,
             Provider::Comfy => PromptStyle::Tags,
         }
     }
@@ -124,6 +128,8 @@ impl ImageGenConfig {
             Provider::Openai => 120,
             Provider::Gemini => 90,
             Provider::Comfy => 600,
+            // 実測 10〜19 秒 (2026-10-05、参照つきが長い側)。OpenAI と同じ余裕を取る。
+            Provider::Meta => 120,
         });
         Duration::from_secs(secs.max(5))
     }
@@ -139,6 +145,7 @@ impl ImageGenConfig {
             Provider::Openai => "gpt-image-1-mini",
             Provider::Gemini => "gemini-3.1-flash-lite-image",
             Provider::Comfy => "",
+            Provider::Meta => "muse-image-1.0",
         }
     }
 }
@@ -202,6 +209,8 @@ pub fn max_refs(provider: Provider) -> usize {
         Provider::Openai => 3,
         Provider::Gemini => 3,
         Provider::Comfy => 3,
+        // 実測は 1 枚だけ (2026-10-05、見た目を書かずに髪型・目・制服が保たれた)。上限は他と揃える。
+        Provider::Meta => 3,
     }
 }
 
@@ -533,6 +542,123 @@ pub fn decode_gemini(body: &str) -> Result<(String, Vec<u8>), ImageGenError> {
         detail: "inlineData が無い (テキストだけ返った可能性)".into(),
         raw: body.to_string(),
     })
+}
+
+// --- Meta muse-image (契約 `meta`、2026-10-05) ------------------------------------------
+
+/// `POST {base}/responses` の本文 (純関数)。2026-10-05 の実 API 検証で決めた形:
+/// - `size` は**縦横比だけ**を決める (OpenAI と同じ値を流用。`1536x1024` → 1920×1280 /
+///   `1024x1024` → 1600×1600 / `1024x1536` → 1280×1920)。ピクセル数は約 2.5MP 固定で、
+///   `quality` は受理されるが効かず `aspect_ratio` は黙って無視される → 解像度段 (Detail) は送らない
+/// - `output_format: webp` (PNG 約 4MB → webp 約 650KB。保存名は mime から拡張子を選ぶ)
+/// - `reasoning_strength: low` (入力トークンが約 9,900 → 4,000。時間は変わらず — ユーザー決定)
+/// - `store: false` (サンプルは true。送った内容をサーバーに残さない側)
+/// - サンプルにある `enable_shell` / `enable_web_search` / `enable_image_search` は**送らない**
+///   (挿絵に不要で、サーバー側でシェルや検索を動かす課金と挙動が読めない。送らなくても生成できる)
+/// - 参照画像は `input_image` (data URL) をテキストの前に (Gemini と同じ順)
+pub fn encode_meta(cfg: &ImageGenConfig, prompt: &str, refs: &[RefImage]) -> Value {
+    let mut content: Vec<Value> = refs
+        .iter()
+        .map(|r| json!({ "type": "input_image", "image_url": data_url(&r.mime, &r.bytes) }))
+        .collect();
+    content.push(json!({ "type": "input_text", "text": prompt }));
+    json!({
+        "model": cfg.model_or_default(),
+        "store": false,
+        "stream": false,
+        "input": [{ "type": "message", "role": "user", "content": content }],
+        "tools": [{
+            "type": "image_generation",
+            "output_format": "webp",
+            "size": SizeMap::openai_size(cfg.shape),
+            "reasoning_strength": "low",
+        }],
+    })
+}
+
+/// base がホスト直 (`https://api.meta.ai`) なら `/v1` を補う (llm_client の responses と同じ)。
+fn meta_base(cfg: &ImageGenConfig) -> String {
+    let base = cfg.base();
+    if base.ends_with("/v1") {
+        base.to_string()
+    } else {
+        format!("{base}/v1")
+    }
+}
+
+pub fn meta_endpoint(cfg: &ImageGenConfig) -> String {
+    format!("{}/responses", meta_base(cfg))
+}
+
+/// 接続テスト: `GET /v1/models/{model}` (画像を作らない。鍵が違えば 401 — 2026-10-05 実測)。
+pub fn meta_probe_endpoint(cfg: &ImageGenConfig) -> String {
+    format!("{}/models/{}", meta_base(cfg), cfg.model_or_default())
+}
+
+/// 画像の先頭バイトから mime を決める (申告を信じない — 参照ストックの `sniff_mime` と同じ規律)。
+fn sniff_image_mime(bytes: &[u8]) -> &'static str {
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        "image/jpeg"
+    } else {
+        "image/png"
+    }
+}
+
+/// `output[]` の `image_generation_call.result` (base64) → (mime, bytes)。
+///
+/// 画像が返らないときは**モデルの返答と status を理由に載せる**。拒否がどの形で返るかは
+/// 未観測 (わざと危ない内容を送っていない) なので、`Blocked` と決め打ちせず、手がかりを
+/// 全部出す: トップの `error` / `status` と `incomplete_details` / assistant の本文。
+pub fn decode_meta(body: &str) -> Result<(String, Vec<u8>), ImageGenError> {
+    let v: Value = serde_json::from_str(body).map_err(|e| ImageGenError::Shape {
+        detail: format!("JSON でない: {e}"),
+        raw: body.to_string(),
+    })?;
+    if let Some(err) = v.get("error").filter(|e| !e.is_null()) {
+        let msg = err
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| err.to_string());
+        return Err(ImageGenError::Api { status: 200, body: msg });
+    }
+    let output = v.get("output").and_then(Value::as_array).cloned().unwrap_or_default();
+    for item in &output {
+        if item.get("type").and_then(Value::as_str) == Some("image_generation_call") {
+            if let Some(b64) = item.get("result").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                let bytes = base64_decode(b64).ok_or_else(|| ImageGenError::Shape {
+                    detail: "image_generation_call.result が base64 でない".into(),
+                    raw: String::new(),
+                })?;
+                return Ok((sniff_image_mime(&bytes).to_string(), bytes));
+            }
+        }
+    }
+    let status = v.get("status").and_then(Value::as_str).unwrap_or("?");
+    let mut detail = format!("画像が返らなかった (status={status}");
+    if let Some(r) = v.pointer("/incomplete_details/reason").and_then(Value::as_str) {
+        detail.push_str(&format!(", 理由={r}"));
+    }
+    detail.push(')');
+    let said: String = output
+        .iter()
+        .filter(|i| i.get("type").and_then(Value::as_str) == Some("message"))
+        .flat_map(|i| i.get("content").and_then(Value::as_array).cloned().unwrap_or_default())
+        .filter_map(|c| c.get("text").and_then(Value::as_str).map(str::to_string))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if !said.trim().is_empty() {
+        let head: String = said.trim().chars().take(200).collect();
+        detail.push_str(&format!(" モデルの返答: {head}"));
+    }
+    Err(ImageGenError::Shape { detail, raw: body.to_string() })
+}
+
+/// Responses 形の `usage.{input_tokens, output_tokens}` (spec 30 Phase B と同じ扱い)。
+pub fn meta_usage(body: &str) -> (Option<u64>, Option<u64>) {
+    openai_usage(body)
 }
 
 // --- ComfyUI (契約 `comfy`) ---------------------------------------------------------------
@@ -925,6 +1051,32 @@ pub async fn generate(
                 usage: ImageUsage { count: 1, prompt_tokens, completion_tokens, elapsed_sec: t0.elapsed().as_secs_f64() },
             })
         }
+        Provider::Meta => {
+            if api_key.trim().is_empty() {
+                return Err(ImageGenError::Config("Meta の API キーが未設定です".into()));
+            }
+            let body = encode_meta(cfg, prompt, refs);
+            let t0 = std::time::Instant::now();
+            let resp = http
+                .post(meta_endpoint(cfg))
+                .bearer_auth(api_key)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| timeout_or(e, cfg.provider))?;
+            let status = resp.status().as_u16();
+            let text = resp.text().await.map_err(ImageGenError::from)?;
+            if !(200..300).contains(&status) {
+                return Err(classify_status(status, text));
+            }
+            let (mime, bytes) = decode_meta(&text)?;
+            let (prompt_tokens, completion_tokens) = meta_usage(&text);
+            Ok(Generated {
+                mime,
+                bytes,
+                usage: ImageUsage { count: 1, prompt_tokens, completion_tokens, elapsed_sec: t0.elapsed().as_secs_f64() },
+            })
+        }
         Provider::Comfy => {
             let wf_text = cfg
                 .workflow_json
@@ -1052,13 +1204,14 @@ pub async fn probe(cfg: &ImageGenConfig, api_key: &str) -> Result<String, ImageG
             .send()
             .await,
         Provider::Comfy => http.get(format!("{}/system_stats", cfg.base())).send().await,
+        Provider::Meta => http.get(meta_probe_endpoint(cfg)).bearer_auth(api_key).send().await,
     }
     .map_err(|e| timeout_or(e, cfg.provider))?;
     let status = resp.status().as_u16();
     if (200..300).contains(&status) {
         return Ok("接続できました".into());
     }
-    if status == 404 && cfg.provider == Provider::Gemini {
+    if status == 404 && matches!(cfg.provider, Provider::Gemini | Provider::Meta) {
         return Err(ImageGenError::Config(format!(
             "モデル '{}' が見つかりません (404)",
             cfg.model_or_default()
@@ -1079,6 +1232,7 @@ mod tests {
                 Provider::Openai => "https://api.openai.com/v1/".into(),
                 Provider::Gemini => "https://generativelanguage.googleapis.com".into(),
                 Provider::Comfy => "http://127.0.0.1:8188/".into(),
+                Provider::Meta => "https://api.meta.ai/v1/".into(),
             },
             model: String::new(),
             shape: Shape::Landscape,
@@ -1123,6 +1277,74 @@ mod tests {
         assert_eq!(c.style(), PromptStyle::Tags);
         assert_eq!(c.timeout(), Duration::from_secs(600), "comfy は長い");
         assert_eq!(o.timeout(), Duration::from_secs(120));
+    }
+
+    /// 【Meta muse-image (2026-10-05)】実 API 検証で決めた送る形を固定する: size は縦横比だけ
+    /// (OpenAI の値を流用)・解像度段は送らない (quality は効かない)・webp・reasoning_strength low・
+    /// store false・サンプルにあった shell / web / image search は送らない・参照はテキストの前。
+    #[test]
+    fn meta_encodes_image_generation_tool_on_the_responses_endpoint() {
+        let mut m = cfg(Provider::Meta);
+        let body = encode_meta(&m, "a fox", &[]);
+        assert_eq!(body["model"], "muse-image-1.0");
+        assert_eq!(body["store"], false);
+        assert_eq!(body["stream"], false);
+        let tool = &body["tools"][0];
+        assert_eq!(tool["type"], "image_generation");
+        assert_eq!(tool["output_format"], "webp");
+        assert_eq!(tool["reasoning_strength"], "low");
+        assert_eq!(tool["size"], "1536x1024", "横 = 1920x1280 で返る");
+        for k in ["enable_shell", "enable_web_search", "enable_image_search", "quality", "aspect_ratio"] {
+            assert!(tool.get(k).is_none(), "{k} は送らない: {tool}");
+        }
+        assert_eq!(body["input"][0]["content"].as_array().unwrap().len(), 1, "参照なしはテキストだけ");
+        assert_eq!(body["input"][0]["content"][0], json!({"type": "input_text", "text": "a fox"}));
+        m.detail = Detail::Highest;
+        assert_eq!(encode_meta(&m, "a fox", &[]), body, "解像度段は送る形を変えない");
+        m.shape = Shape::Portrait;
+        assert_eq!(encode_meta(&m, "a fox", &[])["tools"][0]["size"], "1024x1536");
+
+        let refs = vec![RefImage { name: "akari.webp".into(), mime: "image/webp".into(), bytes: vec![1, 2, 3] }];
+        let content = encode_meta(&m, "a fox", &refs)["input"][0]["content"].clone();
+        assert_eq!(content[0]["type"], "input_image");
+        assert_eq!(content[0]["image_url"], data_url("image/webp", &[1, 2, 3]));
+        assert_eq!(content[1]["type"], "input_text");
+
+        assert_eq!(meta_endpoint(&m), "https://api.meta.ai/v1/responses");
+        assert_eq!(meta_probe_endpoint(&m), "https://api.meta.ai/v1/models/muse-image-1.0");
+        m.base_url = "https://api.meta.ai".into();
+        assert_eq!(meta_endpoint(&m), "https://api.meta.ai/v1/responses", "ホスト直なら /v1 を補う");
+        assert_eq!(m.style(), PromptStyle::Prose);
+        assert_eq!(m.timeout(), Duration::from_secs(120));
+        assert_eq!(max_refs(Provider::Meta), 3);
+        assert_eq!(Provider::Meta.as_str(), "meta");
+    }
+
+    /// 【Meta decode】`image_generation_call.result` を取り、mime は**中身から**決める (webp を頼んで
+    /// webp が返るのが普通だが、申告を信じない)。画像が無ければ status・理由・モデルの返答を全部載せる。
+    #[test]
+    fn meta_decode_sniffs_mime_and_explains_a_missing_image() {
+        let webp = [b'R', b'I', b'F', b'F', 0, 0, 0, 0, b'W', b'E', b'B', b'P', 9, 9];
+        let ok = format!(
+            r#"{{"status":"completed","error":null,"output":[{{"type":"reasoning","summary":[]}},{{"type":"message","content":[{{"type":"output_text","text":""}}]}},{{"type":"image_generation_call","status":"completed","result":"{}"}}],"usage":{{"input_tokens":4015,"output_tokens":743}}}}"#,
+            base64_encode(&webp)
+        );
+        let (mime, bytes) = decode_meta(&ok).unwrap();
+        assert_eq!((mime.as_str(), bytes.as_slice()), ("image/webp", &webp[..]));
+        assert_eq!(meta_usage(&ok), (Some(4015), Some(743)));
+        let png = [0x89u8, b'P', b'N', b'G', 0, 1];
+        let ok_png = format!(r#"{{"output":[{{"type":"image_generation_call","result":"{}"}}]}}"#, base64_encode(&png));
+        assert_eq!(decode_meta(&ok_png).unwrap().0, "image/png");
+
+        // 画像が無い: 断られた形は未観測なので Blocked と決め打ちせず、手がかりを全部出す。
+        let none = r#"{"status":"incomplete","incomplete_details":{"reason":"content_filter"},"output":[{"type":"message","content":[{"type":"output_text","text":"その画像は作れません。"}]}]}"#;
+        let err = decode_meta(none).unwrap_err().to_string();
+        for want in ["status=incomplete", "content_filter", "その画像は作れません"] {
+            assert!(err.contains(want), "{want} が無い: {err}");
+        }
+        let api = decode_meta(r#"{"error":{"message":"quota exceeded"},"output":[]}"#).unwrap_err();
+        assert!(matches!(api, ImageGenError::Api { status: 200, ref body } if body == "quota exceeded"));
+        assert!(matches!(decode_meta("not json").unwrap_err(), ImageGenError::Shape { .. }));
     }
 
     /// 【OpenAI decode】data[0].b64_json を bytes に / 無ければ raw を保持した Shape。
@@ -1398,6 +1620,7 @@ mod live {
                 Provider::Openai => "https://api.openai.com/v1".into(),
                 Provider::Gemini => "https://generativelanguage.googleapis.com".into(),
                 Provider::Comfy => "http://127.0.0.1:8188".into(),
+                Provider::Meta => "https://api.meta.ai/v1".into(),
             },
             model: String::new(),
             shape: Shape::Landscape,
@@ -1416,7 +1639,11 @@ mod live {
         let t0 = std::time::Instant::now();
         match generate(&cfg, key, prompt, 42, &[]).await {
             Ok(g) => {
-                let ext = if g.mime == "image/jpeg" { "jpg" } else { "png" };
+                let ext = match g.mime.as_str() {
+                    "image/jpeg" => "jpg",
+                    "image/webp" => "webp",
+                    _ => "png",
+                };
                 let path = out_dir().join(format!("kataribe_live_{provider:?}.{ext}"));
                 std::fs::write(&path, &g.bytes).unwrap();
                 eprintln!(
@@ -1446,6 +1673,7 @@ mod live {
                 Provider::Openai => "https://api.openai.com/v1".into(),
                 Provider::Gemini => "https://generativelanguage.googleapis.com".into(),
                 Provider::Comfy => "http://127.0.0.1:8188".into(),
+                Provider::Meta => "https://api.meta.ai/v1".into(),
             },
             model: String::new(),
             shape: Shape::Landscape,
@@ -1549,6 +1777,25 @@ mod live {
             return;
         };
         run(Provider::Gemini, &k).await;
+    }
+
+    /// Meta muse-image (2026-10-05)。鍵は `IMAGE_API_KEY_META` / `META_API_KEY`。
+    /// webp が返り mime が中身から `image/webp` に決まることも見る。
+    #[tokio::test]
+    #[ignore = "実キーが要る live テスト"]
+    async fn meta_generates_one_image() {
+        let Some(k) = key(&["IMAGE_API_KEY_META", "META_API_KEY"]) else {
+            eprintln!("skip: no Meta key");
+            return;
+        };
+        run(Provider::Meta, &k).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "実キーが要る live テスト"]
+    async fn meta_with_reference_sheet() {
+        let Some(k) = key(&["IMAGE_API_KEY_META", "META_API_KEY"]) else { return };
+        run_with_sheet(Provider::Meta, &k).await;
     }
 }
 

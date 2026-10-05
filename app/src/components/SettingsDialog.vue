@@ -58,6 +58,7 @@ import {
   workflowAcceptsSeed,
   workflowAcceptsNegative,
   supportsNegative,
+  supportsDetail,
   toBackendConfig,
   type ImageGenSettings,
   type ImageProvider,
@@ -260,7 +261,7 @@ async function deleteAllKeys() {
     profiles.value = profiles.value.map((p) => ({ ...p, apiKey: "" }));
     await saveProfiles(profiles.value);
     llm.value = { ...llm.value, api_key: "" };
-    imageKeys.value = { openai: "", gemini: "" };
+    imageKeys.value = { openai: "", gemini: "", meta: "" };
     jevToken.value = "";
     jevSaved.value = { ...jevSaved.value, token: "" };
     deleteKeysStatus.value = t("settings.model.deleteKeysDone");
@@ -269,11 +270,11 @@ async function deleteAllKeys() {
   }
   await loadSecretStatus();
 }
-const imageKeys = ref<{ openai: string; gemini: string }>({ openai: "", gemini: "" });
+const imageKeys = ref<{ openai: string; gemini: string; meta: string }>({ openai: "", gemini: "", meta: "" });
 const imageKeyStatus = ref("");
 async function loadImageKeys() {
   try {
-    imageKeys.value = await invoke<{ openai: string; gemini: string }>("get_image_api_keys");
+    imageKeys.value = await invoke<{ openai: string; gemini: string; meta: string }>("get_image_api_keys");
   } catch {
     /* 読めなくても欄が空になるだけ */
   }
@@ -1309,6 +1310,7 @@ onMounted(async () => {
                 <option value="openai">{{ t("settings.image.providerOpenai") }}</option>
                 <option value="gemini">{{ t("settings.image.providerGemini") }}</option>
                 <option value="comfy">{{ t("settings.image.providerComfy") }}</option>
+                <option value="meta">{{ t("settings.image.providerMeta") }}</option>
               </select>
             </label>
             <label class="block text-sm text-parchment/70">
@@ -1355,10 +1357,15 @@ onMounted(async () => {
                   <option value="portrait">{{ t("settings.image.shapePortrait") }}</option>
                 </select>
               </label>
-              <label class="block text-sm text-parchment/70">
+              <label
+                class="block text-sm text-parchment/70"
+                :class="{ 'opacity-40': !supportsDetail(img.provider) }"
+                :title="supportsDetail(img.provider) ? undefined : t('settings.image.detailNotSupported')"
+              >
                 {{ t("settings.image.detail") }}
                 <select
                   :value="img.detail"
+                  :disabled="!supportsDetail(img.provider)"
                   class="mt-1 block w-44 rounded bg-ash/40 px-2 py-1 text-parchment focus:outline-none"
                   @change="setImg({ detail: ($event.target as HTMLSelectElement).value as ImageGenSettings['detail'] })"
                 >

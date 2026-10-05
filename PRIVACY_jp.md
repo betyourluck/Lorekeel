@@ -29,7 +29,7 @@ Lorekeel はデスクトップアプリです。ユーザーアカウントも�
 
 - ゲームマスターが使う AI モデルのキー（`LLM_API_KEY`）
 - 任意: あらすじ要約用と AI 編集用のモデルのキー（`SUMMARY_LLM_API_KEY`、`EDITOR_LLM_API_KEY`）
-- 任意: 画像生成の OpenAI と Google Gemini のキー（`IMAGE_API_KEY_OPENAI`、`IMAGE_API_KEY_GEMINI`）
+- 任意: 画像生成の OpenAI・Google Gemini・Meta のキー（`IMAGE_API_KEY_OPENAI`、`IMAGE_API_KEY_GEMINI`、`IMAGE_API_KEY_META`）
 - 任意: Jev による一貫性チェックのトークン（`JEV_API_TOKEN`）
 - **設定 → AIモデル** で登録したモデルごとのキー（`profile:<id>`）
 
@@ -63,7 +63,7 @@ Lorekeel はデスクトップアプリです。ユーザーアカウントも�
 
 | 機能 | 送り先 | 送るもの |
 |---|---|---|
-| 画像生成（既定は OFF） | OpenAI、Google Gemini、またはあなたが指定した ComfyUI サーバー | 場面を描写したテキストのプロンプト（直前の語り・現在地・その場にいる人物から作ります）と、パッケージに含まれているかあなたが追加した参照画像（最大 3 枚） |
+| 画像生成（既定は OFF） | OpenAI、Google Gemini、Meta、またはあなたが指定した ComfyUI サーバー | 場面を描写したテキストのプロンプト（直前の語り・現在地・その場にいる人物から作ります）と、パッケージに含まれているかあなたが追加した参照画像（最大 3 枚） |
 | Jev による一貫性チェック（開発者モードのときだけ。別途アカウントとトークンが必要） | Cloudflare Workers AI（TypeSafe Jev） | そのターンの語り、直前の語り、登場人物の設定、所持品などのゲームのデータ |
 | 読み上げ（既定は OFF） | OS の音声、またはあなたのコンピューター上で動いているエンジン | 語りのテキスト。VOICEVOX・AivisSpeech・OpenAI 互換エンジンへは `localhost` にしか接続できません。ブラウザ内蔵のエンジンは OS や Web エンジンが提供する音声を使います。オンラインのサービスとして提供される音声を選んだ場合は、その提供者がテキストを処理します。 |
 | 単価表の取り込み（ボタンを押したときだけ） | `betyourluck.github.io` | 単価表の取得リクエスト。あなたやゲームに関する情報は送りません。 |

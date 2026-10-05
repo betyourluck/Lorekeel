@@ -33,6 +33,7 @@ pub const SECRET_ENV_KEYS: &[&str] = &[
     "EDITOR_LLM_API_KEY",
     "IMAGE_API_KEY_OPENAI",
     "IMAGE_API_KEY_GEMINI",
+    "IMAGE_API_KEY_META",
     "JEV_API_TOKEN",
 ];
 

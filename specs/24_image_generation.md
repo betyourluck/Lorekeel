@@ -277,3 +277,32 @@ GM ではない。
 と `v1beta` 必須・モデル id 3 つ・`imageConfig` 無視の癖 (opt-in 二重化) / ComfyUI の 1 秒ポーリング
 と発行直後 404 正常・API 形式 JSON・リモートは CSP 対象外。
 
+## 追補: Meta muse-image（2026-10-05、ユーザー要望 → 実 API 検証 → 実装）
+
+4 つ目のプロバイダ `meta`。LLM の Meta と同じ `POST https://api.meta.ai/v1/responses` に
+`image_generation` ツールを渡す形で、鍵は既存の Meta の鍵で通った。**先に実 API で 12 枚を
+生成して形を確かめてから**実装した（契約は data_contract `ImageGeneration.meta` が正）。
+
+| 確かめたこと | 結果 |
+|---|---|
+| モデル名 | `muse-image-1.0`。`meta-image-1.0` は `Unsupported tool type: 'image_generation'` の 400 |
+| 時間 | 10〜19 秒（参照つきが長い側） |
+| `size` | **縦横比だけ**を決める（`1536x1024` → 1920×1280 / `1024x1024` → 1600×1600 / `1024x1536` → 1280×1920）。ピクセル数は約 2.5MP 固定 |
+| `quality` / `aspect_ratio` | 受理されるが効かない / 黙って無視される → 解像度段は送らず UI でも無効表示 |
+| 参照画像 | `input_image`（data URL）で効く。見た目を書かずに髪型・目・制服が保たれ、参照の背景は混ざらなかった（n=1） |
+| 出力形式 | PNG 約 4MB / **webp 約 650KB**（採用）/ jpeg 約 970KB |
+| `reasoning_strength: low` | 入力トークン 約 9,900 → 4,000、時間は変わらず（採用、質の差は未測定） |
+| サンプルの `enable_shell` 等 | 送らなくても生成できる → 送らない |
+
+**決めたこと（ユーザー決定 2 点を含む）**: webp・`reasoning_strength: low`・`store: false`・
+shell / web / image search は送らない・形は OpenAI の `size` を流用・解像度段は送らない
+（`supportsDetail` = openai | gemini。ComfyUI も形しか差し込まないので同じく無効表示に揃えた）。
+mime は中身から決める（保存名の拡張子は既存の mime 分岐がそのまま効く）。
+鍵 `IMAGE_API_KEY_META` は資格情報ストアの対象（`SECRET_ENV_KEYS`）に入れた — 入れ忘れると
+新しい鍵が `.env` に平文で書かれる。
+
+**✅実機 Green（2026-10-05 ユーザー実測）**: アプリ本体で湖畔の洋館の挿絵を生成し、第三の画像層に表示された。
+
+**未確認**: 断られたときの形（わざと危ない内容を送っていない — 画像が無いときは status・理由・
+モデルの返答を全部エラーに載せ、`Blocked` と決め打ちしない）/ 料金（応答に金額の欄が無い）/
+参照 2〜3 枚の効き方。

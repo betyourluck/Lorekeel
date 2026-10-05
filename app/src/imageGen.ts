@@ -7,7 +7,7 @@
 // 「既定値なら差し替え」は撤去 — A 用のカスタム URL が B へ漏れる事故の根治)。
 import comfyGeneric from "./assets/comfy_generic.json";
 
-export type ImageProvider = "openai" | "gemini" | "comfy";
+export type ImageProvider = "openai" | "gemini" | "comfy" | "meta";
 export type ImageShape = "square" | "landscape" | "portrait";
 export type ImageDetail = "standard" | "high" | "highest";
 export type ImagePromptStyle = "tags" | "prose";
@@ -53,15 +53,17 @@ export const DEFAULT_BASE_URL: Record<ImageProvider, string> = {
   openai: "https://api.openai.com/v1",
   gemini: "https://generativelanguage.googleapis.com",
   comfy: "http://127.0.0.1:8188",
+  meta: "https://api.meta.ai/v1",
 };
 
 export const DEFAULT_MODEL: Record<ImageProvider, string> = {
   openai: "gpt-image-1-mini",
   gemini: "gemini-3.1-flash-lite-image",
   comfy: "",
+  meta: "muse-image-1.0",
 };
 
-const PROVIDERS: ImageProvider[] = ["openai", "gemini", "comfy"];
+const PROVIDERS: ImageProvider[] = ["openai", "gemini", "comfy", "meta"];
 
 /**
  * ComfyUI の negative の既定値 (2026-08-26 実測)。
@@ -106,6 +108,7 @@ export function defaultImageGenSettings(): ImageGenSettings {
       openai: defaultSlot("openai"),
       gemini: defaultSlot("gemini"),
       comfy: defaultSlot("comfy"),
+      meta: defaultSlot("meta"),
     },
   };
 }
@@ -142,8 +145,8 @@ export function migrateImageGenSettings(raw: unknown): ImageGenSettings {
   if (!raw || typeof raw !== "object") return out;
   const r = raw as Record<string, unknown>;
   if (typeof r.enabled === "boolean") out.enabled = r.enabled;
-  if (r.provider === "openai" || r.provider === "gemini" || r.provider === "comfy") {
-    out.provider = r.provider;
+  if (typeof r.provider === "string" && (PROVIDERS as string[]).includes(r.provider)) {
+    out.provider = r.provider as ImageProvider;
   }
   if (r.shape === "square" || r.shape === "landscape" || r.shape === "portrait") out.shape = r.shape;
   if (r.detail === "standard" || r.detail === "high" || r.detail === "highest") out.detail = r.detail;
@@ -199,6 +202,15 @@ export function effectiveStyle(s: ImageGenSettings): ImagePromptStyle {
 /** ネガティブプロンプトが効くプロバイダか (契約 negative_prompt)。 */
 export function supportsNegative(p: ImageProvider): boolean {
   return p === "comfy";
+}
+
+/**
+ * 解像度段 (detail) が効くプロバイダか。OpenAI は quality、Gemini は imageSize に写る。
+ * **Meta は効かない** (2026-10-05 実測: ピクセル数は約 2.5MP 固定で、quality は受理されるが
+ * 無視される)。ComfyUI も形 (幅×高さ) しか差し込まない。効かない選択肢を押せる状態にしない。
+ */
+export function supportsDetail(p: ImageProvider): boolean {
+  return p === "openai" || p === "gemini";
 }
 
 /** 同梱の汎用 ComfyUI ワークフロー (API 形式、プレースホルダ入り)。 */

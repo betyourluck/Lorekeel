@@ -1324,6 +1324,7 @@ fn image_api_key_env(provider: image_gen::Provider) -> Option<&'static str> {
     match provider {
         image_gen::Provider::Openai => Some("IMAGE_API_KEY_OPENAI"),
         image_gen::Provider::Gemini => Some("IMAGE_API_KEY_GEMINI"),
+        image_gen::Provider::Meta => Some("IMAGE_API_KEY_META"),
         image_gen::Provider::Comfy => None,
     }
 }
@@ -1339,6 +1340,7 @@ fn image_api_key(provider: image_gen::Provider) -> String {
 struct ImageApiKeysView {
     openai: String,
     gemini: String,
+    meta: String,
 }
 
 #[tauri::command]
@@ -1346,6 +1348,7 @@ fn get_image_api_keys() -> ImageApiKeysView {
     ImageApiKeysView {
         openai: image_api_key(image_gen::Provider::Openai),
         gemini: image_api_key(image_gen::Provider::Gemini),
+        meta: image_api_key(image_gen::Provider::Meta),
     }
 }
 
