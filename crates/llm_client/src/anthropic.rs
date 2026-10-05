@@ -172,18 +172,15 @@ pub(crate) fn encode_with(req: &canonical::ChatRequest, forced_ok: bool) -> Mess
                 cache_control: None,
             }),
             // 先頭以外の system は user へ降格 (壊さない)。
-            Role::System | Role::User => turns.push(TurnMessage {
-                role: "user",
-                content: TurnContent::Text(m.content.clone()),
-            }),
+            Role::System | Role::User => push_user(&mut turns, TurnContent::Text(m.content.clone())),
             // ツール結果は user ロールの tool_result ブロック (spec 29 Phase A)。
-            Role::Tool => turns.push(TurnMessage {
-                role: "user",
-                content: TurnContent::Blocks(vec![RequestBlock::ToolResult {
+            Role::Tool => push_user(
+                &mut turns,
+                TurnContent::Blocks(vec![RequestBlock::ToolResult {
                     tool_use_id: m.tool_call_id.clone().unwrap_or_default(),
                     content: m.content.clone(),
                 }]),
-            }),
+            ),
             Role::Assistant if m.tool_calls.is_empty() => turns.push(TurnMessage {
                 role: "assistant",
                 content: TurnContent::Text(m.content.clone()),
@@ -240,7 +237,9 @@ pub(crate) fn encode_with(req: &canonical::ChatRequest, forced_ok: bool) -> Mess
             canonical::ToolChoice::Auto | canonical::ToolChoice::Required => {
                 Some(ToolChoice { kind: "auto", name: None })
             }
-            canonical::ToolChoice::None => None,
+            // tools を見せたまま呼ばせない (spec 29 のまとめの周)。欄ごと省くと既定の auto に
+            // 化けるので明示する (2026-10-05)。tools が無いときは上の分岐で欄ごと出さない。
+            canonical::ToolChoice::None => Some(ToolChoice { kind: "none", name: None }),
         }
     };
 
@@ -264,6 +263,37 @@ pub(crate) fn encode_with(req: &canonical::ChatRequest, forced_ok: bool) -> Mess
         tool_choice,
         thinking,
         output_config,
+    }
+}
+
+/// user ターンを積む。**直前も user なら 1 つにまとめる** (2026-10-05) — 役割は交互でなければ
+/// ならず (claude-api リファレンス: 同じ役割の連続は 400)、ツール結果は 1 つの user に
+/// まとめて返す (分けると並列呼び出しをしなくなる)。従来は結果 1 本ごとに別の user にしており、
+/// spec 29 の編集ループ (1 周に複数呼び出し / 結果の直後に指摘を積む) でこの形になっていた。
+/// 文字列どうしは空行で連結し ([`append_to_last_user`] と同じ)、それ以外はブロック列に揃えて足す
+/// (tool_result が先・text が後になるのは、積む順がそうだから)。
+fn push_user(turns: &mut Vec<TurnMessage>, content: TurnContent) {
+    let Some(last) = turns.last_mut().filter(|t| t.role == "user") else {
+        turns.push(TurnMessage { role: "user", content });
+        return;
+    };
+    let prev = std::mem::replace(&mut last.content, TurnContent::Text(String::new()));
+    last.content = match (prev, content) {
+        (TurnContent::Text(a), TurnContent::Text(b)) => TurnContent::Text(format!("{a}
+
+{b}")),
+        (a, b) => {
+            let mut blocks = into_blocks(a);
+            blocks.extend(into_blocks(b));
+            TurnContent::Blocks(blocks)
+        }
+    };
+}
+
+fn into_blocks(c: TurnContent) -> Vec<RequestBlock> {
+    match c {
+        TurnContent::Text(text) => vec![RequestBlock::Text { text }],
+        TurnContent::Blocks(b) => b,
     }
 }
 

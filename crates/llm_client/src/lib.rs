@@ -1322,8 +1322,13 @@ mod tests {
         // user ターンの数は増えない (末尾に足すだけ)。
         assert_eq!(auto["messages"].as_array().unwrap().len(), forced["messages"].as_array().unwrap().len());
 
-        // 最後がツール結果 (ブロック) なら text ブロックとして足す。
+        // 最後がツール結果 (ブロック) なら text ブロックとして足す。結果の前には呼び出しを置く
+        // (実際の往復の形。置かないと結果が直前の user とまとまり、tool_result が先頭でなくなる)。
         let mut tool_msgs = user_msgs();
+        tool_msgs.push(ChatMessage::assistant_tool_calls(
+            "",
+            vec![ToolCall { id: "tu_1".into(), name: "read".into(), args: serde_json::json!({}), thought_signature: None }],
+        ));
         tool_msgs.push(ChatMessage {
             role: Role::Tool,
             content: "ok".into(),
@@ -2192,7 +2197,11 @@ mod tests {
             .iter()
             .map(|m| m["role"].as_str().unwrap())
             .collect();
-        assert_eq!(roles, vec!["user", "user"], "先頭以外の system は user に降格");
+        assert_eq!(roles, vec!["user"], "先頭以外の system は user に降格し、直前の user とまとめる");
+        // 2026-10-05: 従来は user が 2 つ並んでいた (役割は交互でなければならない)。
+        assert_eq!(body["messages"][0]["content"], "行動
+
+後付け指示");
     }
 
     // --- Responses ワイヤ (Perplexity Agent API `/v1/responses`、2026-08-20) ------------

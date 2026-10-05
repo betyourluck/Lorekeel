@@ -229,11 +229,23 @@ pub trait ToolChat {
         messages: Vec<ChatMessage>,
         tools: Vec<ToolSpec>,
     ) -> impl Future<Output = Result<ChatTurn, LlmError>> + Send;
+
+    /// まとめの周: 道具の定義は渡すが**呼ばせない** 1 往復。履歴にはツールの往復が残っているので、
+    /// 道具を外して送るか「同じ道具 + 呼ばせない」で送るかはプロバイダで違う — 判断は llm_client
+    /// ([`LlmClient::chat_wrap_up`]) が持ち、ループは常に全部の道具を渡す。
+    fn wrap_up(
+        &self,
+        messages: Vec<ChatMessage>,
+        tools: Vec<ToolSpec>,
+    ) -> impl Future<Output = Result<ChatTurn, LlmError>> + Send;
 }
 
 impl ToolChat for LlmClient {
     async fn chat(&self, messages: Vec<ChatMessage>, tools: Vec<ToolSpec>) -> Result<ChatTurn, LlmError> {
         LlmClient::chat(self, messages, tools).await
+    }
+    async fn wrap_up(&self, messages: Vec<ChatMessage>, tools: Vec<ToolSpec>) -> Result<ChatTurn, LlmError> {
+        LlmClient::chat_wrap_up(self, messages, tools).await
     }
 }
 
@@ -403,7 +415,7 @@ pub async fn run_edit_loop<C: ToolChat>(
                 "道具の呼び出しが上限に達しました。これ以上は書き換えられません。ここまでに何をどう直したか (残っていることがあれば何が残っているか) を 2〜3 行で報告してください。",
             ));
             progress("まとめの 1 周 (上限)".into());
-            let turn = chat.chat(messages.clone(), Vec::new()).await?;
+            let turn = chat.wrap_up(messages.clone(), tools.clone()).await?;
             out.iterations += 1;
             add_usage(&mut out, &turn);
             out.summary = turn.text.unwrap_or_default();
@@ -565,14 +577,27 @@ mod tests {
     }
 
     // --- fake ---
-    struct Scripted(Mutex<Vec<ChatTurn>>);
-    impl ToolChat for Scripted {
-        async fn chat(&self, _m: Vec<ChatMessage>, _t: Vec<ToolSpec>) -> Result<ChatTurn, LlmError> {
+    /// 台本どおりに返し、各周が「どの入口で・道具を何本」受け取ったかを記録する。
+    struct Scripted(Mutex<Vec<ChatTurn>>, Mutex<Vec<(&'static str, usize)>>);
+    impl Scripted {
+        fn new(turns: Vec<ChatTurn>) -> Self {
+            Self(Mutex::new(turns), Mutex::new(Vec::new()))
+        }
+        fn next(&self, kind: &'static str, tools: usize) -> Result<ChatTurn, LlmError> {
+            self.1.lock().unwrap().push((kind, tools));
             let mut q = self.0.lock().unwrap();
             if q.is_empty() {
                 return Ok(text_turn("(台本切れ)"));
             }
             Ok(q.remove(0))
+        }
+    }
+    impl ToolChat for Scripted {
+        async fn chat(&self, _m: Vec<ChatMessage>, t: Vec<ToolSpec>) -> Result<ChatTurn, LlmError> {
+            self.next("chat", t.len())
+        }
+        async fn wrap_up(&self, _m: Vec<ChatMessage>, t: Vec<ToolSpec>) -> Result<ChatTurn, LlmError> {
+            self.next("wrap_up", t.len())
         }
     }
     fn text_turn(t: &str) -> ChatTurn {
@@ -616,20 +641,31 @@ mod tests {
     }
 
     fn run(turns: Vec<ChatTurn>, exec: &mut FakeExec, cancel: &AtomicBool) -> EditOutcome {
-        let chat = Scripted(Mutex::new(turns));
+        run_logged(turns, exec, cancel).0
+    }
+    /// [`run`] + 各周が受け取った (入口, 道具の本数) の列。
+    fn run_logged(
+        turns: Vec<ChatTurn>,
+        exec: &mut FakeExec,
+        cancel: &AtomicBool,
+    ) -> (EditOutcome, Vec<(&'static str, usize)>) {
+        let chat = Scripted::new(turns);
         let mut lines = Vec::new();
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
         let initial = exec.text.clone();
-        rt.block_on(run_edit_loop(
-            &chat,
-            vec![ChatMessage::system("s"), ChatMessage::user("u")],
-            tool_specs(),
-            exec,
-            &initial,
-            cancel,
-            &mut |l| lines.push(l),
-        ))
-        .unwrap()
+        let out = rt
+            .block_on(run_edit_loop(
+                &chat,
+                vec![ChatMessage::system("s"), ChatMessage::user("u")],
+                tool_specs(),
+                exec,
+                &initial,
+                cancel,
+                &mut |l| lines.push(l),
+            ))
+            .unwrap();
+        let log = chat.1.into_inner().unwrap();
+        (out, log)
     }
 
     /// 【往復】read → sd preview → sd apply → 報告。呼び出しは順に実行され、本文が差し替わり、
@@ -738,10 +774,16 @@ mod tests {
             .collect();
         turns.push(text_turn("ここまでで 2 箇所を直しました。"));
         turns.push(call_turn(vec![("never", "read", json!({}))]));
-        let out = run(turns, &mut exec, &AtomicBool::new(false));
+        let (out, log) = run_logged(turns, &mut exec, &AtomicBool::new(false));
         assert_eq!(out.stopped, Some(Stopped::Limit));
         assert_eq!(out.iterations, MAX_ITERATIONS);
-        assert_eq!(exec.log.len(), (MAX_ITERATIONS - 1) as usize, "まとめの周は道具を持たない");
+        assert_eq!(exec.log.len(), (MAX_ITERATIONS - 1) as usize, "まとめの周は道具を呼ばない");
+        // まとめの周も**道具は全部渡す** (外すかどうかはプロバイダの判断 = llm_client)。
+        // 2026-10-05: 従来は空の道具で chat を呼んでおり、履歴にツールの往復が残る Anthropic では
+        // tools 配列が変わる = 思考の保持で「履歴の書き換え」扱いになりうる形だった。
+        let n = tool_specs().len();
+        assert_eq!(log.last(), Some(&("wrap_up", n)), "{log:?}");
+        assert!(log[..log.len() - 1].iter().all(|e| *e == ("chat", n)), "{log:?}");
         assert_eq!(out.summary, "ここまでで 2 箇所を直しました。");
     }
 

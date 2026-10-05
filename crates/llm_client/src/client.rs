@@ -13,6 +13,23 @@ use crate::anthropic;
 use crate::canonical;
 use crate::wire::ToolCall;
 
+/// まとめの周 (ツールを呼ばせない往復) で送る tools と tool_choice (純粋、2026-10-05)。
+///
+/// 履歴にはツールの往復が残っている。**Anthropic は同じ tools を送り `tool_choice: none`** —
+/// 思考の保持では `tools` 配列も「書き換えてはいけない履歴」に含まれ、配列が変わると
+/// 再送した思考ブロックが 400 になりうる (2026-08-31 以降に作られたアカウントは既定で検査)。
+/// **他は従来どおり tools を外す** — Meta は `none` を 400 で拒む (#78) ので一律にできず、
+/// 互換・Gemini・Responses のまとめの周は実 API で未確認なので確かめるまで挙動を変えない。
+pub(crate) fn wrap_up_tools(
+    provider: Provider,
+    tools: Vec<canonical::ToolSpec>,
+) -> (Vec<canonical::ToolSpec>, canonical::ToolChoice) {
+    match provider {
+        Provider::Anthropic => (tools, canonical::ToolChoice::None),
+        _ => (Vec::new(), canonical::ToolChoice::None),
+    }
+}
+
 /// [`LlmClient::chat`] の 1 往復の結果 (canonical の応答をそのまま公開する薄い形)。
 #[derive(Debug, Clone)]
 pub struct ChatTurn {
@@ -328,6 +345,27 @@ impl LlmClient {
             messages,
             tools,
             tool_choice: canonical::ToolChoice::Auto,
+            temperature: self.config.temperature,
+            max_tokens: self.config.max_tokens,
+            effort: self.config.effort,
+        };
+        let resp = self.complete(req).await?;
+        Ok(ChatTurn { text: resp.text, tool_calls: resp.tool_calls, finish: resp.finish, usage: resp.usage })
+    }
+
+    /// ツールを**呼ばせない** 1 往復 (spec 29 のまとめの周)。履歴にはツールの往復が残っているので、
+    /// 何を送るかはプロバイダごとに違う — [`wrap_up_tools`] が決める。
+    pub async fn chat_wrap_up(
+        &self,
+        messages: Vec<ChatMessage>,
+        tools: Vec<canonical::ToolSpec>,
+    ) -> Result<ChatTurn, LlmError> {
+        let (tools, tool_choice) = wrap_up_tools(self.config.provider, tools);
+        let req = canonical::ChatRequest {
+            model: self.config.model.clone(),
+            messages,
+            tools,
+            tool_choice,
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
             effort: self.config.effort,

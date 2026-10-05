@@ -100,16 +100,70 @@ mod tests {
         let blocks = a["content"].as_array().unwrap();
         assert_eq!(blocks.len(), 2, "{blocks:?}");
         assert_eq!(blocks[0], json!({"type": "tool_use", "id": "tu_1", "name": "read", "input": {"path": "package.yaml"}}));
-        // 結果は **user** ロールの tool_result ブロック。
+        // 結果は **user** ロールの tool_result ブロックで、**1 つの user メッセージにまとめる**
+        // (2026-10-05 — 1 本ずつ別の user にしていた。claude-api リファレンス: 同じ役割の連続は 400 /
+        // 結果は 1 つの user にまとめよ、分けると並列呼び出しをしなくなる)。
         assert_eq!(
             msgs[2],
-            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": "1: title: x\n2: hp: 10"}]})
+            json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "tu_1", "content": "1: title: x\n2: hp: 10"},
+                {"type": "tool_result", "tool_use_id": "tu_2", "content": "preview: -hp: 10 +hp: 12"}
+            ]})
         );
-        assert_eq!(msgs[3]["content"][0]["tool_use_id"], "tu_2");
-        assert_eq!(msgs[4], json!({"role": "assistant", "content": "直しました。"}));
+        assert_eq!(msgs[3], json!({"role": "assistant", "content": "直しました。"}));
+        assert_eq!(msgs.len(), 4);
         // Auto は {type: auto}。tools は 2 本とも載る。
         assert_eq!(v["tool_choice"], json!({"type": "auto"}));
         assert_eq!(v["tools"].as_array().unwrap().len(), 2);
+    }
+
+    /// 【AI 編集 × Anthropic (2026-10-05)】spec 29 Phase E は Anthropic の鍵が無く Grok で代用した
+    /// ので、Anthropic 経路の編集ループは実 API を一度も通っていなかった。コードを読んで見つけた形:
+    /// - ツール結果の直後に指摘・上限の通知を **別の user** として積む → user が連続する
+    /// - まとめの周 (上限) は「道具を見せるが呼ばせない」を表す必要がある → tools は同じものを送り
+    ///   (配列が変わると思考の保持で「履歴の書き換え」扱い)、`tool_choice: none` を**明示**する。
+    ///   従来は `ToolChoice::None` が欄ごと省かれ、tools があると既定の auto に化けていた。
+    #[test]
+    fn anthropic_keeps_roles_alternating_and_sends_explicit_none() {
+        let mut msgs = roundtrip_messages(("tu_1", "tu_2"));
+        msgs.pop(); // 最後の assistant を外し、結果の直後に user の通知を積む
+        msgs.push(ChatMessage::user("道具の呼び出しが上限に達しました。報告してください。"));
+        let mut req = request(msgs);
+        req.tool_choice = ToolChoice::None;
+        let v = to_value(&anthropic::encode(&req));
+        let turns = v["messages"].as_array().unwrap();
+        let roles: Vec<&str> = turns.iter().map(|m| m["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, ["user", "assistant", "user"], "役割は交互: {turns:?}");
+        // tool_result が先、通知の text が後 (tool_result は user の先頭に置く)。
+        let last: Vec<&str> =
+            turns[2]["content"].as_array().unwrap().iter().map(|b| b["type"].as_str().unwrap()).collect();
+        assert_eq!(last, ["tool_result", "tool_result", "text"]);
+        // 道具は見せたまま、呼ばせない。
+        assert_eq!(v["tool_choice"], json!({"type": "none"}));
+        assert_eq!(v["tools"].as_array().unwrap().len(), 2);
+
+        // 文字列どうしの user が並んだ場合も 1 つにまとめる (先頭以外の system の降格など)。
+        let plain = to_value(&anthropic::encode(&ChatRequest {
+            tools: vec![],
+            ..request(vec![ChatMessage::user("a"), ChatMessage::user("b")])
+        }));
+        assert_eq!(plain["messages"], json!([{"role": "user", "content": "a\n\nb"}]));
+        assert!(plain.get("tool_choice").is_none(), "tools が無ければ欄ごと出さない (従来どおり)");
+    }
+
+    /// まとめの周で何を送るか (プロバイダ別)。Anthropic は「同じ tools + none」、他は従来どおり
+    /// tools を外す (Meta は `none` を 400 で拒む = 一律にできない。互換・Gemini・Responses の
+    /// まとめの周は実 API で未確認なので、確かめるまで挙動を変えない)。
+    #[test]
+    fn wrap_up_round_keeps_tools_only_for_anthropic() {
+        use crate::client::wrap_up_tools;
+        use crate::config::Provider;
+        let (t, c) = wrap_up_tools(Provider::Anthropic, tools());
+        assert_eq!((t.len(), c), (2, ToolChoice::None));
+        for p in [Provider::OpenAiCompat, Provider::Gemini, Provider::Responses] {
+            let (t, c) = wrap_up_tools(p, tools());
+            assert_eq!((t.len(), c), (0, ToolChoice::None), "{p:?}");
+        }
     }
 
     #[test]
