@@ -29,7 +29,7 @@ All entries use the service name `jp.lorekeel.app`. On Windows they appear as `<
 
 - the key for the AI model used by the game master (`LLM_API_KEY`)
 - the optional keys for the synopsis model and the AI editing model (`SUMMARY_LLM_API_KEY`, `EDITOR_LLM_API_KEY`)
-- the optional image-generation keys for OpenAI, Google Gemini and Meta (`IMAGE_API_KEY_OPENAI`, `IMAGE_API_KEY_GEMINI`, `IMAGE_API_KEY_META`)
+- the optional image-generation keys for OpenAI, Google Gemini, Meta and xAI (`IMAGE_API_KEY_OPENAI`, `IMAGE_API_KEY_GEMINI`, `IMAGE_API_KEY_META`, `IMAGE_API_KEY_XAI`)
 - the optional Jev consistency-check token (`JEV_API_TOKEN`)
 - one key per model you register in **Settings → AI Model** (`profile:<id>`)
 
@@ -63,7 +63,7 @@ These requests go directly from your computer to that provider. **The provider's
 
 | Feature | Sent to | What is sent |
 |---|---|---|
-| Image generation (off by default) | OpenAI, Google Gemini, Meta, or a ComfyUI server you specify | A text prompt describing the scene (built from the recent narration, the location, and the characters present), plus up to three reference images from the package or that you added |
+| Image generation (off by default) | OpenAI, Google Gemini, Meta, xAI, or a ComfyUI server you specify | A text prompt describing the scene (built from the recent narration, the location, and the characters present), plus up to three reference images from the package or that you added |
 | Jev consistency check (developer mode only, needs its own account and token) | Cloudflare Workers AI (TypeSafe Jev) | That turn's narration, the preceding narration, character profiles, inventories, and similar game data |
 | Text-to-speech (off by default) | Your operating system's voices, or an engine running on your own computer | The narration text. VOICEVOX, AivisSpeech, and OpenAI-compatible engines can only be reached at `localhost`. The built-in engine uses the voices your operating system or web engine provides; if you choose a voice that is delivered as an online service, its provider processes the text. |
 | Price table import (only when you press the button) | `betyourluck.github.io` | A request for the price table. Nothing about you or your game is sent. |

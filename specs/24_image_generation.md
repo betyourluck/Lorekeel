@@ -306,3 +306,37 @@ mime は中身から決める（保存名の拡張子は既存の mime 分岐が
 **未確認**: 断られたときの形（わざと危ない内容を送っていない — 画像が無いときは status・理由・
 モデルの返答を全部エラーに載せ、`Blocked` と決め打ちしない）/ 料金（応答に金額の欄が無い）/
 参照 2〜3 枚の効き方。
+
+## 追補: xAI（grok-imagine-image-2.0）
+
+（2026-10-09、ユーザー要望 → ドキュメントどおりに実装 → 実 API で確認）
+
+5 つ目のプロバイダ `xai`。OpenAI Images と同じ `generations` / `edits` の 2 口だが、
+**edits も JSON**（multipart ではない。OpenAI SDK の `images.edit()` は使えないと docs に明記）で、
+参照は `images: [{type: "image_url", url: <data URL>}]` の配列（最大 5 枚、送った順に適用）。
+契約は data_contract `ImageGeneration.xai` が正。
+
+| 確かめたこと | 結果 |
+|---|---|
+| 応答 | `{"data":[{"b64_json":…, "mime_type":"image/jpeg"}], "usage":{"cost_in_usd_ticks":400000000}}`。**トークン数は返らない** |
+| 料金 | `cost_in_usd_ticks` は 1e-10 USD 単位（1k + low で $0.04）。料金ページの埋め込みデータと同じ単位・同じ値 |
+| 出力 | JPEG。1k の横長で 1280×720・約 470KB |
+| 時間 | 9.8〜16.9 秒（参照つきが短い側だった、n=1 ずつ） |
+| `aspect_ratio` | 効く。正方形の参照を渡しても 16:9 を保った（明示しないと 1 枚目の参照に揃う — docs） |
+| 参照画像 | data URL で効く。参照の人物の髪と顔立ちが保たれ、参照の背景（夜景）とプロンプトに無い人物は混ざらなかった（n=1・目視） |
+| 接続テスト | `GET /v1/image-generation-models/{model}` が鍵の確認に使える（画像を作らない） |
+
+**決めたこと**: 解像度段は (`resolution`, `quality`) の組に写す — 標準 = 1k + low（$0.04）/
+高 = 2k + low（$0.06）/ 最高 = 2k + medium（$0.08）。`quality` の既定 `auto` は edits では
+medium になるので毎回明示する。「最高」が「高」と別の段になるので UI に出す
+（`supportsHighestDetail` = openai | xai。Gemini は 2K が上限で「高」と同じ）。参照の上限は
+API の 5 でなく参照ストックの枠 3 に揃えた。mime は中身から決める（申告の `mime_type` は使わない）。
+鍵 `IMAGE_API_KEY_XAI` は資格情報ストアの対象（`SECRET_ENV_KEYS`）。
+
+**運ばなかったもの**: `cost_in_usd_ticks`（費用の申告）は `ImageUsage` に費用の欄が無いので利用量の
+計器に載せていない（spec 30 の領分。画像に申告費用を運ぶなら OpenAI・Gemini・Meta も含めた設計になる）。
+
+**✅実機 Green（2026-10-09 ユーザー実測）**: アプリ本体で lakeside_manor と ui_and_ruka の挿絵を生成した（JPEG で保存）。
+
+**未確認**: 断られたときの形（docs の `respect_moderation: false` を Blocked に写したが、通常の応答には
+欄自体が無く、拒否は未観測）/ 参照 2〜3 枚の効き方 / 2k と medium の質の差。

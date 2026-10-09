@@ -18,7 +18,7 @@ function ipc(keys: Record<string, string>): IpcTable {
     get_llm_config: () => ({ base_url: "", model: "", api_key: "", use_tools: true, effort: "", max_tokens: "" }),
     get_default_log_dir: () => "C:\\logs",
     get_default_image_dir: () => "C:\\images",
-    get_image_api_keys: () => ({ openai: "", gemini: "", meta: "" }),
+    get_image_api_keys: () => ({ openai: "", gemini: "", meta: "", xai: "" }),
     get_summary_llm_config: () => ({ timeout_secs: 0 }),
     get_recent_turns: () => 0,
     usage_snapshot: () => null,
@@ -74,5 +74,39 @@ describe("画像生成のプロバイダ Meta", () => {
     await provider.setValue("openai");
     await flushPromises();
     expect(selectBy(w, t("settings.image.detail")).attributes("disabled")).toBeUndefined();
+  });
+});
+
+/** 解像度の段の選択肢 (value) を並べる。 */
+function detailOptions(w: VueWrapper): (string | undefined)[] {
+  return selectBy(w, t("settings.image.detail"))
+    .findAll("option")
+    .map((o) => o.attributes("value"));
+}
+
+describe("画像生成のプロバイダ xAI", () => {
+  it("xAI を選ぶと鍵の欄が出て xAI 用に保存され、解像度は「最高」まで選べる", async () => {
+    const keys: Record<string, string> = {};
+    const w = await openImageTab(keys);
+
+    const provider = selectBy(w, t("settings.image.provider"));
+    expect(provider.findAll("option").map((o) => o.attributes("value"))).toContain("xai");
+    await provider.setValue("xai");
+    await flushPromises();
+
+    expect(selectBy(w, t("settings.image.detail")).attributes("disabled")).toBeUndefined();
+    expect(detailOptions(w)).toEqual(["standard", "high", "highest"]);
+    const all = w.findAll('input[type="password"]');
+    const key = all[all.length - 1];
+    if (!key) throw new Error("API キー欄が無い");
+    await key.setValue("xai-key");
+    await key.trigger("change");
+    await flushPromises();
+    expect(keys).toEqual({ xai: "xai-key" });
+
+    // Gemini では「最高」は「高」と同じ 2K になるので出さない。
+    await provider.setValue("gemini");
+    await flushPromises();
+    expect(detailOptions(w)).toEqual(["standard", "high"]);
   });
 });

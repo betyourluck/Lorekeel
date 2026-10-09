@@ -7,7 +7,7 @@
 // 「既定値なら差し替え」は撤去 — A 用のカスタム URL が B へ漏れる事故の根治)。
 import comfyGeneric from "./assets/comfy_generic.json";
 
-export type ImageProvider = "openai" | "gemini" | "comfy" | "meta";
+export type ImageProvider = "openai" | "gemini" | "comfy" | "meta" | "xai";
 export type ImageShape = "square" | "landscape" | "portrait";
 export type ImageDetail = "standard" | "high" | "highest";
 export type ImagePromptStyle = "tags" | "prose";
@@ -54,6 +54,7 @@ export const DEFAULT_BASE_URL: Record<ImageProvider, string> = {
   gemini: "https://generativelanguage.googleapis.com",
   comfy: "http://127.0.0.1:8188",
   meta: "https://api.meta.ai/v1",
+  xai: "https://api.x.ai/v1",
 };
 
 export const DEFAULT_MODEL: Record<ImageProvider, string> = {
@@ -61,9 +62,10 @@ export const DEFAULT_MODEL: Record<ImageProvider, string> = {
   gemini: "gemini-3.1-flash-lite-image",
   comfy: "",
   meta: "muse-image-1.0",
+  xai: "grok-imagine-image-2.0",
 };
 
-const PROVIDERS: ImageProvider[] = ["openai", "gemini", "comfy", "meta"];
+const PROVIDERS: ImageProvider[] = ["openai", "gemini", "comfy", "meta", "xai"];
 
 /**
  * ComfyUI の negative の既定値 (2026-08-26 実測)。
@@ -109,6 +111,7 @@ export function defaultImageGenSettings(): ImageGenSettings {
       gemini: defaultSlot("gemini"),
       comfy: defaultSlot("comfy"),
       meta: defaultSlot("meta"),
+      xai: defaultSlot("xai"),
     },
   };
 }
@@ -205,12 +208,21 @@ export function supportsNegative(p: ImageProvider): boolean {
 }
 
 /**
- * 解像度段 (detail) が効くプロバイダか。OpenAI は quality、Gemini は imageSize に写る。
+ * 解像度段 (detail) が効くプロバイダか。OpenAI は quality、Gemini は imageSize、
+ * xAI は resolution (1k / 2k) と quality (low / medium) の組に写る。
  * **Meta は効かない** (2026-10-05 実測: ピクセル数は約 2.5MP 固定で、quality は受理されるが
  * 無視される)。ComfyUI も形 (幅×高さ) しか差し込まない。効かない選択肢を押せる状態にしない。
  */
 export function supportsDetail(p: ImageProvider): boolean {
-  return p === "openai" || p === "gemini";
+  return p === "openai" || p === "gemini" || p === "xai";
+}
+
+/**
+ * 「最高」の段が「高」と別物になるプロバイダか。OpenAI は quality high、xAI は 2k + medium
+ * ($0.08、2k + low は $0.06)。Gemini は 2K が上限で「高」と同じになるので出さない。
+ */
+export function supportsHighestDetail(p: ImageProvider): boolean {
+  return p === "openai" || p === "xai";
 }
 
 /** 同梱の汎用 ComfyUI ワークフロー (API 形式、プレースホルダ入り)。 */

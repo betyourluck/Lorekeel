@@ -6,6 +6,7 @@ import {
   effectiveStyle,
   migrateImageGenSettings,
   supportsDetail,
+  supportsHighestDetail,
   supportsNegative,
   toBackendConfig,
 } from "./imageGen";
@@ -47,5 +48,37 @@ describe("Meta の画像生成プロバイダ", () => {
     expect(supportsDetail("meta")).toBe(false);
     expect(supportsDetail("comfy")).toBe(false);
     expect(supportsNegative("meta")).toBe(false);
+  });
+});
+
+// xAI grok-imagine (2026-10-09)。解像度段は (resolution, quality) の組に写る (backend の SizeMap)。
+describe("xAI の画像生成プロバイダ", () => {
+  it("既定値と backend への写像 (散文・negative とワークフローは送らない)", () => {
+    const s = { ...defaultImageGenSettings(), provider: "xai" as const };
+    expect(DEFAULT_BASE_URL.xai).toBe("https://api.x.ai/v1");
+    expect(DEFAULT_MODEL.xai).toBe("grok-imagine-image-2.0");
+    const b = toBackendConfig(s);
+    expect(b.provider).toBe("xai");
+    expect(b.base_url).toBe("https://api.x.ai/v1");
+    expect(b.model).toBe("grok-imagine-image-2.0");
+    expect(b.negative).toBe("");
+    expect(b.workflow_json).toBeNull();
+    expect(b.lock_seed).toBe(false);
+    expect(effectiveStyle(s)).toBe("prose");
+  });
+
+  it("保存済みの provider: xai を読め、xai のスロットを持たない古いデータは既定で埋まる", () => {
+    expect(migrateImageGenSettings({ provider: "xai", perProvider: {} }).provider).toBe("xai");
+    const m = migrateImageGenSettings({ provider: "meta", perProvider: { meta: { baseUrl: "https://m/v1" } } });
+    expect(m.perProvider.xai.baseUrl).toBe("https://api.x.ai/v1");
+    expect(m.perProvider.meta.baseUrl).toBe("https://m/v1");
+  });
+
+  it("解像度段は効き、「最高」(2k + medium) も別の段として出す", () => {
+    expect(supportsDetail("xai")).toBe(true);
+    expect(supportsHighestDetail("xai")).toBe(true);
+    expect(supportsHighestDetail("openai")).toBe(true);
+    expect(supportsHighestDetail("gemini")).toBe(false);
+    expect(supportsNegative("xai")).toBe(false);
   });
 });

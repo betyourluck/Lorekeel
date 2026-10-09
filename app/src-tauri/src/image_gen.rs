@@ -24,6 +24,9 @@ pub enum Provider {
     /// Meta の `muse-image-1.0` (2026-10-05)。LLM と同じ `POST /v1/responses` に
     /// `image_generation` ツールを渡す形。
     Meta,
+    /// xAI の `grok-imagine-image-2.0` (2026-10-09)。OpenAI Images と同じ `generations` /
+    /// `edits` の 2 口だが、**edits も JSON** (multipart ではない) で参照は data URL の配列。
+    Xai,
 }
 
 impl Provider {
@@ -34,6 +37,7 @@ impl Provider {
             Provider::Gemini => "gemini",
             Provider::Comfy => "comfy",
             Provider::Meta => "meta",
+            Provider::Xai => "xai",
         }
     }
 }
@@ -70,7 +74,7 @@ impl PromptStyle {
     /// 既定はプロバイダに倒す (openai/gemini=自然文、comfy=タグ)。
     pub fn default_for(provider: Provider) -> Self {
         match provider {
-            Provider::Openai | Provider::Gemini | Provider::Meta => PromptStyle::Prose,
+            Provider::Openai | Provider::Gemini | Provider::Meta | Provider::Xai => PromptStyle::Prose,
             Provider::Comfy => PromptStyle::Tags,
         }
     }
@@ -130,6 +134,8 @@ impl ImageGenConfig {
             Provider::Comfy => 600,
             // 実測 10〜19 秒 (2026-10-05、参照つきが長い側)。OpenAI と同じ余裕を取る。
             Provider::Meta => 120,
+            // 実測 9.8〜16.9 秒 (2026-10-09)。OpenAI と同じ余裕を取る。
+            Provider::Xai => 120,
         });
         Duration::from_secs(secs.max(5))
     }
@@ -146,6 +152,7 @@ impl ImageGenConfig {
             Provider::Gemini => "gemini-3.1-flash-lite-image",
             Provider::Comfy => "",
             Provider::Meta => "muse-image-1.0",
+            Provider::Xai => "grok-imagine-image-2.0",
         }
     }
 }
@@ -183,6 +190,20 @@ impl SizeMap {
             Detail::High | Detail::Highest => "2K",
         }
     }
+    /// xAI の `aspect_ratio` (Gemini と同じ語彙)。
+    pub fn xai_aspect(shape: Shape) -> &'static str {
+        Self::gemini_aspect(shape)
+    }
+    /// xAI の (`resolution`, `quality`)。単価 (2026-10-09 料金ページ) は 1k+low $0.04 /
+    /// 2k+low $0.06 / 2k+medium $0.08。標準は最安に倒す (OpenAI の low 既定と同じ判断)。
+    /// `quality` の既定 `auto` は**edits では medium** になるので、毎回明示する。
+    pub fn xai_resolution_quality(detail: Detail) -> (&'static str, &'static str) {
+        match detail {
+            Detail::Standard => ("1k", "low"),
+            Detail::High => ("2k", "low"),
+            Detail::Highest => ("2k", "medium"),
+        }
+    }
     /// SDXL 系の既定 (`%width%`×`%height%`)。
     pub fn comfy_dims(shape: Shape) -> (u32, u32) {
         match shape {
@@ -211,6 +232,8 @@ pub fn max_refs(provider: Provider) -> usize {
         Provider::Comfy => 3,
         // 実測は 1 枚だけ (2026-10-05、見た目を書かずに髪型・目・制服が保たれた)。上限は他と揃える。
         Provider::Meta => 3,
+        // API は 5 枚まで受ける (multi-image-editing)。参照ストックの枠 3 に揃える。
+        Provider::Xai => 3,
     }
 }
 
@@ -661,6 +684,97 @@ pub fn meta_usage(body: &str) -> (Option<u64>, Option<u64>) {
     openai_usage(body)
 }
 
+// --- xAI grok-imagine (契約 `xai`、2026-10-09) -----------------------------------------
+
+/// 本文 (純関数)。参照なしは `generations`、ありは `edits` に同じ形で `images` を足す。
+/// - `aspect_ratio` は**毎回明示**: edits は省くと 1 枚目の参照の縦横比に揃う (docs)
+/// - `resolution` / `quality` は [`SizeMap::xai_resolution_quality`]
+/// - `response_format: b64_json` (既定は一時 URL。取りに行く往復を増やさない)
+/// - 参照は `{type: image_url, url: data URL}` の配列 (送った順に適用される)
+pub fn encode_xai(cfg: &ImageGenConfig, prompt: &str, refs: &[RefImage]) -> Value {
+    let (resolution, quality) = SizeMap::xai_resolution_quality(cfg.detail);
+    let mut body = json!({
+        "model": cfg.model_or_default(),
+        "prompt": prompt,
+        "n": 1,
+        "aspect_ratio": SizeMap::xai_aspect(cfg.shape),
+        "resolution": resolution,
+        "quality": quality,
+        "response_format": "b64_json",
+    });
+    if !refs.is_empty() {
+        body["images"] = Value::Array(
+            refs.iter()
+                .map(|r| json!({ "type": "image_url", "url": data_url(&r.mime, &r.bytes) }))
+                .collect(),
+        );
+    }
+    body
+}
+
+fn xai_base(cfg: &ImageGenConfig) -> String {
+    let base = cfg.base();
+    if base.ends_with("/v1") {
+        base.to_string()
+    } else {
+        format!("{base}/v1")
+    }
+}
+
+/// 参照の有無で口を選ぶ (OpenAI と同じ分岐)。
+pub fn xai_endpoint(cfg: &ImageGenConfig, with_refs: bool) -> String {
+    let path = if with_refs { "images/edits" } else { "images/generations" };
+    format!("{}/{path}", xai_base(cfg))
+}
+
+/// 接続テスト: `GET /v1/image-generation-models/{model}` (画像を作らない)。
+pub fn xai_probe_endpoint(cfg: &ImageGenConfig) -> String {
+    format!("{}/image-generation-models/{}", xai_base(cfg), cfg.model_or_default())
+}
+
+/// `data[0].b64_json` → (mime, bytes)。mime は**中身から**決める (実測の応答は
+/// `{"data":[{"b64_json":…,"mime_type":"image/jpeg"}],"usage":{"cost_in_usd_ticks":…}}` で JPEG)。
+/// `respect_moderation: false` は SDK が「モデレーションで隠された」と扱う欄 (docs。通常の応答には
+/// 欄自体が無い・断られた形は未観測) → Blocked。
+pub fn decode_xai(body: &str) -> Result<(String, Vec<u8>), ImageGenError> {
+    let v: Value = serde_json::from_str(body).map_err(|e| ImageGenError::Shape {
+        detail: format!("JSON でない: {e}"),
+        raw: body.to_string(),
+    })?;
+    if let Some(err) = v.get("error").filter(|e| !e.is_null()) {
+        let msg = err
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| err.to_string());
+        return Err(ImageGenError::Api { status: 200, body: msg });
+    }
+    let item = v.pointer("/data/0");
+    if item.and_then(|i| i.get("respect_moderation")).and_then(Value::as_bool) == Some(false) {
+        return Err(ImageGenError::Blocked { reason: "moderation".into() });
+    }
+    let b64 = item
+        .and_then(|i| i.get("b64_json"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ImageGenError::Shape {
+            detail: "data[0].b64_json が無い".into(),
+            raw: body.to_string(),
+        })?;
+    let bytes = base64_decode(b64).ok_or_else(|| ImageGenError::Shape {
+        detail: "b64_json が base64 でない".into(),
+        raw: String::new(),
+    })?;
+    Ok((sniff_image_mime(&bytes).to_string(), bytes))
+}
+
+/// トークン数は返らない (2026-10-09 実測: `usage` は `cost_in_usd_ticks` だけ = 1e-10 USD 単位、
+/// 1k+low で 400000000 = $0.04)。費用は [`ImageUsage`] に欄が無いので今は運ばない (spec 30 の領分)。
+/// openai 形の欄が将来来たときだけ拾う。
+pub fn xai_usage(body: &str) -> (Option<u64>, Option<u64>) {
+    openai_usage(body)
+}
+
 // --- ComfyUI (契約 `comfy`) ---------------------------------------------------------------
 
 pub struct ComfyVars<'a> {
@@ -1077,6 +1191,32 @@ pub async fn generate(
                 usage: ImageUsage { count: 1, prompt_tokens, completion_tokens, elapsed_sec: t0.elapsed().as_secs_f64() },
             })
         }
+        Provider::Xai => {
+            if api_key.trim().is_empty() {
+                return Err(ImageGenError::Config("xAI の API キーが未設定です".into()));
+            }
+            let body = encode_xai(cfg, prompt, refs);
+            let t0 = std::time::Instant::now();
+            let resp = http
+                .post(xai_endpoint(cfg, !refs.is_empty()))
+                .bearer_auth(api_key)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| timeout_or(e, cfg.provider))?;
+            let status = resp.status().as_u16();
+            let text = resp.text().await.map_err(ImageGenError::from)?;
+            if !(200..300).contains(&status) {
+                return Err(classify_status(status, text));
+            }
+            let (mime, bytes) = decode_xai(&text)?;
+            let (prompt_tokens, completion_tokens) = xai_usage(&text);
+            Ok(Generated {
+                mime,
+                bytes,
+                usage: ImageUsage { count: 1, prompt_tokens, completion_tokens, elapsed_sec: t0.elapsed().as_secs_f64() },
+            })
+        }
         Provider::Comfy => {
             let wf_text = cfg
                 .workflow_json
@@ -1205,13 +1345,14 @@ pub async fn probe(cfg: &ImageGenConfig, api_key: &str) -> Result<String, ImageG
             .await,
         Provider::Comfy => http.get(format!("{}/system_stats", cfg.base())).send().await,
         Provider::Meta => http.get(meta_probe_endpoint(cfg)).bearer_auth(api_key).send().await,
+        Provider::Xai => http.get(xai_probe_endpoint(cfg)).bearer_auth(api_key).send().await,
     }
     .map_err(|e| timeout_or(e, cfg.provider))?;
     let status = resp.status().as_u16();
     if (200..300).contains(&status) {
         return Ok("接続できました".into());
     }
-    if status == 404 && matches!(cfg.provider, Provider::Gemini | Provider::Meta) {
+    if status == 404 && matches!(cfg.provider, Provider::Gemini | Provider::Meta | Provider::Xai) {
         return Err(ImageGenError::Config(format!(
             "モデル '{}' が見つかりません (404)",
             cfg.model_or_default()
@@ -1233,6 +1374,7 @@ mod tests {
                 Provider::Gemini => "https://generativelanguage.googleapis.com".into(),
                 Provider::Comfy => "http://127.0.0.1:8188/".into(),
                 Provider::Meta => "https://api.meta.ai/v1/".into(),
+                Provider::Xai => "https://api.x.ai/v1/".into(),
             },
             model: String::new(),
             shape: Shape::Landscape,
@@ -1345,6 +1487,71 @@ mod tests {
         let api = decode_meta(r#"{"error":{"message":"quota exceeded"},"output":[]}"#).unwrap_err();
         assert!(matches!(api, ImageGenError::Api { status: 200, ref body } if body == "quota exceeded"));
         assert!(matches!(decode_meta("not json").unwrap_err(), ImageGenError::Shape { .. }));
+    }
+
+    /// 【xAI grok-imagine (2026-10-09)】送る形: 参照なしは generations・ありは edits (**どちらも
+    /// JSON**)・aspect_ratio は毎回明示 (edits は省くと 1 枚目の参照に揃う)・解像度段は
+    /// (resolution, quality) の組に写る・quality は auto に任せない・b64_json・参照は data URL の配列。
+    #[test]
+    fn xai_encodes_generations_and_edits_with_explicit_aspect_and_quality() {
+        let mut x = cfg(Provider::Xai);
+        let body = encode_xai(&x, "a fox", &[]);
+        assert_eq!(body["model"], "grok-imagine-image-2.0");
+        assert_eq!(body["prompt"], "a fox");
+        assert_eq!(body["n"], 1);
+        assert_eq!(body["aspect_ratio"], "16:9");
+        assert_eq!((body["resolution"].as_str(), body["quality"].as_str()), (Some("1k"), Some("low")));
+        assert_eq!(body["response_format"], "b64_json");
+        assert!(body.get("images").is_none(), "参照なしは images を送らない");
+        assert_eq!(xai_endpoint(&x, false), "https://api.x.ai/v1/images/generations");
+
+        for (d, want) in [(Detail::High, ("2k", "low")), (Detail::Highest, ("2k", "medium"))] {
+            x.detail = d;
+            let b = encode_xai(&x, "a fox", &[]);
+            assert_eq!((b["resolution"].as_str().unwrap(), b["quality"].as_str().unwrap()), want, "{d:?}");
+        }
+        x.detail = Detail::Standard;
+        x.shape = Shape::Portrait;
+        let refs = vec![
+            RefImage { name: "a.webp".into(), mime: "image/webp".into(), bytes: vec![1, 2, 3] },
+            RefImage { name: "b.png".into(), mime: "image/png".into(), bytes: vec![4, 5] },
+        ];
+        let b = encode_xai(&x, "a fox", &refs);
+        assert_eq!(b["aspect_ratio"], "9:16", "参照ありでも形を明示する");
+        assert_eq!(b["quality"], "low", "edits の auto (=medium) に任せない");
+        assert_eq!(b["images"][0], json!({"type": "image_url", "url": data_url("image/webp", &[1, 2, 3])}));
+        assert_eq!(b["images"][1]["url"], data_url("image/png", &[4, 5]), "送った順を保つ");
+        assert_eq!(xai_endpoint(&x, true), "https://api.x.ai/v1/images/edits");
+
+        assert_eq!(xai_probe_endpoint(&x), "https://api.x.ai/v1/image-generation-models/grok-imagine-image-2.0");
+        x.base_url = "https://api.x.ai".into();
+        assert_eq!(xai_endpoint(&x, false), "https://api.x.ai/v1/images/generations", "ホスト直なら /v1 を補う");
+        assert_eq!(x.style(), PromptStyle::Prose);
+        assert_eq!(x.timeout(), Duration::from_secs(120));
+        assert_eq!(max_refs(Provider::Xai), 3);
+        assert_eq!(Provider::Xai.as_str(), "xai");
+        assert_eq!(serde_json::to_value(Provider::Xai).unwrap(), "xai", "frontend の語彙と同じ綴り");
+    }
+
+    /// 【xAI decode】b64_json を取り mime は中身から (docs の例は JPEG)。`respect_moderation: false` は
+    /// Blocked、本文に error があれば Api、画像が無ければ raw を保持した Shape。
+    #[test]
+    fn xai_decode_sniffs_mime_and_reports_moderation() {
+        let jpeg = [0xffu8, 0xd8, 0xff, 0xe0, 1, 2];
+        // 実測の応答の形 (2026-10-09): mime_type と usage.cost_in_usd_ticks、トークン数は無い。
+        let ok = format!(
+            r#"{{"data":[{{"b64_json":"{}","mime_type":"image/jpeg"}}],"usage":{{"cost_in_usd_ticks":400000000}}}}"#,
+            base64_encode(&jpeg)
+        );
+        let (mime, bytes) = decode_xai(&ok).unwrap();
+        assert_eq!((mime.as_str(), bytes.as_slice()), ("image/jpeg", &jpeg[..]));
+        let filtered = r#"{"data":[{"b64_json":"","respect_moderation":false}]}"#;
+        assert!(matches!(decode_xai(filtered).unwrap_err(), ImageGenError::Blocked { ref reason } if reason == "moderation"));
+        let api = decode_xai(r#"{"error":{"message":"bad prompt"}}"#).unwrap_err();
+        assert!(matches!(api, ImageGenError::Api { status: 200, ref body } if body == "bad prompt"));
+        let url_only = r#"{"data":[{"url":"https://imgen.x.ai/tmp.jpg"}]}"#;
+        assert!(matches!(decode_xai(url_only).unwrap_err(), ImageGenError::Shape { ref raw, .. } if raw.contains("imgen")));
+        assert_eq!(xai_usage(&ok), (None, None), "トークン数は返らない (画像は落とさない)");
     }
 
     /// 【OpenAI decode】data[0].b64_json を bytes に / 無ければ raw を保持した Shape。
@@ -1605,8 +1812,16 @@ Please retry in 13s.","status":"RESOURCE_EXHAUSTED"}}"#;
 mod live {
     use super::*;
 
+    /// env を先に、無ければ OS の資格情報ストア (spec 34 以降、設定画面で入れた鍵はそこに居る)。
     fn key(names: &[&str]) -> Option<String> {
-        names.iter().find_map(|n| std::env::var(n).ok().filter(|v| !v.trim().is_empty()))
+        use crate::secret_store::SecretStore;
+        names
+            .iter()
+            .find_map(|n| std::env::var(n).ok().filter(|v| !v.trim().is_empty()))
+            .or_else(|| {
+                let store = crate::secret_store::KeyringStore::new();
+                names.iter().find_map(|n| store.get(n).ok().flatten().filter(|v| !v.trim().is_empty()))
+            })
     }
 
     fn out_dir() -> std::path::PathBuf {
@@ -1621,6 +1836,7 @@ mod live {
                 Provider::Gemini => "https://generativelanguage.googleapis.com".into(),
                 Provider::Comfy => "http://127.0.0.1:8188".into(),
                 Provider::Meta => "https://api.meta.ai/v1".into(),
+                Provider::Xai => "https://api.x.ai/v1".into(),
             },
             model: String::new(),
             shape: Shape::Landscape,
@@ -1674,6 +1890,7 @@ mod live {
                 Provider::Gemini => "https://generativelanguage.googleapis.com".into(),
                 Provider::Comfy => "http://127.0.0.1:8188".into(),
                 Provider::Meta => "https://api.meta.ai/v1".into(),
+                Provider::Xai => "https://api.x.ai/v1".into(),
             },
             model: String::new(),
             shape: Shape::Landscape,
@@ -1796,6 +2013,83 @@ mod live {
     async fn meta_with_reference_sheet() {
         let Some(k) = key(&["IMAGE_API_KEY_META", "META_API_KEY"]) else { return };
         run_with_sheet(Provider::Meta, &k).await;
+    }
+
+    /// 応答の骨格 (長い文字列 = 画像の base64 は長さだけ) — usage や料金の欄があるかを見る。
+    fn skeleton(v: &Value) -> Value {
+        match v {
+            Value::String(s) if s.len() > 120 => Value::String(format!("<{} chars>", s.len())),
+            Value::Array(a) => Value::Array(a.iter().map(skeleton).collect()),
+            Value::Object(o) => Value::Object(o.iter().map(|(k, v)| (k.clone(), skeleton(v))).collect()),
+            other => other.clone(),
+        }
+    }
+
+    /// xAI grok-imagine (2026-10-09)。鍵は `IMAGE_API_KEY_XAI` / `XAI_API_KEY`。
+    /// 接続テスト → `encode_xai` の本文をそのまま送り、応答の骨格を出してから `decode_xai` /
+    /// `xai_usage` で読む (送る形・読む形の両方を実ワイヤで確かめる)。
+    #[tokio::test]
+    #[ignore = "実キーが要る live テスト"]
+    async fn xai_generates_one_image() {
+        let Some(k) = key(&["IMAGE_API_KEY_XAI", "XAI_API_KEY"]) else {
+            eprintln!("skip: no xAI key");
+            return;
+        };
+        let cfg = ImageGenConfig {
+            provider: Provider::Xai,
+            base_url: "https://api.x.ai/v1".into(),
+            model: String::new(),
+            shape: Shape::Landscape,
+            detail: Detail::Standard,
+            style: None,
+            user_prefix: String::new(),
+            negative: String::new(),
+            workflow_json: None,
+            timeout_secs: None,
+            lock_seed: false,
+            seed: 0,
+        };
+        eprintln!("probe: {:?}", probe(&cfg, &k).await.map_err(|e| e.to_string()));
+        let prompt = "A dusty entrance hall of an old lakeside mansion at dusk, a chandelier covered in dust, a man in his thirties in a worn coat holding a bag, soft warm light from a window, watercolor illustration, muted colors.";
+        let t0 = std::time::Instant::now();
+        let resp = reqwest::Client::new()
+            .post(xai_endpoint(&cfg, false))
+            .bearer_auth(&k)
+            .json(&encode_xai(&cfg, prompt, &[]))
+            .send()
+            .await
+            .unwrap();
+        let status = resp.status().as_u16();
+        let headers: Vec<String> = resp
+            .headers()
+            .iter()
+            .filter(|(n, _)| {
+                let n = n.as_str();
+                n.contains("cost") || n.contains("usage") || n.contains("ratelimit") || n.contains("request-id")
+            })
+            .map(|(n, v)| format!("{n}: {}", v.to_str().unwrap_or("?")))
+            .collect();
+        let text = resp.text().await.unwrap();
+        eprintln!("status={status} elapsed={:.1}s headers={headers:?}", t0.elapsed().as_secs_f32());
+        match serde_json::from_str::<Value>(&text) {
+            Ok(v) => eprintln!("skeleton: {}", skeleton(&v)),
+            Err(_) => eprintln!("non-json: {}", text.chars().take(300).collect::<String>()),
+        }
+        assert_eq!(status, 200);
+        let (mime, bytes) = decode_xai(&text).unwrap();
+        eprintln!("decoded: mime={mime} bytes={} usage={:?}", bytes.len(), xai_usage(&text));
+        let ext = if mime == "image/jpeg" { "jpg" } else if mime == "image/webp" { "webp" } else { "png" };
+        let path = out_dir().join(format!("kataribe_live_Xai.{ext}"));
+        std::fs::write(&path, &bytes).unwrap();
+        eprintln!("-> {}", path.display());
+        assert!(bytes.len() > 1000);
+    }
+
+    #[tokio::test]
+    #[ignore = "実キーが要る live テスト"]
+    async fn xai_with_reference_sheet() {
+        let Some(k) = key(&["IMAGE_API_KEY_XAI", "XAI_API_KEY"]) else { return };
+        run_with_sheet(Provider::Xai, &k).await;
     }
 }
 

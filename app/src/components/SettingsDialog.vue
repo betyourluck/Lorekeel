@@ -59,6 +59,7 @@ import {
   workflowAcceptsNegative,
   supportsNegative,
   supportsDetail,
+  supportsHighestDetail,
   toBackendConfig,
   type ImageGenSettings,
   type ImageProvider,
@@ -261,7 +262,7 @@ async function deleteAllKeys() {
     profiles.value = profiles.value.map((p) => ({ ...p, apiKey: "" }));
     await saveProfiles(profiles.value);
     llm.value = { ...llm.value, api_key: "" };
-    imageKeys.value = { openai: "", gemini: "", meta: "" };
+    imageKeys.value = { openai: "", gemini: "", meta: "", xai: "" };
     jevToken.value = "";
     jevSaved.value = { ...jevSaved.value, token: "" };
     deleteKeysStatus.value = t("settings.model.deleteKeysDone");
@@ -270,11 +271,16 @@ async function deleteAllKeys() {
   }
   await loadSecretStatus();
 }
-const imageKeys = ref<{ openai: string; gemini: string; meta: string }>({ openai: "", gemini: "", meta: "" });
+const imageKeys = ref<{ openai: string; gemini: string; meta: string; xai: string }>({
+  openai: "",
+  gemini: "",
+  meta: "",
+  xai: "",
+});
 const imageKeyStatus = ref("");
 async function loadImageKeys() {
   try {
-    imageKeys.value = await invoke<{ openai: string; gemini: string; meta: string }>("get_image_api_keys");
+    imageKeys.value = await invoke<{ openai: string; gemini: string; meta: string; xai: string }>("get_image_api_keys");
   } catch {
     /* 読めなくても欄が空になるだけ */
   }
@@ -1311,6 +1317,7 @@ onMounted(async () => {
                 <option value="gemini">{{ t("settings.image.providerGemini") }}</option>
                 <option value="comfy">{{ t("settings.image.providerComfy") }}</option>
                 <option value="meta">{{ t("settings.image.providerMeta") }}</option>
+                <option value="xai">{{ t("settings.image.providerXai") }}</option>
               </select>
             </label>
             <label class="block text-sm text-parchment/70">
@@ -1371,7 +1378,7 @@ onMounted(async () => {
                 >
                   <option value="standard">{{ t("settings.image.detailStandard") }}</option>
                   <option value="high">{{ t("settings.image.detailHigh") }}</option>
-                  <option v-if="img.provider === 'openai'" value="highest">{{ t("settings.image.detailHighest") }}</option>
+                  <option v-if="supportsHighestDetail(img.provider)" value="highest">{{ t("settings.image.detailHighest") }}</option>
                 </select>
               </label>
               <label class="block text-sm text-parchment/70">
