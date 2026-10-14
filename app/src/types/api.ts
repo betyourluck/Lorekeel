@@ -206,6 +206,8 @@ export interface GameView {
   title: string;
   location: string;
   description: string;
+  /** 登場人物の一覧 (spec 35 Phase D のキャラ別の声の割り当ての素)。 */
+  cast: CharacterView[];
   state: StateView;
   /** 現在地の背景画像の絶対パス (convertFileSrc で URL 化する)。無ければ null。 */
   background: string | null;
@@ -364,9 +366,23 @@ export interface ConsistencyView {
   model: string;
 }
 
+/**
+ * 語りの 1 段 (spec 35 Phase C)。地の文は `name` が空、登場人物の台詞は `speaker` = id・`icon` =
+ * アセット ID、名もない人物は `speaker` が null で `name` = ラベル。
+ */
+export interface SegmentView {
+  speaker: string | null;
+  name: string;
+  icon: string | null;
+  text: string;
+}
+
 export interface TurnView {
   accepted: boolean;
+  /** 表示用の平らな語り (台詞は `名前「…」`)。ログ書き出しと、段が無いときの描画に使う。 */
   narration: string;
+  /** 話者を解決した段 (spec 35)。空でなければ吹き出しで描く。却下ターンは空。 */
+  segments: SegmentView[];
   rolls: RollView[];
   checks: CheckView[];
   /** 可変量ダイス (roll_stat) の監査記録 (spec 16)。 */
@@ -418,11 +434,21 @@ export interface TurnView {
   facts_policy: string;
 }
 
+/** 会話ログに積む段。`icon` は解決済みの URL (無ければ頭文字で描く)。 */
+export interface SegmentEntry {
+  speaker: string | null;
+  name: string;
+  icon: string | null;
+  text: string;
+}
+
 // 会話ログの 1 エントリ (frontend ローカルの描画モデル)。
 export type LogEntry =
   | { kind: "opening"; text: string }
   | { kind: "player"; text: string }
-  | { kind: "narration"; text: string }
+  // segments があれば段ごとに描く (台詞は吹き出し、spec 35)。再開の「前回までの語り」や
+  // エピローグは平らな text だけ。
+  | { kind: "narration"; text: string; segments?: SegmentEntry[] }
   // 作者が YAML に書いた確定文 (GoalDef.narration の結末文など)。GM の即興と混ぜると
   // 「どこまでが作者の意図か」が読み手から見えなくなるので、色で分ける。
   | { kind: "authored"; text: string }

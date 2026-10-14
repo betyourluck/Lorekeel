@@ -318,6 +318,8 @@ struct GameView {
     bgm: Option<String>,
     /// 現在地に居る NPC (顔アイコン行)。
     present_characters: Vec<CharacterView>,
+    /// 登場人物の一覧 (spec 35 Phase D のキャラ別の声の割り当て UI の素)。
+    cast: Vec<CharacterView>,
     /// オートセーブから再開したときの再開情報 (spec 07 Phase C)。新規開始なら None。
     resumed: Option<ResumeView>,
     /// scenario の lint (非 fatal な作者向け警告。死んだ flag_hint 等)。開幕ログに ⚠ で出す。
@@ -399,7 +401,10 @@ struct ResumeView {
 struct TurnView {
     /// 受理されたか (false なら却下されつづけた)。
     accepted: bool,
+    /// 表示用の平らな語り (spec 35 の `plain`)。ログ書き出し・読み上げ (Phase D まで) が読む。
     narration: String,
+    /// 話者を解決した段 (spec 35 Phase C)。frontend は空でなければ吹き出しで描く。却下ターンは空。
+    segments: Vec<SegmentView>,
     rolls: Vec<RollView>,
     checks: Vec<CheckView>,
     /// 可変量ダイス (roll_stat) の監査記録 (spec 16)。
@@ -546,6 +551,60 @@ struct CharacterView {
     id: String,
     name: String,
     icon: Option<String>,
+}
+
+/// 語りの 1 段 (spec 35 Phase C)。frontend の吹き出しと読み上げの素。
+///
+/// - 地の文: `speaker` None・`name` 空・`icon` None
+/// - 台詞 (登場人物): `speaker` = entity id・`name` = 表示名 (空なら id)・`icon` = アセット ID
+/// - 台詞 (名もない人物): `speaker` None・`name` = ラベル・`icon` None
+///
+/// 名前とアイコンは scenario から引く。**この場にいる人の一覧からは引かない** — 適用後に退場した
+/// 人の台詞もありうる (照合は開始時 ∪ 適用後の顔ぶれで通している)。
+#[derive(Serialize, Debug, PartialEq)]
+struct SegmentView {
+    speaker: Option<String>,
+    name: String,
+    icon: Option<String>,
+    text: String,
+}
+
+fn segment_views(scenario: &Scenario, segments: &[gm_core::ResolvedSegment]) -> Vec<SegmentView> {
+    segments
+        .iter()
+        .map(|seg| {
+            let text = normalize(&seg.text);
+            match &seg.speaker {
+                None => SegmentView { speaker: None, name: String::new(), icon: None, text },
+                Some(gm_core::Speaker::Extra(label)) => {
+                    SegmentView { speaker: None, name: label.clone(), icon: None, text }
+                }
+                Some(gm_core::Speaker::Entity(id)) => {
+                    let def = scenario.characters.get(id);
+                    let name = def.map(|d| d.name.trim()).filter(|n| !n.is_empty()).unwrap_or(id);
+                    SegmentView {
+                        speaker: Some(id.clone()),
+                        name: name.to_string(),
+                        icon: def.and_then(|d| d.icon.clone()),
+                        text,
+                    }
+                }
+            }
+        })
+        .collect()
+}
+
+/// 登場人物の一覧 (spec 35 Phase D: キャラ別の声の割り当て UI の素)。宣言順でなく id 順で安定。
+fn cast_view(scenario: &Scenario) -> Vec<CharacterView> {
+    scenario
+        .characters
+        .iter()
+        .map(|(id, def)| CharacterView {
+            id: id.clone(),
+            name: if def.name.trim().is_empty() { id.clone() } else { def.name.clone() },
+            icon: def.icon.clone(),
+        })
+        .collect()
 }
 
 /// 現在地に「いる」キャラを顔アイコン行用に列挙する (presence)。
@@ -3773,6 +3832,7 @@ async fn new_game(
         background: background_for(&scenario, &state),
         bgm: bgm_for(&scenario, &state),
         present_characters: present_characters(&scenario, &state),
+        cast: cast_view(&scenario),
         resumed: None,
         warnings: {
             let mut w = lint_warnings;
@@ -3932,6 +3992,7 @@ async fn restore_session(
             .or_else(|| background_for(&scenario, &state)),
         bgm: bgm_for(&scenario, &state),
         present_characters: present_characters(&scenario, &state),
+        cast: cast_view(&scenario),
         resumed: Some(ResumeView {
             turn: state.turn,
             last_narration: normalize(&save.last_narration),
@@ -4777,7 +4838,7 @@ async fn do_play_turn(
         TurnOutcome::Accepted {
             narration,
             gm_narration,
-            segments: _,
+            segments,
             summary,
             rolls,
             checks,
@@ -4899,6 +4960,7 @@ async fn do_play_turn(
             TurnView {
                 accepted: true,
                 narration: normalize(&narration),
+                segments: segment_views(&sess.scenario, &segments),
                 rolls: rolls
                     .iter()
                     .map(|r| RollView {
@@ -4955,6 +5017,7 @@ async fn do_play_turn(
         TurnOutcome::Rejected { last_reasons, attempts } => TurnView {
             accepted: false,
             narration: String::new(),
+            segments: Vec::new(),
             rolls: Vec::new(),
             checks: Vec::new(),
             stat_rolls: Vec::new(),
@@ -5552,6 +5615,7 @@ async fn current_game_view(
         background: effective_background(sess),
         bgm: bgm_for(&sess.scenario, &sess.state),
         present_characters: present_characters(&sess.scenario, &sess.state),
+        cast: cast_view(&sess.scenario),
         // 途中参加のゲストにも「前回までの語り」を出す (再開と同じ器 = 情景の接続)。
         resumed: Some(ResumeView {
             turn: sess.state.turn,
@@ -6185,6 +6249,33 @@ mod tests {
         );
     }
     use std::path::{Path, PathBuf};
+
+    /// 【spec 35 Phase C: 段の view】地の文は名前が空、登場人物の台詞は id・表示名・アイコンの ID、
+    /// 名もない人物はラベルを名前にして speaker と icon は空。表示名が空の人物は id を名前にする。
+    /// 本文の literal `\n` は従来の語りと同じく実改行へ (#16)。
+    #[test]
+    fn segment_views_carry_name_and_icon_from_the_scenario() {
+        let sc = gm_core::Scenario::from_yaml(
+            "title: t\nstart: a\nallowed_flags: []\ngoal: { kind: always }\n\
+             characters:\n  rinka: { name: 凛花, icon: rinka.webp }\n  nameless: {}\n\
+             locations:\n  a: { description: x, exits: [] }\n",
+        )
+        .unwrap();
+        use gm_core::{ResolvedSegment, Speaker};
+        let segs = vec![
+            ResolvedSegment { speaker: None, text: "霧が出た。\\n静かだ。".into() },
+            ResolvedSegment { speaker: Some(Speaker::Entity("rinka".into())), text: "遅いわね".into() },
+            ResolvedSegment { speaker: Some(Speaker::Extra("店員".into())), text: "毎度".into() },
+            ResolvedSegment { speaker: Some(Speaker::Entity("nameless".into())), text: "…".into() },
+        ];
+        let v = super::segment_views(&sc, &segs);
+        assert_eq!(v[0], super::SegmentView { speaker: None, name: String::new(), icon: None, text: "霧が出た。\n静かだ。".into() });
+        assert_eq!(v[1], super::SegmentView { speaker: Some("rinka".into()), name: "凛花".into(), icon: Some("rinka.webp".into()), text: "遅いわね".into() });
+        assert_eq!(v[2], super::SegmentView { speaker: None, name: "店員".into(), icon: None, text: "毎度".into() });
+        assert_eq!(v[3].name, "nameless", "表示名が空なら id");
+        let cast = super::cast_view(&sc);
+        assert_eq!(cast.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["nameless", "rinka"]);
+    }
 
     /// 【本人未知属性の UI 秘匿 + 場所表示名 (2026-07-08)】`hidden_attributes` はプレイヤー UI
     /// から**本人分も含め**落ちる (secret は本人分は見える、の一段上)。`Location.title` は

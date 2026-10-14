@@ -22,6 +22,7 @@ function acceptedTurn(consistency: ConsistencyView | null): TurnView {
   return {
     accepted: true,
     narration: "あかりは俯いた。",
+    segments: [],
     rolls: [],
     checks: [],
     stat_rolls: [],

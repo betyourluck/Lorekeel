@@ -55,7 +55,42 @@ function statRollFinal(sr: StatRollView): number {
         </div>
       </div>
 
-      <!-- GM の語り -->
+      <!-- GM の語り。段があれば地の文と吹き出しの台詞を順に描く (spec 35)。
+           地の文は名前が空、名もない人物はアイコン無し (頭文字で描く)。 -->
+      <div
+        v-else-if="entry.kind === 'narration' && entry.segments?.length"
+        class="space-y-3"
+        data-testid="narration-segments"
+      >
+        <template v-for="(seg, j) in entry.segments" :key="j">
+          <p
+            v-if="!seg.name"
+            class="whitespace-pre-wrap leading-relaxed text-parchment"
+            :style="game.narrationStyle"
+          >
+            {{ seg.text }}
+          </p>
+          <div v-else class="flex items-start gap-3" data-testid="dialogue-line">
+            <!-- アイコンは CSS background で描画 (asset protocol の MIME に寛容 = 顔アイコン行と同じ)。 -->
+            <span
+              class="mt-5 w-10 h-10 shrink-0 rounded-full overflow-hidden border border-ash bg-ash/40 bg-cover bg-center flex items-center justify-center text-parchment/70"
+              :style="seg.icon ? { backgroundImage: `url(${seg.icon})` } : {}"
+              data-testid="dialogue-avatar"
+            >
+              <span v-if="!seg.icon" class="text-xs">{{ seg.name.trim().slice(0, 2) }}</span>
+            </span>
+            <div class="min-w-0 max-w-[85%]">
+              <div class="text-xs text-ember/80 mb-1" data-testid="dialogue-name">{{ seg.name }}</div>
+              <div
+                class="rounded-lg rounded-tl-none bg-ash/50 px-4 py-2 whitespace-pre-wrap leading-relaxed text-parchment"
+                :style="game.narrationStyle"
+              >
+                {{ seg.text }}
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
       <p
         v-else-if="entry.kind === 'narration'"
         class="whitespace-pre-wrap leading-relaxed text-parchment"

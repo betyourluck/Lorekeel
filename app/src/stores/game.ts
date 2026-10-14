@@ -2501,6 +2501,8 @@ ${body}`, t("rename.ok"), true);
         await prefetchAssets([
           ...collectViewAssets(turn),
           ...collectTurnAssets(turn.beats, turn.checks),
+          // 台詞の顔アイコン (spec 35)。
+          ...(turn.segments ?? []).map((s): [AssetKind, string | null] => ["images", s.icon]),
         ]);
         // 開帳演出が有効で、このターンにダイスが在るか (spec 18 Phase A)。
         const hasDice =
@@ -2518,7 +2520,13 @@ ${body}`, t("rename.ok"), true);
           // 対決 (spec 18 Phase C)。attempt_contest が開いたら ⚔ パネル。
           this.contest = turn.contest ?? null;
           if (turn.narration) {
-            this.log.push({ kind: "narration", text: turn.narration });
+            // spec 35: 段があれば吹き出しで描く (アイコンは先読み済みの URL へ)。
+            const segments = (turn.segments ?? []).map((s) => ({ ...s, icon: assetUrl("images", s.icon) }));
+            this.log.push(
+              segments.length
+                ? { kind: "narration", text: turn.narration, segments }
+                : { kind: "narration", text: turn.narration },
+            );
             // 読み上げは narration だけ (判定結果やビートは読まない = ダイスの結果を
             // 開帳前に音声で漏らさない)。await しない = 語りの表示を音声待ちにしない。
             if (this.ttsFeature && this.ttsEnabled) void tts.speak(turn.narration);

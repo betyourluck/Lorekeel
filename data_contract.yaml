@@ -98,7 +98,8 @@ DialogueSegments:                   # spec 35 (2026-10-14 rev2 査読反映 → 
   voices: "キャラ別の声はプレイヤー側の設定 localStorage `kataribe.tts.characterVoices` = { [エンジン + サーバー URL]: { [パッケージ]: { [entity]: 話者 ID } } } (話者 ID はエンジンごとに違う・設定ミラーの射程)。**`kataribe.tts.voices` は声一覧のキャッシュ (LS_VOICES) のまま据え置く** (同じキーに書くと loadVoiceList / saveVoiceList と壊し合う)。未割り当ての人物と名もない人物は語り手の声 (いまの話者)。読み上げる範囲 = すべて (既定 = 従来) / 台詞だけ。**割り切り**: 台詞だけでは地の文に紛れた台詞 (uncloseable_hole) は読まれない — Phase E で地の文の「」の率を測り、高ければ語り手の声で読む緩和を足す。実装は直列鎖の中で段ごとに updateOptions({ speaker }) → speakText (読み上げ器を声の数だけ作らない)。設定はサウンドタブの「キャラクターの声」、そのため GameView に cast: [{ id, name, icon }] を足す"
   ripple: "**golden は変わらない** (手書きの小さな schema を使っており StateDelta の schema を埋め込んでいない = 起草時の主張は誤り、実装時に訂正)。安定プレフィックスは schema と GM_SYSTEM の変更で 1 回動く。作者の YAML・未知キー lint・作者向け仕様・編集の語彙は無関係。levenshtein は lint.rs から pub(crate) で共有。セーブ形式は不変 (欄の型は文字列のまま、書式だけ consumer_formats に従う)"
   out_of_scope: "表情の差分 (次の spec) / Live2D 風の立ち絵 (外部ライブラリに乗る・後回し) / 一人プレイの空送信でキャラが続ける / 作者が声の目安を書く欄 / 再開時の語りの吹き出し化 (セーブに段を持たせる別 spec)"
-  status: "Phase 0〜B 実装済 (2026-10-14)。残 = Phase C (吹き出し)・D (声)・E (実測)。設計は specs/35_dialogue_segments.md"
+  status: "Phase 0〜C 実装済 (2026-10-14〜15)。残 = Phase D (声)・E (実測)。設計は specs/35_dialogue_segments.md"
+  display: "Phase C (2026-10-15): frontend LogEntry の narration は segments? を持ち、段があれば地の文 (name 空) と吹き出し (顔アイコン + 名前) を順に描く。顔アイコンは ingestTurn で先読みして URL へ解決 (顔アイコン行と同じ CSS background、無ければ名前の頭 2 字)。段の無い語り (再開の前回までの語り・エピローグ) は従来どおり text の 1 段落。平らな text はログ書き出し用に残し画面に重ねない。GameView.cast = 登場人物の一覧 (id 順)"
   summary_was_dropped: "**副産物 (failures #112)**: LlmClient::generate_delta が StateDelta::new(narration, ops) で組み直しており GM の summary が常に空だった (実セーブ 4,821 件中 GM の要約 0 件、経緯ログは語りの冒頭 80 字の切れ端)。delta をそのまま返し narration だけ段ごとに掃除する形へ"
 
 # --- シナリオ脊椎 (拘束。scenarios/*.yaml が Scenario として読まれる) --------

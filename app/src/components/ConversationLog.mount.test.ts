@@ -83,3 +83,50 @@ describe("開帳カード (#94)", () => {
     expect(game.log[0]).toMatchObject({ revealed: 2 });
   });
 });
+
+/**
+ * spec 35 Phase C: 台詞は顔アイコン + 名前 + 吹き出しで、地の文は従来の段落で、順に描く。
+ *
+ * Red の確かめ方: ConversationLog.vue の `narration-segments` の分岐を消すと、平らな text
+ * (`凛花「遅いわね」`) が 1 段落で出て吹き出しが 0 になり、このテストが落ちる。
+ */
+describe("台詞の吹き出し (spec 35)", () => {
+  it("段があれば地の文と吹き出しを順に描き、平らな文字列は重ねて出さない", async () => {
+    const wrapper = mountWith(ConversationLog, {}, {});
+    const game = useGameStore();
+    game.log = [
+      {
+        kind: "narration",
+        text: "教室が静まる。\n凛花「遅いわね」\n店員「毎度」",
+        segments: [
+          { speaker: null, name: "", icon: null, text: "教室が静まる。" },
+          { speaker: "rinka", name: "凛花", icon: "asset://rinka.webp", text: "遅いわね" },
+          { speaker: null, name: "店員", icon: null, text: "毎度" },
+        ],
+      },
+    ];
+    await flushPromises();
+
+    const lines = wrapper.findAll('[data-testid="dialogue-line"]');
+    expect(lines).toHaveLength(2);
+    expect(lines.map((l) => l.get('[data-testid="dialogue-name"]').text())).toEqual(["凛花", "店員"]);
+    expect(lines[0].text()).toContain("遅いわね");
+    // 登場人物はアイコン、名もない人物は頭文字。
+    const avatars = wrapper.findAll('[data-testid="dialogue-avatar"]');
+    expect(avatars[0].attributes("style") ?? "").toContain("rinka.webp");
+    expect(avatars[1].text()).toBe("店員");
+    // 地の文は段落として出る。平らな text (台詞を「」で繋いだ形) は重ねて出さない。
+    const block = wrapper.get('[data-testid="narration-segments"]');
+    expect(block.text()).toContain("教室が静まる。");
+    expect(block.text()).not.toContain("凛花「遅いわね」");
+  });
+
+  it("段が無い語り (再開の前回までの語り・エピローグ) は従来どおり 1 段落で描く", async () => {
+    const wrapper = mountWith(ConversationLog, {}, {});
+    const game = useGameStore();
+    game.log = [{ kind: "narration", text: "霧が晴れる。" }];
+    await flushPromises();
+    expect(wrapper.findAll('[data-testid="dialogue-line"]')).toHaveLength(0);
+    expect(wrapper.text()).toContain("霧が晴れる。");
+  });
+});

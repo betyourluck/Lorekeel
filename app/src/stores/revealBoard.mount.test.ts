@@ -56,6 +56,7 @@ function turnWith(withDice: boolean): TurnView {
   return {
     accepted: true,
     narration: "力をこめて扉を押した。",
+    segments: [],
     rolls: [],
     checks: withDice ? [CHECK] : [],
     stat_rolls: [],

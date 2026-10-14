@@ -29,6 +29,7 @@ function viewResumedWith(resumed: ResumeView): GameView {
     background: null,
     bgm: null,
     present_characters: [],
+    cast: [],
     resumed,
     warnings: [],
     synopsis: [],
