@@ -539,6 +539,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let recent_limit = harness::recent_turns_limit();
     let mut recent_narrations: Vec<String> =
         resume_save.as_ref().map(|s| s.recent_narrations_seeded()).unwrap_or_default();
+    // spec 35: 表示用の直前の語り (セーブの last_narration・エピローグの素材)。recent_narrations は
+    // GM へ還流する書式 (台詞に id つき) なので、表示用は別に持つ。
+    let mut last_display: String =
+        resume_save.as_ref().map(|s| s.last_narration.clone()).unwrap_or_default();
     // 経緯ログ (chronicle)。GM の書く summary を蓄積し「これまでの経緯」として還流する (中期記憶)。
     let mut history: Vec<harness::TurnLog> =
         resume_save.as_ref().map(|s| s.history.clone()).unwrap_or_default();
@@ -559,7 +563,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 state: state.clone(),
                 campaign_memory: campaign_memory.clone(),
                 history: history.clone(),
-                last_narration: recent_narrations.last().cloned().unwrap_or_default(),
+                last_narration: last_display.clone(),
                 recent_narrations: recent_narrations.clone(),
                 pending_checks: pending_checks.clone(),
                 pending_lore: pending_lore.clone(),
@@ -608,6 +612,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         match outcome {
             Ok(TurnOutcome::Accepted {
                 narration,
+                gm_narration,
+                segments: _,
                 summary,
                 rolls,
                 checks,
@@ -637,9 +643,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 // 次ターンの継続文脈に持ち越す (ビート込み)。
                 harness::push_recent_narration(
                     &mut recent_narrations,
-                    harness::carryover_narration(&narration, &beat_texts, &checks),
+                    // spec 35: GM への還流は id つきの書式 (段の形で思い出させる)。
+                    harness::carryover_narration(&gm_narration, &beat_texts, &checks),
                     recent_limit,
                 );
+                last_display = harness::carryover_narration(&narration, &beat_texts, &checks);
                 for r in &rolls {
                     let mark = if r.success { "成功" } else { "失敗" };
                     println!("  🎲 1d{} = {} (DC {}) → {mark}", r.sides, r.result, r.dc);
@@ -721,6 +729,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 let digest = harness::contest_digest(&end);
                                 println!("  [{digest}]");
                                 harness::extend_last_narration(&mut recent_narrations, std::slice::from_ref(&digest), &[]);
+                                let mut shown = vec![std::mem::take(&mut last_display)];
+                                harness::extend_last_narration(&mut shown, std::slice::from_ref(&digest), &[]);
+                                last_display = shown.pop().unwrap_or_default();
                                 if let Some(h) = history.last_mut() {
                                     h.summary.push_str(&format!("／{digest}"));
                                 }
@@ -841,7 +852,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     );
                                     print_epilogue(
                                         &client, &scenario, &state, &synopsis, &history,
-                                        recent_narrations.last().map(String::as_str).unwrap_or(""),
+                                        last_display.as_str(),
                                     )
                                     .await;
                                     break;
@@ -853,7 +864,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             println!("\n🎉 クリア。goal 到達 (turn {}).", state.turn);
                             print_epilogue(
                                 &client, &scenario, &state, &synopsis, &history,
-                                recent_narrations.last().map(String::as_str).unwrap_or(""),
+                                last_display.as_str(),
                             )
                             .await;
                             break;

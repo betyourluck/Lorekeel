@@ -428,8 +428,11 @@ impl RngState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct StateDelta {
+    /// このターンの語り。**地の文と台詞を順に並べた段の配列** (spec 35)。台詞の段は `speaker` に
+    /// この場にいる人物の id を書き、地の文の段は `speaker` を省く。主人公の台詞は書かない。
+    /// 本文は検証しないが、**話者は照合する** (その場にいない人物・主人公の台詞は却下)。
     #[serde(default)]
-    pub narration: String,
+    pub narration: crate::dialogue::Narration,
     /// このターンの経緯 1 行 (誰が何をして何が起きたか、確定した事実だけ)。narration と同じ
     /// **非検証の語り素材** — engine は解釈しない。harness が経緯ログとして蓄積し、以後の
     /// ターンの prompt に「これまでの経緯」として還流する (GM の中期記憶。後のターンの
@@ -502,7 +505,7 @@ where
 }
 
 impl StateDelta {
-    pub fn new(narration: impl Into<String>, ops: Vec<StateOp>) -> Self {
+    pub fn new(narration: impl Into<crate::dialogue::Narration>, ops: Vec<StateOp>) -> Self {
         Self {
             narration: narration.into(),
             summary: String::new(),

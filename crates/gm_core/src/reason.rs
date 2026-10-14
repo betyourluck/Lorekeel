@@ -126,6 +126,17 @@ pub enum RejectReason {
     /// cast_vote を「死者/局面」でなく**機構の不在**として名指し却下する — self-repair が
     /// 一発で cast_vote を落とせる (#31 同型の診断可能性、実プレイ #35)。
     VoteNotDeclared,
+    /// spec 35: 主人公、または多人数で人が操作している仲間の台詞は GM が書けない
+    /// (プレイヤーの台詞はプレイヤーのもの)。
+    SpeakerControlled { speaker: String },
+    /// spec 35: その場にいない人物の台詞。照合の範囲はターン開始時 ∪ 適用後の顔ぶれ。
+    /// `present` は今いる人物 (何で書き直せば通るか = #42)。
+    SpeakerNotPresent { speaker: String, present: Vec<String> },
+    /// spec 35: 話者の表示名が 2 人以上に一致する (id で書き直させる)。
+    AmbiguousSpeaker { label: String, candidates: Vec<String> },
+    /// spec 35: 話者のラベルが登場人物に近い・名前を含むが一致しない (誤字・敬称つき)。
+    /// 名もない人物として素通りさせると照合を抜けるので、候補の id で書き直させる。
+    UnknownSpeaker { label: String, candidates: Vec<String> },
     /// 開票 (resolve_vote) は LLM が提案できない (authored トリガーの専権。開票結果の捏造遮断)。
     VoteResolveNotAllowed,
     /// このシナリオに宣言されていない challenge には挑めない (幻チャレンジ遮断)。
@@ -392,6 +403,19 @@ impl RejectReason {
             RejectReason::VoteNotAllowed { voter } => {
                 format!("いまは {voter} が投票できる局面ではない (投票のフェーズと投票権を確認せよ)")
             }
+            RejectReason::SpeakerControlled { speaker } => {
+                format!("{speaker} の台詞は書けない (主人公と、プレイヤーが操作している仲間の台詞はプレイヤー自身が書く。その段を消し、反応は地の文で描け)")
+            }
+            RejectReason::SpeakerNotPresent { speaker, present } => {
+                let here = if present.is_empty() { "誰もいない".to_string() } else { present.join(", ") };
+                format!("{speaker} はこの場にいないので台詞を話せない (いまこの場にいる: {here}。台詞はこの中の人物の id で書け)")
+            }
+            RejectReason::AmbiguousSpeaker { label, candidates } => {
+                format!("話者 '{label}' は {} のどれか判別できない (speaker には id を書け)", candidates.join(" / "))
+            }
+            RejectReason::UnknownSpeaker { label, candidates } => {
+                format!("話者 '{label}' は登場人物 {} に似ているが一致しない (その人物なら speaker に id を書け。別の名もない人物なら、登場人物の名前を含まない呼び名にせよ)", candidates.join(" / "))
+            }
             RejectReason::VoteNotDeclared => {
                 "この盤面に投票の仕組みは無い (cast_vote は使えない。意図は別の行動・語りで表せ)"
                     .to_string()
@@ -511,6 +535,19 @@ impl RejectReason {
             }
             RejectReason::VoteNotAllowed { voter } => {
                 format!("{voter} cannot vote in the current situation (check the phase and voting rights)")
+            }
+            RejectReason::SpeakerControlled { speaker } => {
+                format!("you cannot write lines for {speaker} (the protagonist and companions controlled by players speak for themselves; drop that segment and describe reactions in prose)")
+            }
+            RejectReason::SpeakerNotPresent { speaker, present } => {
+                let here = if present.is_empty() { "nobody".to_string() } else { present.join(", ") };
+                format!("{speaker} is not here and cannot speak (present now: {here}; write lines with one of these ids)")
+            }
+            RejectReason::AmbiguousSpeaker { label, candidates } => {
+                format!("speaker '{label}' could be any of {} (use the id as the speaker)", candidates.join(" / "))
+            }
+            RejectReason::UnknownSpeaker { label, candidates } => {
+                format!("speaker '{label}' resembles {} but does not match (if it is that character, use the id; for an unnamed extra, use a label that does not contain a character's name)", candidates.join(" / "))
             }
             RejectReason::VoteNotDeclared => {
                 "this scenario has no voting mechanism (cast_vote is unavailable; express the intent through other actions)".to_string()

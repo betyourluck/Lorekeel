@@ -112,7 +112,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
-    use gm_core::{GameState, Lang, Scenario, StateDelta, StateOp};
+    use gm_core::{GameState, Lang, RejectReason, Scenario, StateDelta, StateOp};
     use llm_client::ChatMessage;
 
     use super::*;
@@ -230,6 +230,112 @@ mod tests {
         }
         assert!(s.flag("drawer_opened"), "受理された op は適用される");
         assert_eq!(s.turn, 1);
+    }
+
+    // --- spec 35: 台詞と地の文の分離 (話者の照合) -------------------------------------
+
+    fn dialogue_scenario() -> Scenario {
+        let yaml = r#"
+title: t
+start: classroom
+allowed_flags: [drawer_opened]
+goal: { kind: always }
+protagonist: { name: 坂上 }
+characters:
+  rinka: { name: 凛花 }
+  alice: { name: アリス }
+  yukina: { name: 雪菜 }
+locations:
+  classroom: { description: 教室, present: [rinka, yukina], exits: [] }
+"#;
+        Scenario::from_yaml(yaml).unwrap()
+    }
+
+    fn spoken(lines: &[(&str, &str)]) -> StateDelta {
+        let segs = lines
+            .iter()
+            .map(|(sp, t)| gm_core::Segment {
+                speaker: (!sp.is_empty()).then(|| sp.to_string()),
+                text: t.to_string(),
+            })
+            .collect::<Vec<_>>();
+        StateDelta::new(segs, vec![])
+    }
+
+    /// 【spec 35: 不在の話者 → 却下 → 理由に今いる人物 → 再提出で受理】受理時は表示用 (id なし) と
+    /// GM 向け (id つき) の平らな語りと、解決済みの段が返る。却下の周で正本は動かない。
+    #[tokio::test]
+    async fn absent_speaker_is_rejected_then_resubmission_is_accepted() {
+        let sc = dialogue_scenario();
+        let mut s = sc.initial_state(1);
+        let p = ScriptedProposer::new(vec![
+            spoken(&[("", "教室が静まる。"), ("alice", "やあ")]),
+            spoken(&[("", "教室が静まる。"), ("rinka", "遅いわね")]),
+        ]);
+        let outcome =
+            run_turn(&p, &mut s, &sc, "挨拶する", 3, Lang::Ja, &[], &[], &[], &[], &[], &[], &[]).await.unwrap();
+        let second = p.seen_text(2);
+        assert!(second.contains("alice はこの場にいない") && second.contains("rinka, yukina"), "{second}");
+        match outcome {
+            TurnOutcome::Accepted { narration, gm_narration, segments, attempts, .. } => {
+                assert_eq!(attempts, 2);
+                assert_eq!(narration, "教室が静まる。\n凛花「遅いわね」");
+                assert_eq!(gm_narration, "教室が静まる。\n凛花 (rinka):「遅いわね」");
+                assert_eq!(segments.len(), 2);
+            }
+            other => panic!("受理されるべき: {other:?}"),
+        }
+        assert_eq!(s.turn, 1, "受理は 1 回だけ (却下の周は正本を動かさない)");
+    }
+
+    /// 【spec 35: 理由は 1 回にまとめる】話者の解決 (resolve) と ops の裁定 (adjudicate) の
+    /// 却下理由は合わせて 1 回の自己修復に載る (片方ずつ直させると往復が増える)。
+    #[tokio::test]
+    async fn speaker_and_op_reasons_arrive_in_one_repair() {
+        let sc = dialogue_scenario();
+        let mut s = sc.initial_state(1);
+        let mut bad = spoken(&[("aliec", "やあ")]);
+        bad.ops = vec![StateOp::AddItem { item: "master_key".into() }];
+        let p = ScriptedProposer::new(vec![bad, spoken(&[("rinka", "遅い")])]);
+        let outcome =
+            run_turn(&p, &mut s, &sc, "x", 3, Lang::Ja, &[], &[], &[], &[], &[], &[], &[]).await.unwrap();
+        let TurnOutcome::Accepted { retries, .. } = outcome else { panic!("受理されるべき") };
+        let RetryCause::Rejected(reasons) = &retries[0] else { panic!("却下のはず: {retries:?}") };
+        assert!(reasons.iter().any(|r| matches!(r, RejectReason::UnknownSpeaker { .. })), "{reasons:?}");
+        assert!(reasons.iter().any(|r| matches!(r, RejectReason::ItemNotHere { .. })), "{reasons:?}");
+    }
+
+    /// 【spec 35: 多人数】人が操作している仲間の台詞は GM が書けない (主人公は単騎でも常に)。
+    #[tokio::test]
+    async fn controlled_companion_lines_are_rejected_in_party_play() {
+        let sc = dialogue_scenario();
+        let mut s = sc.initial_state(1);
+        let party = vec![
+            prompt::PartyMember { entity: "player".into(), name: "アキラ".into() },
+            prompt::PartyMember { entity: "yukina".into(), name: "ユイ".into() },
+        ];
+        let p = ScriptedProposer::new(vec![spoken(&[("yukina", "任せて")]), spoken(&[("坂上", "行くぞ")])]);
+        let outcome =
+            run_turn(&p, &mut s, &sc, "x", 2, Lang::Ja, &[], &[], &[], &[], &[], &[], &party).await.unwrap();
+        let TurnOutcome::Rejected { last_reasons, .. } = outcome else { panic!("2 回とも却下のはず") };
+        assert_eq!(last_reasons, vec![RejectReason::SpeakerControlled { speaker: "player".into() }]);
+        assert!(p.seen_text(2).contains("yukina の台詞は書けない"), "1 回目は操作中の仲間で却下");
+        assert_eq!(s.turn, 0, "最後まで却下なら正本は無傷");
+    }
+
+    /// 【spec 35: GM_SYSTEM の規律 (D5)】段の書き方・地の文に「」を書かない・id で書く・
+    /// 主人公の台詞を書かない・独白は地の文、が載る。
+    #[test]
+    fn gm_system_states_the_dialogue_rules() {
+        for rule in [
+            "narration は段の配列で書く",
+            "地の文の中に「」で台詞を書かない",
+            "人物の **id** を書く",
+            "**主人公の台詞は書かない**",
+            "心の声・独白は台詞の段にせず地の文で書く",
+        ] {
+            assert!(prompt::GM_SYSTEM.contains(rule), "{rule}");
+        }
     }
 
     /// 【却下→再生成】幻のアイテムは却下され、続く合法提案で受理される (self_repair の核)。

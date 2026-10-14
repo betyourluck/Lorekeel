@@ -9,6 +9,7 @@
 //! - **原子性**: 1つでも不正な op があればデルタ全体を却下し、`state` は無傷。
 //! - **決定論**: ダイスは seeded RNG。同じ seed/cursor は同じ目を返し、監査可能。
 
+pub mod dialogue;
 pub mod engine;
 pub mod reason;
 pub mod lint;
@@ -23,6 +24,10 @@ pub use engine::{
     FiredTrigger, RollOutcome, StatRollOutcome, Verdict,
 };
 pub use reason::{Lang, RejectReason};
+pub use dialogue::{
+    apply_checked, check_speakers, plain, plain_for_gm, resolve_narration, Narration,
+    ResolvedSegment, Segment, Speaker,
+};
 pub use lint::{
     context_keys, gate_variant_keys, op_variant_keys, struct_keys, unknown_key_lints, unknown_keys,
     wiring, ContextInfo, WiringEntry, CTX_CHARACTER, CTX_GATE, CTX_OP, CTX_SCENARIO,

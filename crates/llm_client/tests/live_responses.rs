@@ -54,10 +54,10 @@ async fn perplexity_responses_round_trip() {
         .expect("generate_structured が通る");
     eprintln!(
         "structured: narration_chars={} ops={}",
-        delta.narration.chars().count(),
+        delta.narration.raw_text().chars().count(),
         delta.ops.len()
     );
-    assert!(!delta.narration.trim().is_empty());
+    assert!(!delta.narration.raw_text().trim().is_empty());
 
     // ② プレーン生成 (あらすじ要約の経路)。
     let text = client
@@ -108,8 +108,8 @@ async fn meta_responses_round_trip_with_cache() {
         )
         .await
         .expect("generate_structured が通る");
-    eprintln!("structured#1: narration_chars={} ops={}", delta.narration.chars().count(), delta.ops.len());
-    assert!(!delta.narration.trim().is_empty());
+    eprintln!("structured#1: narration_chars={} ops={}", delta.narration.raw_text().chars().count(), delta.ops.len());
+    assert!(!delta.narration.raw_text().trim().is_empty());
 
     // ② 同一プレフィックスでもう 1 回 — cached_tokens が返るか (ウォームアップで 0 のことも
     // あるので assert はしない。計測値の目視が目的)。
@@ -122,7 +122,7 @@ async fn meta_responses_round_trip_with_cache() {
         )
         .await
         .expect("2 回目も通る");
-    eprintln!("structured#2: narration_chars={}", delta2.narration.chars().count());
+    eprintln!("structured#2: narration_chars={}", delta2.narration.raw_text().chars().count());
 
     let stat = client.cache_stat();
     eprintln!(

@@ -4,7 +4,7 @@
 //! 正本 (gm_core) が真実を握り、LLM の流暢な嘘はここで構造的に弾かれる。
 
 use gm_core::{
-    adjudicate, apply, CheckOutcome, FiredTrigger, GameState, Lang, RejectReason, RollOutcome,
+    adjudicate, CheckOutcome, FiredTrigger, GameState, Lang, RejectReason, RollOutcome,
     Scenario, StateDelta, Verdict, PLAYER,
 };
 
@@ -310,7 +310,13 @@ fn chronicle_tags(
 pub enum TurnOutcome {
     /// 受理されて state に適用された。
     Accepted {
+        /// 表示用の平らな語り (spec 35 の `plain`: 台詞は `名前「…」`、id を含めない)。
         narration: String,
+        /// GM へ還流する平らな語り (spec 35 の `plain_for_gm`: 台詞は `名前 (id):「…」`)。
+        /// 呼び出し側が直前の語り (recent_narrations) に積む素。
+        gm_narration: String,
+        /// 話者を解決した段 (spec 35)。提示層の吹き出しと読み上げの素。
+        segments: Vec<gm_core::ResolvedSegment>,
         /// GM 自身が書いたこのターンの経緯 1 行 (StateDelta.summary、非検証)。
         /// 呼び出し側が [`chronicle_entry`] で経緯ログに積む素。
         summary: String,
@@ -448,6 +454,9 @@ pub async fn run_turn<P: DeltaProposer>(
         player_action
     )));
 
+    // spec 35: 多人数で人が操作している人物の台詞は GM が書けない (主人公は常に)。
+    let controlled_ids: Vec<gm_core::EntityId> = party.iter().map(|m| m.entity.clone()).collect();
+    let controlled = controlled_ids.as_slice();
     let mut last_reasons = Vec::new();
     // 受理前にやり直した原因 (試行順)。受理時に提示層へ渡し「なぜ N 回かかったか」を見せる。
     // 却下 (裁定) と パース失敗 (壊れた出力) の両方を積む — 後者を捨てると空欄が出る。
@@ -480,34 +489,45 @@ pub async fn run_turn<P: DeltaProposer>(
             Err(e) => return Err(e),
         };
 
-        match adjudicate(state, scenario, &delta) {
-            Verdict::Accept => {
-                // spec 08-B: 所持品差分の計上用に apply 前の inventory を写す (小さい map)。
-                let inv_before = state.inventory.clone();
-                // adjudicate が通ったので apply は成功するはず。RNG はここで決定論的に振られ、
-                // 適用後に発火した反応ビート (Phase C) も返る。
-                let out = apply(state, scenario, &delta)
-                    .expect("adjudicate 済みなら apply は成功する");
-                let tags = chronicle_tags(state, scenario, &inv_before);
-                return Ok(TurnOutcome::Accepted {
-                    narration: delta.narration,
-                    summary: delta.summary,
-                    rolls: out.rolls,
-                    checks: out.checks,
-                    stat_rolls: out.stat_rolls,
-                    fired: out.fired,
-                    attempts: attempt,
-                    retries,
-                    tags,
-                });
-            }
-            Verdict::Reject { reasons } => {
-                // 履歴の一貫性のため、LLM が出した提案 (の痕跡) と却下理由を会話に積む。
-                push_rejection(&mut messages, &delta, &reasons, lang);
-                retries.push(RetryCause::Rejected(reasons.clone()));
-                last_reasons = reasons;
+        // spec 35: 話者の解決 (scenario が要る) と ops の裁定は独立なので、両方の却下理由を
+        // 合わせて 1 回の自己修復に載せる (片方ずつ直させると往復が増える)。
+        let resolved = gm_core::resolve_narration(scenario, &delta.narration);
+        let mut reasons: Vec<RejectReason> = match &resolved {
+            Ok(_) => Vec::new(),
+            Err(r) => r.clone(),
+        };
+        if let Verdict::Reject { reasons: r } = adjudicate(state, scenario, &delta) {
+            reasons.extend(r);
+        }
+        if let (true, Ok(segments)) = (reasons.is_empty(), resolved) {
+            // spec 08-B: 所持品差分の計上用に apply 前の inventory を写す (小さい map)。
+            let inv_before = state.inventory.clone();
+            // spec 35: 写しへ適用 → 話者を照合 (開始時 ∪ 適用後の顔ぶれ) → 通れば確定。
+            // 受理時の出目・発火ビートは試し適用のもの (再適用しない)。却下なら正本も RNG も無傷。
+            match gm_core::apply_checked(state, scenario, &delta, &segments, controlled) {
+                Ok(out) => {
+                    let tags = chronicle_tags(state, scenario, &inv_before);
+                    return Ok(TurnOutcome::Accepted {
+                        narration: gm_core::plain(scenario, &segments),
+                        gm_narration: gm_core::plain_for_gm(scenario, &segments),
+                        segments,
+                        summary: delta.summary,
+                        rolls: out.rolls,
+                        checks: out.checks,
+                        stat_rolls: out.stat_rolls,
+                        fired: out.fired,
+                        attempts: attempt,
+                        retries,
+                        tags,
+                    });
+                }
+                Err(r) => reasons = r,
             }
         }
+        // 履歴の一貫性のため、LLM が出した提案 (の痕跡) と却下理由を会話に積む。
+        push_rejection(&mut messages, &delta, &reasons, lang);
+        retries.push(RetryCause::Rejected(reasons.clone()));
+        last_reasons = reasons;
     }
 
     Ok(TurnOutcome::Rejected {
@@ -526,7 +546,7 @@ fn push_rejection(
 ) {
     // LLM 自身の直前の提案を会話履歴に残す (何を直すかの参照点になる)。
     let echoed = serde_json::to_string(delta)
-        .unwrap_or_else(|_| delta.narration.clone());
+        .unwrap_or_else(|_| delta.narration.raw_text());
     messages.push(ChatMessage::assistant(echoed));
     messages.push(ChatMessage::user(prompt::rejection_feedback(reasons, lang)));
 }

@@ -715,9 +715,18 @@ fn map_view(scenario: &Scenario, state: &GameState, history: &[TurnLog]) -> MapV
 // =============================================================================
 
 impl GameSession {
-    /// 直前 1 ターンの語り (挿絵のプロンプト書き・エピローグ・セーブの `last_narration` が読む)。
+    /// 直前 1 ターンの**表示用**の語り (挿絵のプロンプト書き・エピローグ・セーブの `last_narration` が読む)。
+    /// spec 35: `recent_narrations` は GM へ還流する書式 (台詞に id つき) なので、表示用は別に持つ。
     fn last_narration(&self) -> &str {
-        self.recent_narrations.last().map(String::as_str).unwrap_or("")
+        &self.last_display
+    }
+
+    /// 直前の語りに決断・対決の結末を継ぎ足す (GM 向けと表示用の両方)。
+    fn extend_last_narration(&mut self, beats: &[String], checks: &[CheckOutcome]) {
+        harness::extend_last_narration(&mut self.recent_narrations, beats, checks);
+        let mut shown = vec![std::mem::take(&mut self.last_display)];
+        harness::extend_last_narration(&mut shown, beats, checks);
+        self.last_display = shown.pop().unwrap_or_default();
     }
 }
 
@@ -738,6 +747,8 @@ struct GameSession {
     /// 直前 K ターンの語り (古い順・末尾が直前)。次ターンに「続く情景」として渡し、既出描写の
     /// 繰り返しを防ぐ (継続性)。K は設定 (`LOREKEEL_RECENT_TURNS`、2026-09-13)。
     recent_narrations: Vec<String>,
+    /// 直前 1 ターンの表示用の語り (spec 35 の `plain` + ビート)。セーブの `last_narration`。
+    last_display: String,
     /// 経緯ログ (chronicle)。GM の summary を蓄積し「これまでの経緯」として還流する (中期記憶)。
     history: Vec<TurnLog>,
     lang: Lang,
@@ -3790,6 +3801,7 @@ async fn new_game(
         pending_checks: Vec::new(),
         package_root: pkg_dir,
         recent_narrations: Vec::new(),
+        last_display: String::new(),
         history: Vec::new(),
         campaign,
         current_module,
@@ -3959,6 +3971,7 @@ async fn restore_session(
         pending_lore: save.pending_lore,
         pending_checks: save.pending_checks,
         package_root: pkg_dir,
+        last_display: save.last_narration.clone(),
         recent_narrations: harness::seed_recent_narrations(save.recent_narrations, &save.last_narration),
         history: save.history,
         campaign,
@@ -4763,6 +4776,8 @@ async fn do_play_turn(
     let mut view = match outcome {
         TurnOutcome::Accepted {
             narration,
+            gm_narration,
+            segments: _,
             summary,
             rolls,
             checks,
@@ -4781,11 +4796,13 @@ async fn do_play_turn(
             // ビートは GM が見ていない筋書きの出来事 — 継続文脈と経緯ログの両方へ併記する。
             let beat_texts: Vec<String> = resolved.iter().map(|b| b.narration.clone()).collect();
             // 次ターンの継続文脈に持ち越す (既出情景の繰り返し防止。ビート込み)。
+            // spec 35: GM への還流は id つきの書式 (段の形で思い出させる)、表示用は別に持つ。
             harness::push_recent_narration(
                 &mut sess.recent_narrations,
-                carryover_narration(&narration, &beat_texts, &checks),
+                carryover_narration(&gm_narration, &beat_texts, &checks),
                 harness::recent_turns_limit(),
             );
+            sess.last_display = carryover_narration(&narration, &beat_texts, &checks);
             // 経緯ログに積む (GM の summary、無ければ narration 冒頭へ fallback。
             // tags/checks は engine 事実の機械タグ = retrieval の接地、spec 08-B)。
             sess.history.push(chronicle_entry(
@@ -5015,6 +5032,7 @@ async fn do_play_turn(
                 sess.client.set_excluded_ops(harness::excluded_check_ops(&sess.scenario));
                 // 新モジュール = 新しい情景。継続文脈・伏線・判定の持ち越しをリセット。
                 sess.recent_narrations.clear();
+                sess.last_display.clear();
                 sess.pending_lore.clear();
                 sess.pending_checks.clear();
                 // 経緯 (chronicle) は捨てない — 章を跨いで覚えるのが眼目。章替わりを刻む。
@@ -5178,7 +5196,7 @@ async fn resolve_dice_decision(
     sess.sustained_cg = resolve_sustained_cg(sess.sustained_cg.clone(), &resolved);
     let beat_texts: Vec<String> = resolved.iter().map(|b| b.narration.clone()).collect();
     // 継続文脈: 直前の語りに決断の結末を継ぎ足す (判定結末文・ビートを含む)。
-    harness::extend_last_narration(&mut sess.recent_narrations, &beat_texts, std::slice::from_ref(&r.check));
+    sess.extend_last_narration(&beat_texts, std::slice::from_ref(&r.check));
     // 経緯ログ: このターンの行に決断を併記する (中期記憶にも決断が残る)。
     if let Some(last) = sess.history.last_mut() {
         let what = if r.check.pushed {
@@ -5370,7 +5388,7 @@ async fn play_contest_round(
     // 決着: digest を GM の継続文脈 + 経緯ログへ (次ターンの語りの素)。
     let ended = r.ended.as_ref().map(|end| {
         let digest = harness::contest_digest(end);
-        harness::extend_last_narration(&mut sess.recent_narrations, std::slice::from_ref(&digest), &[]);
+        sess.extend_last_narration(std::slice::from_ref(&digest), &[]);
         if let Some(h) = sess.history.last_mut() {
             h.summary.push_str(&format!("／{digest}"));
         }

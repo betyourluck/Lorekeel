@@ -174,12 +174,11 @@ impl LlmClient {
                 state_delta_schema_excluding(&banned),
             )
             .await?;
-        // narration は非検証ゆえ、漏れた tool-call マークアップを提示前に掃除する
-        // (ops は検証済の別フィールドで無改変)。
+        // narration は非検証ゆえ、漏れた tool-call マークアップを提示前に掃除する (spec 35: 段ごと)。
         // **delta をそのまま返す** — 以前は `StateDelta::new(narration, ops)` で組み直しており、
         // GM が書いた summary (経緯の 1 行) が常に空になっていた (failures #112、実セーブ 4,821 件中 0 件)。
         let mut delta = delta;
-        delta.narration = parse::sanitize_narration(&delta.narration);
+        delta.narration.map_text(parse::sanitize_narration);
         Ok(delta)
     }
 }
@@ -383,6 +382,27 @@ mod tests {
         }
     }
 
+    /// 【spec 35: schema は段の配列だけを示す】`narration` は `[{speaker?, text}]`。文字列は受け側の
+    /// 救済であって案内しない (案内すると弱いモデルが文字列に寄り、話者の照合を抜ける)。
+    /// Grok 等の文法に変換する経路のため、`$ref` を解いた後も配列のまま残ることを見る。
+    #[test]
+    fn schema_shows_narration_as_segment_array_only() {
+        let schema = inline_schema_defs(&state_delta_schema());
+        let n = &schema["properties"]["narration"];
+        assert_eq!(n["type"], "array", "{n}");
+        let item = &n["items"];
+        assert_eq!(item["type"], "object", "{item}");
+        assert!(item["properties"]["text"].is_object() && item["properties"]["speaker"].is_object(), "{item}");
+        let required: Vec<&str> =
+            item["required"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(required, vec!["text"], "speaker は任意 (地の文は省く)");
+        assert!(!n.to_string().contains("\"string\"]"), "文字列との anyOf を案内しない: {n}");
+        assert!(
+            n["description"].as_str().unwrap_or("").contains("段の配列"),
+            "LLM が読む説明が付く: {n}"
+        );
+    }
+
     /// 【authored 専権 op の除外】LLM 向け schema は set_presence/grant_skill 等を **提案肢に出さない**
     /// (露出すると LLM が使い続けて却下→再生成ループで詰まる。Grok の constrained decoding 対策の核心)。
     /// LLM が使える op (add_item 等) は残る。
@@ -519,7 +539,7 @@ mod tests {
             r#"{"narration":"古い引き出しが軋む","ops":[{"op":"set_flag","key":"drawer_opened","value":true}]}"#,
         );
         let delta: StateDelta = parse::extract(&canon(resp)).unwrap();
-        assert_eq!(delta.narration, "古い引き出しが軋む");
+        assert_eq!(delta.narration.raw_text(), "古い引き出しが軋む");
         assert_eq!(delta.ops.len(), 1);
         assert!(matches!(
             &delta.ops[0],
@@ -533,7 +553,7 @@ mod tests {
     fn falls_back_to_fenced_json_in_content() {
         let resp = response_with_content("```json\n{\"narration\":\"扉を調べる\",\"ops\":[]}\n```");
         let delta: StateDelta = parse::extract(&canon(resp)).unwrap();
-        assert_eq!(delta.narration, "扉を調べる");
+        assert_eq!(delta.narration.raw_text(), "扉を調べる");
         assert!(delta.ops.is_empty());
     }
 
@@ -544,13 +564,13 @@ mod tests {
         // 素の JSON (コードフェンス無し)。さくら gpt-oss-120b の実観測形。
         let raw = response_with_content(r#"{"narration":"教室に入る","ops":[]}"#);
         let d: StateDelta = parse::extract(&canon(raw)).unwrap();
-        assert_eq!(d.narration, "教室に入る");
+        assert_eq!(d.narration.raw_text(), "教室に入る");
         assert!(d.ops.is_empty());
 
         // prose に前後を包まれても balanced な `{...}` で救済。
         let prose = response_with_content("はい:\n{\"narration\":\"了解\",\"ops\":[]} 以上");
         let d2: StateDelta = parse::extract(&canon(prose)).unwrap();
-        assert_eq!(d2.narration, "了解");
+        assert_eq!(d2.narration.raw_text(), "了解");
     }
 
     /// 【推論モデルの no-tools 救済 (#30)】Gemma 等は `<thought>...</thought>` で CoT を吐き、
@@ -566,7 +586,7 @@ mod tests {
                    ```";
         let resp = response_with_content(raw);
         let d: StateDelta = parse::extract(&canon(resp)).unwrap();
-        assert_eq!(d.narration, "モカは教材棚を顎で指した。");
+        assert_eq!(d.narration.raw_text(), "モカは教材棚を顎で指した。");
         assert_eq!(d.ops.len(), 1, "thought 内の断片でなく本体の ops を拾う");
     }
 
@@ -578,7 +598,7 @@ mod tests {
         let raw = "consider {\"op\":\"x\"} then answer:\n{\"narration\":\"本体\",\"ops\":[]}";
         let resp = response_with_content(raw);
         let d: StateDelta = parse::extract(&canon(resp)).unwrap();
-        assert_eq!(d.narration, "本体", "前置き断片でなく最後の object を採る");
+        assert_eq!(d.narration.raw_text(), "本体", "前置き断片でなく最後の object を採る");
     }
 
     /// 【JSON モード指示】json_instruction は schema (narration/ops) と「JSON だけ出せ」旨を含む。
@@ -618,7 +638,7 @@ mod tests {
             };
             let d: StateDelta = parse::extract(&resp).unwrap_or_else(|e| panic!("{label}: {e}"));
             assert!(d.ops.is_empty(), "{label}: 空白のみの ops は空配列へ");
-            assert_eq!(d.narration, "語り", "{label}");
+            assert_eq!(d.narration.raw_text(), "語り", "{label}");
         }
     }
 
@@ -656,7 +676,7 @@ mod tests {
     fn ops_as_string_is_rescued() {
         let resp = response_with_tool_args(r#"{"narration":"夜が更ける","ops":"\n"}"#);
         let d: StateDelta = parse::extract(&canon(resp)).unwrap();
-        assert_eq!(d.narration, "夜が更ける");
+        assert_eq!(d.narration.raw_text(), "夜が更ける");
         assert!(d.ops.is_empty(), "空白のみの ops 文字列は空配列として救済");
 
         let resp = response_with_tool_args(
@@ -718,9 +738,9 @@ mod tests {
         let args = r#"{"narration":"語り。</narration><parameter name=\"ops\">[]","ops":[{"op":"set_flag","key":"f","value":true}]}"#;
         let resp = response_with_tool_args(args);
         let delta: StateDelta = parse::extract(&canon(resp)).unwrap();
-        assert!(delta.narration.contains("</narration>"), "extract 単体ではタグが残る (症状)");
+        assert!(delta.narration.raw_text().contains("</narration>"), "extract 単体ではタグが残る (症状)");
         assert_eq!(delta.ops.len(), 1, "ops は valid な別フィールドで正常");
-        assert_eq!(parse::sanitize_narration(&delta.narration), "語り。", "sanitize で掃除");
+        assert_eq!(parse::sanitize_narration(&delta.narration.raw_text()), "語り。", "sanitize で掃除");
     }
 
     /// 【空応答】tool_calls も content も無ければ NoStructuredOutput。
@@ -896,7 +916,7 @@ mod tests {
         assert_eq!(canonical_resp.tool_calls[0].id, "tu_1");
         assert_eq!(canonical_resp.tool_calls[0].name, "emit_delta");
         let delta: StateDelta = parse::extract(&canonical_resp).unwrap();
-        assert_eq!(delta.narration, "扉が軋む");
+        assert_eq!(delta.narration.raw_text(), "扉が軋む");
         assert_eq!(delta.ops.len(), 1);
     }
 
@@ -1472,18 +1492,26 @@ mod tests {
         LlmClient::new(cfg).unwrap()
     }
 
-    /// 【generate_delta は summary を捨てない (2026-10-14、failures #112)】`summary` (経緯の 1 行) は
-    /// GM が毎ターン書くのに、`generate_delta` が `StateDelta::new(narration, ops)` で組み直していたので
-    /// **常に空**になっていた。経緯ログは代替の「語りの冒頭 80 字」で埋まり、実セーブ 4,821 件中
-    /// GM の要約は 0 件だった。漏れたマークアップの掃除は従来どおり効く。
+    /// 【generate_delta は summary を捨てない (2026-10-14)】`summary` (経緯の 1 行) は GM が毎ターン
+    /// 書くのに、`generate_delta` が `StateDelta::new(narration, ops)` で組み直していたので**常に空**に
+    /// なっていた。経緯ログは代替の「語りの冒頭 80 字」で埋まり、実セーブ 4,821 件中 GM の要約は
+    /// 0 件だった (spec 35 の実装中に発見)。あわせて spec 35: 段の配列は段ごとに掃除され、
+    /// 掃除で空になった段は落ちる。
     #[tokio::test]
-    async fn generate_delta_keeps_summary() {
+    async fn generate_delta_keeps_summary_and_sanitizes_each_segment() {
         use crate::config::Provider;
-        const RESP: &str = r#"{"content":[{"type":"tool_use","id":"toolu_1","name":"emit_delta","input":{"narration":"霧が出た。</narration>","summary":"凛花に遅刻を咎められた","ops":[]}}],"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":30}}"#;
+        const RESP: &str = r#"{"content":[{"type":"tool_use","id":"toolu_1","name":"emit_delta","input":{"narration":[{"text":"霧が出た。"},{"speaker":"rinka","text":"遅いわね</narration>"},{"text":"<parameter name=\"ops\">"}],"summary":"凛花に遅刻を咎められた","ops":[]}}],"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":30}}"#;
         let c = scripted_client(Provider::Anthropic, vec![RESP]);
         let d = c.generate_delta(user_msgs()).await.unwrap();
         assert_eq!(d.summary, "凛花に遅刻を咎められた", "GM の要約が経緯ログへ届く");
-        assert_eq!(d.narration, "霧が出た。", "漏れたマークアップの掃除は従来どおり");
+        assert_eq!(
+            d.narration,
+            gm_core::Narration::Segments(vec![
+                gm_core::Segment { speaker: None, text: "霧が出た。".into() },
+                gm_core::Segment { speaker: Some("rinka".into()), text: "遅いわね".into() },
+            ]),
+            "段ごとに掃除し、空になった段は落とす"
+        );
     }
 
     /// 【出力上限の検出を Anthropic / Gemini 経路にも (2026-10-05)】Opus 5.5 は思考を止められず
@@ -1512,7 +1540,7 @@ mod tests {
         // 対照: 同じ形でも stop_reason が tool_use なら正常に受理する (偽陽性なし)。
         const DONE_TOOL_USE: &str = r#"{"content":[{"type":"thinking","thinking":"","signature":"sig"},{"type":"tool_use","id":"toolu_1","name":"emit_delta","input":{"narration":"扉が開いた","ops":[]}}],"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":300}}"#;
         let c = scripted_client(Provider::Anthropic, vec![DONE_TOOL_USE]);
-        assert_eq!(c.generate_delta(user_msgs()).await.unwrap().narration, "扉が開いた");
+        assert_eq!(c.generate_delta(user_msgs()).await.unwrap().narration.raw_text(), "扉が開いた");
 
         // 素の文章生成 (あらすじ・エピローグ) は、本文があれば途中切れでも従来どおり返す
         // (他の経路と同じ扱い)。空なら上限の理由で落とす。
@@ -1933,7 +1961,7 @@ mod tests {
         assert_eq!(a.finish, canonical::Finish::ToolUse, "functionCall があれば tool_use 扱い");
         assert_eq!(a.usage.cache_read, 700, "暗黙キャッシュの計数を正規化");
         let delta: StateDelta = parse::extract(&a).unwrap();
-        assert_eq!(delta.narration, "霧が晴れる");
+        assert_eq!(delta.narration.raw_text(), "霧が晴れる");
 
         // 別リクエスト (seq 進行) では id が衝突しない。
         let b = gemini::decode(resp, 6);
@@ -2465,7 +2493,7 @@ mod tests {
         assert_eq!(c.usage.cache_read, 700);
         assert_eq!(c.usage.cost_usd, Some(0.00032), "Perplexity の申告費用は捨てない (spec 30)");
         let delta: StateDelta = parse::extract(&c).unwrap();
-        assert_eq!(delta.narration, "扉が開く");
+        assert_eq!(delta.narration.raw_text(), "扉が開く");
         assert!(matches!(delta.ops[0], StateOp::SetFlag { .. }));
 
         // message だけ (ツールを使わなかった回) は text に落ち、finish は Stop。
