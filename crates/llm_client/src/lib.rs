@@ -176,10 +176,11 @@ impl LlmClient {
             .await?;
         // narration は非検証ゆえ、漏れた tool-call マークアップを提示前に掃除する
         // (ops は検証済の別フィールドで無改変)。
-        Ok(StateDelta::new(
-            parse::sanitize_narration(&delta.narration),
-            delta.ops,
-        ))
+        // **delta をそのまま返す** — 以前は `StateDelta::new(narration, ops)` で組み直しており、
+        // GM が書いた summary (経緯の 1 行) が常に空になっていた (failures #112、実セーブ 4,821 件中 0 件)。
+        let mut delta = delta;
+        delta.narration = parse::sanitize_narration(&delta.narration);
+        Ok(delta)
     }
 }
 
@@ -1469,6 +1470,20 @@ mod tests {
         cfg.max_retries = 1;
         cfg.gemini_cache_enabled = false; // cachedContents を作りに行かせない
         LlmClient::new(cfg).unwrap()
+    }
+
+    /// 【generate_delta は summary を捨てない (2026-10-14、failures #112)】`summary` (経緯の 1 行) は
+    /// GM が毎ターン書くのに、`generate_delta` が `StateDelta::new(narration, ops)` で組み直していたので
+    /// **常に空**になっていた。経緯ログは代替の「語りの冒頭 80 字」で埋まり、実セーブ 4,821 件中
+    /// GM の要約は 0 件だった。漏れたマークアップの掃除は従来どおり効く。
+    #[tokio::test]
+    async fn generate_delta_keeps_summary() {
+        use crate::config::Provider;
+        const RESP: &str = r#"{"content":[{"type":"tool_use","id":"toolu_1","name":"emit_delta","input":{"narration":"霧が出た。</narration>","summary":"凛花に遅刻を咎められた","ops":[]}}],"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":30}}"#;
+        let c = scripted_client(Provider::Anthropic, vec![RESP]);
+        let d = c.generate_delta(user_msgs()).await.unwrap();
+        assert_eq!(d.summary, "凛花に遅刻を咎められた", "GM の要約が経緯ログへ届く");
+        assert_eq!(d.narration, "霧が出た。", "漏れたマークアップの掃除は従来どおり");
     }
 
     /// 【出力上限の検出を Anthropic / Gemini 経路にも (2026-10-05)】Opus 5.5 は思考を止められず
