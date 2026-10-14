@@ -1237,6 +1237,24 @@ onMounted(async () => {
               {{ t("settings.voice.loadVoices") }}
             </button>
 
+            <!-- 読み上げる範囲 (spec 35)。台詞だけなら地の文を読まない。 -->
+            <label class="block text-sm text-parchment/70">
+              {{ t("settings.voice.scope") }}
+              <select
+                v-model="voice.scope"
+                class="mt-1 block w-64 rounded bg-ink border border-ash/60 px-2 py-1 text-parchment"
+                data-testid="voice-scope"
+                @change="persistVoice"
+              >
+                <option value="all">{{ t("settings.voice.scopeAll") }}</option>
+                <option value="dialogue">{{ t("settings.voice.scopeDialogue") }}</option>
+              </select>
+              <span v-if="voice.scope === 'dialogue'" class="block mt-1 text-parchment/40 text-xs">{{ t("settings.voice.scopeNote") }}</span>
+            </label>
+
+            <!-- キャラクターの声 (spec 35) は会話ペイン右下の読み上げの操作から開く (ユーザーFB 2026-10-15)。 -->
+            <p class="text-parchment/50 text-xs" data-testid="character-voices-moved">{{ t("settings.voice.charactersMoved") }}</p>
+
             <label class="block text-sm text-parchment/70">
               {{ t("settings.voice.rate", { value: voice.rate.toFixed(1) }) }}
               <input

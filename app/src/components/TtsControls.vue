@@ -5,10 +5,13 @@
 //
 // **設定サウンドタブで読み上げ機能を有効にしたときだけ出る** (旧 use_tts 作者ゲートは
 // 2026-08-31 撤去 — プレイヤー側の設定一本)。表示条件は親 (App.vue) が持つ。
-import { computed } from "vue";
+import { computed, defineAsyncComponent } from "vue";
 import { useGameStore } from "../stores/game";
 import { t } from "../i18n";
 import Icon from "./Icon.vue";
+
+// キャラクターの声 (spec 35 Phase D)。開くまで読み込まない (動的 import = 参照ストックと同じ)。
+const CharacterVoicesPanel = defineAsyncComponent(() => import("./CharacterVoicesPanel.vue"));
 
 const game = useGameStore();
 
@@ -46,5 +49,19 @@ const label = computed(() =>
     >
       <Icon name="skip" :size="15" />
     </button>
+    <!-- キャラクターの声 (spec 35)。押し直しで閉じる・画像側のパネルとは排他 (store の floatingPanel)。 -->
+    <button
+      type="button"
+      class="p-1.5 rounded-full text-glow/60 hover:text-ember hover:bg-glow/10 transition-colors"
+      :class="{ 'text-ember bg-glow/10': game.floatingPanel === 'voices' }"
+      :title="t('settings.voice.characters')"
+      :aria-label="t('settings.voice.characters')"
+      :aria-expanded="game.floatingPanel === 'voices'"
+      data-testid="voices-button"
+      @click="game.toggleFloatingPanel('voices')"
+    >
+      <Icon name="voices" :size="15" />
+    </button>
   </div>
+  <CharacterVoicesPanel v-if="game.floatingPanel === 'voices'" @close="game.floatingPanel = null" />
 </template>

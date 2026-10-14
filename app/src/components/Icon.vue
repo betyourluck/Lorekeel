@@ -2,7 +2,7 @@
 // UI chrome のモノカラー線アイコン (Feather/Lucide 風)。stroke=currentColor ゆえ
 // 親のテキスト色に追従する = テーマ一貫のモノクロ。パッケージ同梱画像とは別物 (UI 装飾)。
 defineProps<{
-  name: "location" | "bag" | "flag" | "turn" | "gauge" | "sparkle" | "target" | "load" | "new" | "plus" | "trash" | "folder" | "book" | "save" | "floppy" | "scissors" | "code" | "chevron" | "play" | "map" | "pencil" | "speaker" | "speaker-off" | "skip" | "image" | "eye" | "eye-off" | "text" | "spinner";
+  name: "location" | "bag" | "flag" | "turn" | "gauge" | "sparkle" | "target" | "load" | "new" | "plus" | "trash" | "folder" | "book" | "save" | "floppy" | "scissors" | "code" | "chevron" | "play" | "map" | "pencil" | "speaker" | "speaker-off" | "skip" | "image" | "eye" | "eye-off" | "text" | "spinner" | "voices";
   size?: number;
 }>();
 </script>
@@ -131,6 +131,13 @@ defineProps<{
       <path d="m15 5 4 4" />
     </template>
     <!-- 読み上げ ON: スピーカー + 音波 -->
+    <!-- キャラクターの声: 人物の胸像 + 音の弧 -->
+    <template v-else-if="name === 'voices'">
+      <circle cx="9" cy="8" r="3.5" />
+      <path d="M3 20a6 6 0 0 1 12 0" />
+      <path d="M17.5 7.5a4 4 0 0 1 0 5" />
+      <path d="M20.5 5a7.5 7.5 0 0 1 0 10" />
+    </template>
     <template v-else-if="name === 'speaker'">
       <path d="M11 5 6 9H2v6h4l5 4V5Z" />
       <path d="M15.5 8.5a5 5 0 0 1 0 7" />

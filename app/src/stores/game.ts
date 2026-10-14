@@ -514,6 +514,8 @@ interface GameState {
   bgm: string | null;
   // 現在地に居る NPC (顔アイコン行)。icon は asset:// URL 化済み。
   presentCharacters: CharacterView[];
+  // 登場人物の一覧 (spec 35 Phase D: キャラ別の声の割り当て)。icon はアセット ID のまま。
+  cast: CharacterView[];
   // 背景の明るさ 0..100 (大きいほど画像が明るく見える=暗幕が薄い)。グラフィック設定。
   bgBrightness: number;
   /** 会話ペインの配色 (アプリのテーマと独立。既定 dark)。 */
@@ -651,6 +653,10 @@ interface GameState {
   // 次回起動で文字が消えていたら事故)。
   showGeneratedImage: boolean;
   showText: boolean;
+  // 会話ペイン右下に開いている浮遊パネル (参照ストック・プロンプト工房・キャラクターの声)。
+  // **1 つの値で持つ = 排他** — 3 枚とも同じ位置に出るので、2 枚を開けると 1 枚しか見えない
+  // のにボタンは両方「開いている」と映り、状態表示が嘘になる。揮発 (localStorage に持たない)。
+  floatingPanel: "refStock" | "prompt" | "voices" | null;
   // 読み上げ機能を使うか (設定サウンドタブのチェックボックス、localStorage 永続・既定 OFF)。
   // 旧 use_tts (作者宣言ゲート) は 2026-08-31 に撤去 — imageGen.enabled と同型の
   // プレイヤー側スイッチ一本になった。false なら操作を一切出さない。
@@ -694,6 +700,7 @@ export const useGameStore = defineStore("game", {
       background: null,
       bgm: null,
       presentCharacters: [],
+      cast: [],
       bgBrightness: loadBgBrightness(),
       paneTheme: loadPaneTheme(),
       diceReveal: loadDiceReveal(),
@@ -759,6 +766,7 @@ export const useGameStore = defineStore("game", {
       imageRequestId: 0,
       showGeneratedImage: true,
       showText: true,
+      floatingPanel: null,
       compacting: false,
       writingEpilogue: false,
       map: { nodes: [], edges: [] },
@@ -954,6 +962,10 @@ export const useGameStore = defineStore("game", {
     },
     toggleText(): void {
       this.showText = !this.showText;
+    },
+    /** 浮遊パネルの開閉 (押し直しで閉じる・別のパネルを押せば差し替わる = 排他)。 */
+    toggleFloatingPanel(panel: "refStock" | "prompt" | "voices"): void {
+      this.floatingPanel = this.floatingPanel === panel ? null : panel;
     },
     /**
      * 挿絵まわりの**揮発物**を一括で捨てる (spec 24 の挿絵 + spec 27 の「この一枚への指示」)。
@@ -2065,6 +2077,7 @@ ${body}`, t("rename.ok"), true);
       this.background = assetUrl("images", view.background);
       this.bgm = assetUrl("audios", view.bgm);
       this.presentCharacters = view.present_characters.map((c) => ({ ...c, iconId: c.icon, icon: assetUrl("images", c.icon) }));
+      this.cast = view.cast ?? [];
       this.map = view.map ?? { nodes: [], edges: [] };
       this.log = [{ kind: "opening", text: view.description }];
       this.cacheWarned = false; // 新しいセッション = 新しいクライアント (計測もゼロから)
@@ -2529,7 +2542,11 @@ ${body}`, t("rename.ok"), true);
             );
             // 読み上げは narration だけ (判定結果やビートは読まない = ダイスの結果を
             // 開帳前に音声で漏らさない)。await しない = 語りの表示を音声待ちにしない。
-            if (this.ttsFeature && this.ttsEnabled) void tts.speak(turn.narration);
+            // spec 35: 段があれば台詞ごとにキャラ別の声で読む (割り当てはパッケージ単位)。
+            if (this.ttsFeature && this.ttsEnabled) {
+              if (segments.length) void tts.speakSegments(turn.segments, this.activePackagePath);
+              else void tts.speak(turn.narration);
+            }
           }
           // ダイス系 3 行は伏せて積む (revealed=0)。演出オフなら全開 (= 従来動作)。
           // 演出オフのときは session 側の開帳カウンタ (spec 23 Phase B) も即・全開へ寄せる

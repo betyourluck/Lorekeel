@@ -13,6 +13,9 @@ import type { VoiceEngineAdapter } from "@aituber-onair/voice";
 /** 対応エンジン。ブラウザ内蔵は導入ゼロ、ローカル 2 種は別アプリの常駐が要る。 */
 export type TtsEngine = "webSpeech" | "voicevox" | "aivisSpeech" | "openaiCompatible";
 
+/** 読み上げる範囲 (spec 35 Phase D)。`dialogue` は台詞の段だけを読む (地の文を読まない)。 */
+export type TtsScope = "all" | "dialogue";
+
 export interface TtsSettings {
   engine: TtsEngine;
   /** ローカルエンジンのサーバー URL。空なら既定値。 */
@@ -27,6 +30,8 @@ export interface TtsSettings {
   volume: number;
   /** OpenAI 互換エンドポイントのモデル名 (**必須** — 空だとライブラリが例外を投げる)。 */
   model: string;
+  /** 読み上げる範囲 (spec 35)。既定 `all` = 従来どおり地の文も台詞も読む。 */
+  scope: TtsScope;
 }
 
 /** ローカルエンジンの既定エンドポイント (ライブラリの定数と同じ値)。 */
@@ -68,12 +73,20 @@ export const DEFAULT_SETTINGS: TtsSettings = {
   pitch: 0,
   volume: 1.0,
   model: "",
+  scope: "all",
 };
 
 const LS_FEATURE = "kataribe.tts.feature";
 const LS_ENABLED = "kataribe.tts.enabled";
 const LS_SETTINGS = "kataribe.tts.settings";
 const LS_VOICES = "kataribe.tts.voices";
+/**
+ * キャラ別の声 (spec 35 Phase D)。**`LS_VOICES` (声一覧のキャッシュ) とは別のキー** —
+ * 同じキーに書くと loadVoiceList / saveVoiceList と壊し合う。
+ * 形は `{ [エンジン + サーバー URL]: { [パッケージ]: { [登場人物の id]: 話者 ID } } }`
+ * (話者 ID はエンジンごとに違うので、エンジンを替えれば別の割り当てになる)。
+ */
+const LS_CHARACTER_VOICES = "kataribe.tts.characterVoices";
 
 let adapter: VoiceEngineAdapter | null = null;
 let booting: Promise<VoiceEngineAdapter | null> | null = null;
@@ -83,6 +96,10 @@ let builtWith = "";
 let splitSentence: ((text: string) => string[]) | null = null;
 /** 選んだ日本語音声名 (webSpeech)。アダプタを組み直すたびに探し直さないため。 */
 let pickedJaVoice = "";
+/** 語り手の声 (設定の話者、未指定なら自動選択)。アダプタを組むときに決まる。 */
+let narratorVoice = "";
+/** アダプタに今設定されている話者。声が変わるときだけ updateOptions を呼ぶ。 */
+let currentVoice = "";
 /** 今読み上げている世代。stop() / 次のターンで進め、古い世代の残りを捨てる。 */
 let generation = 0;
 /**
@@ -246,6 +263,8 @@ async function ensureAdapter(): Promise<VoiceEngineAdapter | null> {
     splitSentence = mod.splitSentence;
     const speaker =
       s.speaker.trim() || (s.engine === "webSpeech" ? await pickJapaneseVoice() : "");
+    narratorVoice = speaker;
+    currentVoice = speaker;
     adapter = new mod.VoiceEngineAdapter({
       ...engineOptions(s),
       speaker,
@@ -289,6 +308,91 @@ export function clearVoiceList(): void {
   localStorage.removeItem(LS_VOICES);
 }
 
+/** キャラ別の声の全体。`{ [エンジン + URL]: { [パッケージ]: { [id]: 話者 ID } } }`。 */
+export type CharacterVoiceMap = Record<string, Record<string, Record<string, string>>>;
+
+/** 話者 ID はエンジンとサーバーで意味が変わるので、その組を鍵にする。 */
+export function voiceEngineKey(s: TtsSettings): string {
+  return `${s.engine}|${effectiveUrl(s)}`;
+}
+
+function loadCharacterVoiceMap(): CharacterVoiceMap {
+  try {
+    const raw = localStorage.getItem(LS_CHARACTER_VOICES);
+    return raw ? (JSON.parse(raw) as CharacterVoiceMap) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** いまのエンジンとパッケージでの割り当て (登場人物の id → 話者 ID)。 */
+export function loadCharacterVoices(s: TtsSettings, pkg: string): Record<string, string> {
+  return { ...(loadCharacterVoiceMap()[voiceEngineKey(s)]?.[pkg] ?? {}) };
+}
+
+/**
+ * 割り当てを 1 件書き換える (純関数)。空の話者 ID は「語り手と同じ」= 割り当てを消す。
+ * 空になったパッケージ・エンジンの箱も畳む (保存を太らせない)。
+ */
+export function withCharacterVoice(
+  map: CharacterVoiceMap,
+  engineKey: string,
+  pkg: string,
+  entity: string,
+  voiceId: string,
+): CharacterVoiceMap {
+  const next: CharacterVoiceMap = JSON.parse(JSON.stringify(map));
+  const byPkg = (next[engineKey] ??= {});
+  const byEntity = (byPkg[pkg] ??= {});
+  if (voiceId.trim()) byEntity[entity] = voiceId.trim();
+  else delete byEntity[entity];
+  if (Object.keys(byEntity).length === 0) delete byPkg[pkg];
+  if (Object.keys(byPkg).length === 0) delete next[engineKey];
+  return next;
+}
+
+export function saveCharacterVoice(s: TtsSettings, pkg: string, entity: string, voiceId: string): void {
+  const next = withCharacterVoice(loadCharacterVoiceMap(), voiceEngineKey(s), pkg, entity, voiceId);
+  localStorage.setItem(LS_CHARACTER_VOICES, JSON.stringify(next));
+}
+
+/** 読み上げる段 (TurnView.segments の必要な欄だけ)。地の文は `name` が空。 */
+export interface SpokenSegment {
+  speaker: string | null;
+  name: string;
+  text: string;
+}
+
+/** 読み上げる 1 片。`voice` が null なら語り手の声。 */
+export interface SpeechPart {
+  text: string;
+  voice: string | null;
+}
+
+/**
+ * 段から「何をどの声で読むか」を決める (純関数)。
+ *
+ * - 地の文: 語り手の声。範囲が `dialogue` なら読まない
+ * - 登場人物の台詞: 割り当てがあればその声、無ければ語り手の声
+ * - 名もない人物の台詞 (`speaker` null・`name` あり): 語り手の声 (枠は要望が出てから)
+ */
+export function planSegments(
+  segments: SpokenSegment[],
+  scope: TtsScope,
+  voices: Record<string, string>,
+): SpeechPart[] {
+  const out: SpeechPart[] = [];
+  for (const seg of segments) {
+    const text = seg.text.trim();
+    if (!text) continue;
+    const isLine = seg.name.trim() !== "";
+    if (!isLine && scope === "dialogue") continue;
+    const voice = isLine && seg.speaker ? voices[seg.speaker] ?? null : null;
+    out.push({ text, voice });
+  }
+  return out;
+}
+
 /** 設定画面の話者一覧。ローカルエンジンはサーバーへ問い合わせる (失敗は例外)。 */
 export async function listVoices(
   s: TtsSettings,
@@ -314,8 +418,26 @@ export async function listVoices(
  * await して積むと隙間に後発が割り込む。鎖なら直列と順序保存を同時に満たす。
  */
 export async function speak(text: string, opts?: { queue?: boolean }): Promise<void> {
-  const body = text.trim();
-  if (!body) return;
+  // 平らな文字列は地の文として読む (エピローグ・段の無い語り)。範囲が台詞だけなら読まない。
+  if (loadSettings().scope === "dialogue") return;
+  await speakParts([{ text, voice: null }], opts);
+}
+
+/**
+ * 段ごとに声を変えて読む (spec 35 Phase D)。`pkg` はキャラ別の声を引くパッケージの鍵。
+ * 打ち切り・続けて足すの扱いは `speak` と同じ。
+ */
+export async function speakSegments(
+  segments: SpokenSegment[],
+  pkg: string,
+  opts?: { queue?: boolean },
+): Promise<void> {
+  const s = loadSettings();
+  await speakParts(planSegments(segments, s.scope, loadCharacterVoices(s, pkg)), opts);
+}
+
+async function speakParts(parts: SpeechPart[], opts?: { queue?: boolean }): Promise<void> {
+  if (parts.every((p) => !p.text.trim())) return;
   if (!opts?.queue) {
     // 割り込み = 前の読み上げを捨てる。世代を進めるのもアダプタの始末も stop() が担う
     // ので、**アダプタを取る前に**呼ぶ (後だと今から使うアダプタを捨ててしまう)。
@@ -328,15 +450,26 @@ export async function speak(text: string, opts?: { queue?: boolean }): Promise<v
   if (!a) return;
   // アダプタ生成を待つ間に stop() / 次のターンが来ていたら、もう投入しない。
   if (mine !== generation) return;
-  const sentences = splitSentence ? splitSentence(body) : [body];
-  for (const sentence of sentences) {
-    chain = chain.then(async () => {
-      // 鎖に積んだ後で打ち切られたら (stop / 次のターン) 残りは読まない。
-      if (mine !== generation) return;
-      // stop() は待機中の Promise を reject する = 中断の正常系。読み上げ失敗もプレイを
-      // 止める理由にならないので握り潰す (TTS は装飾であって正本ではない)。
-      await a.speakText(sentence).catch(() => {});
-    });
+  for (const part of parts) {
+    const body = part.text.trim();
+    if (!body) continue;
+    const sentences = splitSentence ? splitSentence(body) : [body];
+    for (const sentence of sentences) {
+      chain = chain.then(async () => {
+        // 鎖に積んだ後で打ち切られたら (stop / 次のターン) 残りは読まない。
+        if (mine !== generation) return;
+        // 声は鎖の中で切り替える — 鎖は 1 文ずつ合成と再生を待つので、前の文に混ざらない
+        // (ライブラリは合成のたびに options.speaker を読む)。変わるときだけ呼ぶ。
+        const want = part.voice ?? narratorVoice;
+        if (want !== currentVoice) {
+          a.updateOptions({ speaker: want });
+          currentVoice = want;
+        }
+        // stop() は待機中の Promise を reject する = 中断の正常系。読み上げ失敗もプレイを
+        // 止める理由にならないので握り潰す (TTS は装飾であって正本ではない)。
+        await a.speakText(sentence).catch(() => {});
+      });
+    }
   }
   await chain;
 }
@@ -345,10 +478,15 @@ export async function speak(text: string, opts?: { queue?: boolean }): Promise<v
  * 設定画面の試聴。**失敗を投げる** — speak() は握り潰すが、こちらは
  * 「サーバーが起動していない」等をユーザーに見せるのが目的 (設定の接地)。
  */
-export async function test(sample: string): Promise<void> {
+export async function test(sample: string, voice?: string): Promise<void> {
   invalidate();
   const a = await ensureAdapter();
   if (!a) throw new Error("speechSynthesis unavailable");
+  // キャラ別の声の試聴 (spec 35)。語り手と違う声なら切り替えてから読む。
+  if (voice && voice !== currentVoice) {
+    a.updateOptions({ speaker: voice });
+    currentVoice = voice;
+  }
   await a.speakText(sample);
 }
 

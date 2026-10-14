@@ -5,7 +5,7 @@
 // 表示条件は親 (App.vue): 設定「画像生成」で有効にした人にだけ出る (作者ゲートは作らない —
 // 挿絵は語りに触れないプレイヤー側の鑑賞物で、押すのもプレイヤー)。
 // 読み上げ操作と同居するときは左へ寄せる (両方 absolute right なので重なる)。
-import { computed, defineAsyncComponent, ref } from "vue";
+import { computed, defineAsyncComponent } from "vue";
 import { useGameStore } from "../stores/game";
 import { t } from "../i18n";
 import Icon from "./Icon.vue";
@@ -17,18 +17,16 @@ const RefStockDialog = defineAsyncComponent(() => import("./RefStockDialog.vue")
 const PromptDialog = defineAsyncComponent(() => import("./PromptDialog.vue"));
 
 const game = useGameStore();
-const showRefStock = ref(false);
-const showPrompt = ref(false);
 // ボタンは開閉のトグル (ユーザーFB 2026-08-26 — ✕ を探すより押した所で閉じる方が自然)。
-// **排他**にするのは、浮遊パネルが 2 枚とも会話ペイン右下の同じ位置に出るから — 両方 ON に
-// できると 1 枚しか見えないのにボタンは 2 つとも「開いている」と映り、状態表示が嘘になる。
+// **排他**は store の `floatingPanel` 1 つで持つ — 読み上げ側の「キャラクターの声」(spec 35) も
+// 同じ位置に出るので、コンポーネントをまたいで 1 枚だけにする。
+const showRefStock = computed(() => game.floatingPanel === "refStock");
+const showPrompt = computed(() => game.floatingPanel === "prompt");
 function toggleRefStock() {
-  showPrompt.value = false;
-  showRefStock.value = !showRefStock.value;
+  game.toggleFloatingPanel("refStock");
 }
 function togglePrompt() {
-  showRefStock.value = false;
-  showPrompt.value = !showPrompt.value;
+  game.toggleFloatingPanel("prompt");
 }
 
 const genLabel = computed(() => (game.imageBusy ? t("image.generating") : t("image.generate")));
@@ -43,7 +41,7 @@ const textToggleLabel = computed(() => (game.showText ? t("image.hideText") : t(
     class="absolute bottom-3 z-20 flex items-center gap-1 rounded-full bg-ink/70 backdrop-blur-sm
            px-1.5 py-1 shadow-lg ring-1 ring-glow/10
            opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity duration-200"
-    :class="game.ttsFeature ? 'right-28' : 'right-4'"
+    :class="game.ttsFeature ? 'right-36' : 'right-4'"
   >
     <!-- 生成。処理中は押せない (スピナー)。気に入らなければ何度でも押せる (差し替え)。 -->
     <button
@@ -121,6 +119,6 @@ const textToggleLabel = computed(() => (game.showText ? t("image.hideText") : t(
       <Icon name="text" :size="15" />
     </button>
   </div>
-  <RefStockDialog v-if="showRefStock" @close="showRefStock = false" />
-  <PromptDialog v-if="showPrompt" @close="showPrompt = false" />
+  <RefStockDialog v-if="showRefStock" @close="game.floatingPanel = null" />
+  <PromptDialog v-if="showPrompt" @close="game.floatingPanel = null" />
 </template>
