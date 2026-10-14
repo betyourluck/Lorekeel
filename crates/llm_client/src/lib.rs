@@ -1183,6 +1183,35 @@ mod tests {
         assert!(body.get("reasoning_effort").is_none(), "no-tools 経路でも併用ではない");
     }
 
+    /// 【世代で判定する】gpt-6 系も gpt-5 系と同じ 2 軸の制約を持つ (2026-10-14 実 API)。
+    ///
+    /// `starts_with("gpt-5")` で判定していたので `gpt-6-luna` が素通りし、旧欄 `max_tokens` を
+    /// 送ってターン開始直後に 400 になった (ユーザー実機)。probe の結果は gpt-5 系と完全に同形 —
+    /// `max_tokens` は `unsupported_parameter`、tools を送る周で `reasoning_effort` を省いても
+    /// `medium` でも 400、`"none"` だけが通る、tools 無しなら思考ありで通る。
+    /// **モデル名の一覧を持たず世代番号で切る** (gpt-7 が出ても直さずに済む)。
+    #[test]
+    fn gpt_generation_five_and_later_share_the_send_splitting() {
+        use openai_compat::{reasoning_effort as effort, uses_max_completion_tokens as new_field};
+
+        for model in ["gpt-6-luna", "gpt-6", "gpt-7.1-mini", "openai/gpt-6-luna", "gpt-10"] {
+            assert!(new_field(model), "{model}: 旧欄 max_tokens は 400 になる");
+            assert_eq!(effort(model, Some(Effort::Medium), true), Some("none"), "{model}: tools 周");
+            assert_eq!(effort(model, Some(Effort::Medium), false), None, "{model}: tools 無しは触らない");
+        }
+        // 世代 4 以前と、世代番号でない派生名は従来どおり (互換サーバの gpt-oss を巻き込まない)。
+        for model in ["gpt-4o-mini", "gpt-4.1", "gpt-4.5-preview", "gpt-3.5-turbo", "gpt-oss-120b", "gpt-"] {
+            assert!(!new_field(model), "{model}");
+            assert_eq!(effort(model, None, true), None, "{model}");
+        }
+
+        let body =
+            serde_json::to_value(openai_compat::encode(&compat_req("gpt-6-luna"), ToolMode::Forced)).unwrap();
+        assert_eq!(body["max_completion_tokens"], 4096);
+        assert!(body.get("max_tokens").is_none());
+        assert_eq!(body["reasoning_effort"], "none");
+    }
+
     /// 【軸③ tool_choice の実装範囲】`ToolMode::Auto` は**素の `"auto"`** を送り tools は残す。
     ///
     /// Meta (api.llama.com) は `only "auto" is supported for tool_choice. "none", "required",

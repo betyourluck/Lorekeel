@@ -105,26 +105,39 @@ fn is_o_series(model: &str) -> bool {
     model.starts_with('o') && model.chars().nth(1).is_some_and(|c| c.is_ascii_digit())
 }
 
+/// OpenAI の gpt 系で、世代番号が 5 以上か (gpt-5.6-luna / gpt-6-luna / gpt-7 ...)。
+///
+/// gpt-5 系の 2 つの制約 (旧欄 `max_tokens` の拒否 / tools と思考の併用の拒否) は gpt-6 系にも
+/// そのまま掛かっている (2026-10-14 実 API)。当初は `starts_with("gpt-5")` で判定しており、
+/// `gpt-6-luna` が素通りしてターン開始直後に 400 になった。**モデル名を列挙せず世代番号で切る**
+/// — 次の世代が出ても直さずに済む (Opus 5.5 の tool_choice と同じく、一覧は次のモデルで古くなる)。
+/// `gpt-` の直後が数字でない派生名 (`gpt-oss-120b` = 互換サーバのモデル) は対象外。
+fn is_gpt_five_or_later(model: &str) -> bool {
+    let Some(rest) = model.strip_prefix("gpt-") else { return false };
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse::<u32>().is_ok_and(|generation| generation >= 5)
+}
+
 /// 出力上限をどちらの欄名で送るかを決める (純粋)。
 ///
-/// gpt-5 系と o 系は思考トークンを含めて上限を管理する方式へ移っており、旧欄 `max_tokens` を
+/// gpt-5 以降の gpt 系と o 系は思考トークンを含めて上限を管理する方式へ移っており、旧欄 `max_tokens` を
 /// 送ると 400 `unsupported_parameter` で拒否する。**全面置換にしない** — 互換サーバ
 /// (llama.cpp / vLLM / gpt-oss 系) には新欄を知らないものがあり、旧欄を落とすと今度は
 /// そちらの上限が消える。`reasoning_effort` と同じくモデル名で送り分ける。
 pub(crate) fn uses_max_completion_tokens(model: &str) -> bool {
     let model = bare_model(model);
-    model.starts_with("gpt-5") || is_o_series(model)
+    is_gpt_five_or_later(model) || is_o_series(model)
 }
 
 /// `reasoning_effort` を送るかどうかと、その値を決める (純粋)。
 ///
 /// **推論制御を持つモデルにだけ送る** — 他モデルへ送るとキーを解釈できず 400 になる。
 ///
-/// `sends_function_tools` は**この周で `tools` を実際に送るか**。gpt-5 系は
+/// `sends_function_tools` は**この周で `tools` を実際に送るか**。gpt-5 以降の gpt 系は
 /// `/v1/chat/completions` で「function tools と思考の併用」を拒むため、その周だけ
 /// `"none"` で固定する (下の分岐)。
 ///
-/// - **gpt-5 系 + tools**: `"none"` を**明示**する。**キーを省いても回避できない** —
+/// - **gpt-5 以降 (gpt-6 系も実測で同じ) + tools**: `"none"` を**明示**する。**キーを省いても回避できない** —
 ///   省くとサーバ側の既定の思考が効き、同じ 400 (`Function tools with reasoning_effort
 ///   are not supported`) になる。エラー本文が挙げる逃げ道 2 つのうち「`/v1/responses` へ
 ///   移る」は Chat Completions とは別 API でワイヤをもう 1 本持つことになるので採らない。
@@ -143,7 +156,7 @@ pub(crate) fn reasoning_effort(
     sends_function_tools: bool,
 ) -> Option<&'static str> {
     let model = bare_model(model);
-    if model.starts_with("gpt-5") {
+    if is_gpt_five_or_later(model) {
         return sends_function_tools.then_some("none");
     }
     let is_43 = model.starts_with("grok-4.3");
