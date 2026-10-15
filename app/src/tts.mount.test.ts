@@ -61,7 +61,7 @@ describe("キャラ別の声の読み上げ (spec 35 Phase D)", () => {
       ["say", "遅いわね"],
       ["voice", "1"], // 割り当ての無い雪菜は語り手の声
       ["say", "……"],
-      ["say", "毎度"], // 名もない人物も語り手の声 (同じ声なら呼び直さない)
+      ["say", "毎度"], // モブは地の文 = 語り手の声 (同じ声なら呼び直さない)
     ]);
   });
 
@@ -74,12 +74,12 @@ describe("キャラ別の声の読み上げ (spec 35 Phase D)", () => {
     expect(calls.filter(([k]) => k === "voice")).toEqual([]);
   });
 
-  it("台詞だけ: 地の文とエピローグ (平らな文字列) は読まない", async () => {
+  it("台詞だけ: 地の文・モブの台詞・エピローグ (平らな文字列) は読まない", async () => {
     const s = { ...tts.DEFAULT_SETTINGS, engine: "voicevox" as const, speaker: "1", scope: "dialogue" as const };
     tts.saveSettings(s);
 
     await tts.speakSegments(SEGS, "pkgA");
     await tts.speak("そして二人は、湖のほとりで別れた。", { queue: true });
-    expect(calls.filter(([k]) => k === "say").map(([, t]) => t)).toEqual(["遅いわね", "……", "毎度"]);
+    expect(calls.filter(([k]) => k === "say").map(([, t]) => t)).toEqual(["遅いわね", "……"]);
   });
 });

@@ -6,6 +6,7 @@ import { t } from "../i18n";
 import type { EditorVocabulary } from "../editorCompletion";
 import { fileToWebp } from "../imageConvert";
 import * as tts from "../tts";
+import { foldMobLines } from "../segments";
 import {
   currentSlot,
   imageStamp,
@@ -2541,7 +2542,10 @@ ${body}`, t("rename.ok"), true);
           this.contest = turn.contest ?? null;
           if (turn.narration) {
             // spec 35: 段があれば吹き出しで描く (アイコンは先読み済みの URL へ)。
-            const segments = (turn.segments ?? []).map((s) => ({ ...s, icon: assetUrl("images", s.icon) }));
+            // モブ (登場人物にいない人物) の台詞は地の文へ畳む — 吹き出しにせず、読み上げでも
+            // 台詞として扱わない (2026-10-15 ユーザー要望)。
+            const spoken = foldMobLines(turn.segments ?? []);
+            const segments = spoken.map((s) => ({ ...s, icon: assetUrl("images", s.icon) }));
             this.log.push(
               segments.length
                 ? { kind: "narration", text: turn.narration, segments }
@@ -2551,7 +2555,7 @@ ${body}`, t("rename.ok"), true);
             // 開帳前に音声で漏らさない)。await しない = 語りの表示を音声待ちにしない。
             // spec 35: 段があれば台詞ごとにキャラ別の声で読む (割り当てはパッケージ単位)。
             if (this.ttsFeature && this.ttsEnabled) {
-              if (segments.length) void tts.speakSegments(turn.segments, this.activePackagePath);
+              if (segments.length) void tts.speakSegments(spoken, this.activePackagePath);
               else void tts.speak(turn.narration);
             }
           }

@@ -90,3 +90,32 @@ describe("受理ターンの読み上げ (spec 35 Phase D)", () => {
     expect(spoken.segments).toEqual([]);
   });
 });
+
+/**
+ * モブ (登場人物にいない人物) の台詞は地の文として読む (2026-10-15 ユーザー要望)。
+ *
+ * Red の確かめ方: ingestTurn で foldMobLines を通さず turn.segments をそのまま渡すと落ちる。
+ */
+describe("モブの台詞の読み上げ", () => {
+  it("モブの台詞は 名前「…」 の地の文に畳んでから speakSegments へ渡る", async () => {
+    const store = useGameStore(prepare({ resolve_asset_path: () => null }));
+    store.ttsFeature = true;
+    store.ttsEnabled = true;
+    store.activePackagePath = "pkg";
+    await store.ingestTurn(
+      turn([
+        { speaker: "rinka", name: "凛花", icon: null, text: "遅いわね" },
+        { speaker: null, name: "店員", icon: null, text: "毎度" },
+      ]),
+    );
+    expect(spoken.segments).toEqual([
+      {
+        segs: [
+          { speaker: "rinka", name: "凛花", icon: null, text: "遅いわね" },
+          { speaker: null, name: "", icon: null, text: "店員「毎度」" },
+        ],
+        pkg: "pkg",
+      },
+    ]);
+  });
+});

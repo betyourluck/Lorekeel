@@ -15,7 +15,7 @@ const SEGS: SpokenSegment[] = [
 ];
 
 describe("planSegments", () => {
-  it("すべて: 地の文と割り当ての無い人物・名もない人物は語り手の声、割り当てのある人物はその声", () => {
+  it("すべて: 地の文・割り当ての無い人物・モブは語り手の声、割り当てのある人物はその声", () => {
     expect(planSegments(SEGS, "all", { rinka: "7" })).toEqual([
       { text: "教室が静まる。", voice: null },
       { text: "遅いわね", voice: "7" },
@@ -32,8 +32,8 @@ describe("planSegments", () => {
     ]);
   });
 
-  it("台詞だけ: 地の文を読まない (名もない人物の台詞は読む)", () => {
-    expect(planSegments(SEGS, "dialogue", { rinka: "7" }).map((p) => p.text)).toEqual(["遅いわね", "……", "毎度"]);
+  it("台詞だけ: 地の文を読まない。モブ (登場人物にいない人物) の台詞も地の文として読まない", () => {
+    expect(planSegments(SEGS, "dialogue", { rinka: "7" }).map((p) => p.text)).toEqual(["遅いわね", "……"]);
   });
 });
 

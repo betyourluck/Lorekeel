@@ -66,3 +66,29 @@ describe("台詞の段が会話ログへ届く (spec 35)", () => {
     expect(entry.text).toBe("教室が静まる。\n凛花「遅いわね」"); // ログ書き出し用の平らな文字列も残す
   });
 });
+
+/**
+ * モブ (登場人物にいない人物) の台詞は吹き出しにせず、地の文として会話ログに積む
+ * (2026-10-15 ユーザー要望)。
+ *
+ * Red の確かめ方: ingestTurn で foldMobLines を通さないと落ちる (モブが吹き出しで残る)。
+ */
+describe("モブの台詞は地の文", () => {
+  it("名前だけの話者は 名前「…」 の地の文になり、登場人物の台詞は吹き出しのまま", async () => {
+    const store = useGameStore(prepare({ resolve_asset_path: () => null }));
+    const t = turn();
+    t.segments = [
+      { speaker: null, name: "", icon: null, text: "店の戸が開く。" },
+      { speaker: null, name: "店員", icon: null, text: "いらっしゃい" },
+      { speaker: "rinka", name: "凛花", icon: null, text: "遅いわね" },
+    ];
+    await store.ingestTurn(t);
+    const entry = store.log.find((e) => e.kind === "narration");
+    if (entry?.kind !== "narration") throw new Error("narration が無い");
+    expect(entry.segments?.map((s) => [s.name, s.text])).toEqual([
+      ["", "店の戸が開く。"],
+      ["", "店員「いらっしゃい」"],
+      ["凛花", "遅いわね"],
+    ]);
+  });
+});

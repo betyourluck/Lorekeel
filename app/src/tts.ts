@@ -390,7 +390,8 @@ export interface SpeechPart {
  *
  * - 地の文: 語り手の声。範囲が `dialogue` なら読まない
  * - 登場人物の台詞: 割り当てがあればその声、無ければ語り手の声
- * - 名もない人物の台詞 (`speaker` null・`name` あり): 語り手の声 (枠は要望が出てから)
+ * - モブの台詞 (`speaker` null・`name` あり): **地の文として扱う** (範囲が `dialogue` なら読まない)。
+ *   store は先に `foldMobLines` で `名前「…」` の地の文へ畳んでから渡すが、ここでも同じ扱いにする
  * - 声を「なし」(`VOICE_NONE`) にした人物の台詞: 読まない
  */
 export function planSegments(
@@ -402,7 +403,8 @@ export function planSegments(
   for (const seg of segments) {
     const text = seg.text.trim();
     if (!text) continue;
-    const isLine = seg.name.trim() !== "";
+    // 台詞は登場人物のものだけ。モブ (speaker なし) は地の文 (2026-10-15 ユーザー要望)。
+    const isLine = seg.name.trim() !== "" && seg.speaker !== null;
     if (!isLine && scope === "dialogue") continue;
     const voice = isLine && seg.speaker ? voices[seg.speaker] ?? null : null;
     // 声を「なし」にした人物の台詞は読まない (地の文と他の人物は読む)。

@@ -57,7 +57,8 @@ function statRollFinal(sr: StatRollView): number {
       </div>
 
       <!-- GM の語り。段があれば地の文と吹き出しの台詞を順に描く (spec 35)。
-           地の文は名前が空、名もない人物はアイコン無し (頭文字で描く)。 -->
+           地の文は名前が空。モブ (登場人物にいない人物) の台詞は store が地の文へ畳んでから積む
+           (foldMobLines)。アイコンの無い登場人物は頭文字で描く。 -->
       <div
         v-else-if="entry.kind === 'narration' && entry.segments?.length"
         class="space-y-3"
