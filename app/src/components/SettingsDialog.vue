@@ -55,6 +55,10 @@ import {
   DEFAULT_MODEL,
   genericComfyWorkflow,
   workflowAcceptsRefs,
+  withWorkflowText,
+  withWorkflowIndex,
+  withWorkflowName,
+  WORKFLOW_SLOTS,
   workflowAcceptsSeed,
   workflowAcceptsNegative,
   supportsNegative,
@@ -318,7 +322,15 @@ async function loadDefaultImageDir() {
   }
 }
 function insertGenericWorkflow() {
-  setSlot({ workflowJson: genericComfyWorkflow() });
+  setSlot(withWorkflowText(slot.value, genericComfyWorkflow()));
+}
+// ワークフローの保管枠 (2026-10-15、3 つまで)。生成に使うのは選んでいる枠。
+const workflowSlotIndexes = Array.from({ length: WORKFLOW_SLOTS }, (_, i) => i);
+function workflowSlotLabel(i: number): string {
+  const name = slot.value.workflowNames?.[i]?.trim();
+  if (name) return name;
+  const body = i === slot.value.workflowIndex ? slot.value.workflowJson : slot.value.workflowSlots?.[i] ?? "";
+  return body.trim() ? String(i + 1) : t("settings.image.workflowSlotEmpty", { n: i + 1 });
 }
 // ワークフローに差し込み先が無い = 送られても使われない沈黙の失敗を見せる。**落ちる値が実際に
 // 在るときだけ**鳴らす (画集 0 枚・seed 非固定・negative 空欄なら何も失われないので誤警告になる)。
@@ -1461,6 +1473,35 @@ onMounted(async () => {
             <div v-if="img.provider === 'comfy'" class="space-y-1">
               <div class="block text-sm text-parchment/70">
                 {{ t("settings.image.workflow") }}
+                <!-- 保管枠 (3 つまで)。選んだ枠が下のエディタに出て、生成にもそれが使われる。 -->
+                <div class="mt-1 flex flex-wrap items-center gap-1" role="radiogroup" data-testid="workflow-slots">
+                  <button
+                    v-for="i in workflowSlotIndexes"
+                    :key="i"
+                    type="button"
+                    role="radio"
+                    :aria-checked="slot.workflowIndex === i"
+                    class="max-w-[10rem] truncate rounded px-2 py-0.5 text-xs transition-colors"
+                    :class="
+                      slot.workflowIndex === i
+                        ? 'bg-ember/80 text-ink'
+                        : 'bg-ash/40 text-parchment/70 hover:bg-ash/70'
+                    "
+                    :title="t('settings.image.workflowSlot', { n: i + 1 })"
+                    data-testid="workflow-slot"
+                    @click="setSlot(withWorkflowIndex(slot, i))"
+                  >
+                    {{ workflowSlotLabel(i) }}
+                  </button>
+                  <input
+                    :value="slot.workflowNames?.[slot.workflowIndex] ?? ''"
+                    :placeholder="t('settings.image.workflowName')"
+                    class="ml-1 min-w-0 flex-1 rounded bg-ash/40 px-2 py-0.5 text-xs text-parchment focus:outline-none"
+                    data-testid="workflow-name"
+                    @change="setSlot(withWorkflowName(slot, ($event.target as HTMLInputElement).value))"
+                  />
+                </div>
+                <span class="block text-parchment/40 text-xs mt-0.5">{{ t("settings.image.workflowSlotsNote") }}</span>
                 <!-- spec 27 Phase C: 数百行の JSON を貼る欄なので、行番号・検索・構文エラーの
                      lint が効く CodeMirror にする (%ref_1% を目で探す欄でもある)。 -->
                 <CodeEditor
@@ -1469,7 +1510,7 @@ onMounted(async () => {
                   height="14rem"
                   :model-value="slot.workflowJson"
                   :placeholder="t('settings.image.workflowPlaceholder')"
-                  @update:model-value="setSlot({ workflowJson: $event })"
+                  @update:model-value="setSlot(withWorkflowText(slot, $event))"
                 />
               </div>
               <div class="flex items-center gap-2">

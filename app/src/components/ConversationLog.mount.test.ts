@@ -130,3 +130,36 @@ describe("台詞の吹き出し (spec 35)", () => {
     expect(wrapper.text()).toContain("霧が晴れる。");
   });
 });
+
+/**
+ * 吹き出しの読み上げボタン (2026-10-15)。読み上げ機能が ON のときだけ出て、押すとそのセリフを
+ * 読み直す (store の replaySegment)。地の文には付けない。
+ */
+describe("セリフの読み上げボタン", () => {
+  const SEGMENTS = [
+    { speaker: null, name: "", icon: null, text: "教室が静まる。" },
+    { speaker: "rinka", name: "凛花", icon: null, text: "遅いわね" },
+  ];
+
+  it("読み上げ機能が ON なら台詞ごとに出て、押すとそのセリフを読み直す", async () => {
+    const wrapper = mountWith(ConversationLog, {}, {});
+    const game = useGameStore();
+    game.ttsFeature = true;
+    const spy = vi.spyOn(game, "replaySegment").mockImplementation(() => {});
+    game.log = [{ kind: "narration", text: "", segments: SEGMENTS }];
+    await flushPromises();
+    const buttons = wrapper.findAll('[data-testid="dialogue-replay"]');
+    expect(buttons).toHaveLength(1); // 地の文には付けない
+    await buttons[0].trigger("click");
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ speaker: "rinka", text: "遅いわね" }));
+  });
+
+  it("読み上げ機能が OFF なら出さない", async () => {
+    const wrapper = mountWith(ConversationLog, {}, {});
+    const game = useGameStore();
+    game.ttsFeature = false;
+    game.log = [{ kind: "narration", text: "", segments: SEGMENTS }];
+    await flushPromises();
+    expect(wrapper.findAll('[data-testid="dialogue-replay"]')).toHaveLength(0);
+  });
+});

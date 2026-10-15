@@ -46,7 +46,12 @@ function setVoice(entity: string, voiceId: string) {
 /** 一覧に無い割り当て (別のサーバーで取った ID 等) も選択肢として見せる (空白の select を作らない)。 */
 function orphan(entity: string): string {
   const id = assigned.value[entity] ?? "";
-  return id && !voiceList.value.some((v) => v.id === id) ? id : "";
+  return id && id !== tts.VOICE_NONE && !voiceList.value.some((v) => v.id === id) ? id : "";
+}
+
+/** 声を「なし」(この人物の台詞を読まない) にしているか。 */
+function isNone(entity: string): boolean {
+  return assigned.value[entity] === tts.VOICE_NONE;
 }
 
 /** 声の一覧の取得。ローカルエンジンはサーバーへ問い合わせるので失敗を表に出す。 */
@@ -92,14 +97,26 @@ async function testVoice(entity: string) {
         data-testid="character-voice-row"
       >
         <span class="w-24 shrink-0 truncate text-parchment/85" :title="`${c.name} (${c.id})`">{{ c.name }}</span>
-        <input
-          v-if="!hasList"
-          :value="assigned[c.id] ?? ''"
-          type="text"
-          :placeholder="t('settings.voice.sameAsNarrator')"
-          class="min-w-0 flex-1 rounded bg-ink/70 border border-ash/60 px-2 py-1 text-parchment"
-          @change="setVoice(c.id, ($event.target as HTMLInputElement).value)"
-        />
+        <!-- 話者一覧の無いエンジン (OpenAI 互換) は自由入力 + 「なし」のチェック。 -->
+        <template v-if="!hasList">
+          <input
+            :value="isNone(c.id) ? '' : assigned[c.id] ?? ''"
+            :disabled="isNone(c.id)"
+            type="text"
+            :placeholder="t('settings.voice.sameAsNarrator')"
+            class="min-w-0 flex-1 rounded bg-ink/70 border border-ash/60 px-2 py-1 text-parchment disabled:opacity-40"
+            @change="setVoice(c.id, ($event.target as HTMLInputElement).value)"
+          />
+          <label class="flex shrink-0 items-center gap-1 text-xs text-parchment/70">
+            <input
+              type="checkbox"
+              :checked="isNone(c.id)"
+              data-testid="voice-none"
+              @change="setVoice(c.id, ($event.target as HTMLInputElement).checked ? tts.VOICE_NONE : '')"
+            />
+            {{ t("settings.voice.voiceNone") }}
+          </label>
+        </template>
         <select
           v-else
           :value="assigned[c.id] ?? ''"
@@ -107,13 +124,14 @@ async function testVoice(entity: string) {
           @change="setVoice(c.id, ($event.target as HTMLSelectElement).value)"
         >
           <option value="">{{ t("settings.voice.sameAsNarrator") }}</option>
+          <option :value="tts.VOICE_NONE">{{ t("settings.voice.voiceNone") }}</option>
           <option v-if="orphan(c.id)" :value="orphan(c.id)">{{ orphan(c.id) }}</option>
           <option v-for="v in voiceList" :key="v.id" :value="v.id" :title="v.label">{{ v.label }}</option>
         </select>
         <button
           type="button"
           class="px-2 py-1 text-xs rounded bg-ash/40 text-parchment/80 hover:bg-ash/60 disabled:opacity-40"
-          :disabled="busy"
+          :disabled="busy || isNone(c.id)"
           @click="testVoice(c.id)"
         >
           {{ t("settings.voice.testCharacter") }}

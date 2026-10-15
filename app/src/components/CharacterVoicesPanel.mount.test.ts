@@ -131,3 +131,33 @@ describe("設定 > サウンド (spec 35 Phase D)", () => {
     expect(tts.loadSettings().scope).toBe("dialogue");
   });
 });
+
+describe("キャラの声の『なし』(2026-10-15)", () => {
+  it("一覧のあるエンジンでは選択肢に『なし』があり、選ぶと保存されて試聴は押せない", async () => {
+    const w = mountWith(CharacterVoicesPanel, {}, {});
+    withCast(useGameStore());
+    await flushPromises();
+    const row = w.findAll('[data-testid="character-voice-row"]')[0];
+    const sel = row.get("select");
+    expect(sel.findAll("option").map((o) => o.text())).toContain(t("settings.voice.voiceNone"));
+    await sel.setValue(tts.VOICE_NONE);
+    await flushPromises();
+    expect(tts.loadCharacterVoices(SETTINGS, PKG)).toEqual({ akari: tts.VOICE_NONE });
+    expect(row.get("button").attributes("disabled")).toBeDefined();
+  });
+
+  it("話者を自由入力するエンジン (OpenAI 互換) では『なし』のチェックで切り替える", async () => {
+    const oa = { ...tts.DEFAULT_SETTINGS, engine: "openaiCompatible" as const, model: "m" };
+    tts.saveSettings(oa);
+    const w = mountWith(CharacterVoicesPanel, {}, {});
+    withCast(useGameStore());
+    await flushPromises();
+    const box = w.findAll('[data-testid="voice-none"]')[1];
+    await box.setValue(true);
+    await flushPromises();
+    expect(tts.loadCharacterVoices(oa, PKG)).toEqual({ genzo: tts.VOICE_NONE });
+    await box.setValue(false);
+    await flushPromises();
+    expect(tts.loadCharacterVoices(oa, PKG)).toEqual({});
+  });
+});

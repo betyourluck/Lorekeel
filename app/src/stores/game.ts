@@ -884,9 +884,16 @@ export const useGameStore = defineStore("game", {
       tts.saveEnabled(this.ttsEnabled);
       if (!this.ttsEnabled) tts.stop();
     },
-    // 今の読み上げを飛ばす。**物語は進めない** — 音を切るだけ (提示層の操作)。
+    // 今読んでいるセリフを飛ばして次のセリフへ (2026-10-15 — 従来はターン全体を捨てていた)。
+    // **物語は進めない** — 音を切るだけ (提示層の操作)。
     skipTts(): void {
-      tts.stop();
+      tts.skip();
+    },
+    // 吹き出しの読み上げボタン: そのセリフだけを読み直す。クイックトグルが OFF でも読む
+    // (押したのはその一言を聞くため)。機能スイッチが OFF ならボタン自体が出ない。
+    replaySegment(seg: tts.SpokenSegment): void {
+      if (!this.ttsFeature) return;
+      void tts.replaySegment(seg, this.activePackagePath);
     },
 
     // --- 画像生成 / 挿絵 (spec 24) -------------------------------------------------------

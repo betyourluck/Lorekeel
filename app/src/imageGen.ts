@@ -19,7 +19,20 @@ export interface ProviderSlot {
   /** "" = プロバイダ既定 (openai/gemini=prose, comfy=tags)。 */
   style: ImagePromptStyle | "";
   negative: string;
+  /**
+   * 生成に使うワークフロー (= `workflowSlots[workflowIndex]` の写し)。backend へ送るのはこれ。
+   * 書き換えは `withWorkflowText` を通す (保管枠と食い違わせない)。
+   */
   workflowJson: string;
+  /**
+   * 保管しているワークフロー (2026-10-15 ユーザー要望、`WORKFLOW_SLOTS` 個)。ComfyUI だけが使う。
+   * 不変条件: `workflowSlots[workflowIndex] === workflowJson`。
+   */
+  workflowSlots: string[];
+  /** 保管枠の名前 (任意)。どれが何のワークフローかを覚えておくため。 */
+  workflowNames: string[];
+  /** 選んでいる保管枠 (0 始まり)。 */
+  workflowIndex: number;
   /** 0 = プロバイダ別既定 (backend `ImageGenConfig::timeout()` が受ける)。 */
   timeoutSecs: number;
 }
@@ -67,6 +80,9 @@ export const DEFAULT_MODEL: Record<ImageProvider, string> = {
 
 const PROVIDERS: ImageProvider[] = ["openai", "gemini", "comfy", "meta", "xai"];
 
+/** ComfyUI のワークフローを保管できる数。 */
+export const WORKFLOW_SLOTS = 3;
+
 /**
  * ComfyUI の negative の既定値 (2026-08-26 実測)。
  *
@@ -91,8 +107,43 @@ export function defaultSlot(p: ImageProvider): ProviderSlot {
     style: "",
     negative: p === "comfy" ? COMFY_DEFAULT_NEGATIVE : "",
     workflowJson: "",
+    workflowSlots: Array(WORKFLOW_SLOTS).fill(""),
+    workflowNames: Array(WORKFLOW_SLOTS).fill(""),
+    workflowIndex: 0,
     timeoutSecs: 0,
   };
+}
+
+/** 文字列の配列を保管数ちょうどに揃える (欠けは空、余りは捨てる、文字列以外は空)。 */
+function fitSlots(raw: unknown): string[] {
+  const arr = Array.isArray(raw) ? raw : [];
+  return Array.from({ length: WORKFLOW_SLOTS }, (_, i) => (typeof arr[i] === "string" ? arr[i] : ""));
+}
+
+/**
+ * 選んでいる保管枠の本文を書き換える (純関数・スロットへの差分を返す)。
+ * `workflowJson` と保管枠の両方を書くので、不変条件が崩れない。
+ */
+export function withWorkflowText(slot: ProviderSlot, text: string): Partial<ProviderSlot> {
+  const workflowSlots = fitSlots(slot.workflowSlots);
+  workflowSlots[slot.workflowIndex] = text;
+  return { workflowJson: text, workflowSlots };
+}
+
+/** 別の保管枠を選ぶ (純関数)。生成に使う `workflowJson` がその枠の本文に替わる。 */
+export function withWorkflowIndex(slot: ProviderSlot, index: number): Partial<ProviderSlot> {
+  const i = Math.min(WORKFLOW_SLOTS - 1, Math.max(0, Math.floor(index)));
+  const workflowSlots = fitSlots(slot.workflowSlots);
+  // 今の枠の本文を念のため保管枠へ戻してから切り替える (不変条件が崩れた旧データでも失わない)。
+  workflowSlots[slot.workflowIndex] = slot.workflowJson;
+  return { workflowIndex: i, workflowJson: workflowSlots[i], workflowSlots };
+}
+
+/** 選んでいる保管枠の名前を書き換える (純関数)。 */
+export function withWorkflowName(slot: ProviderSlot, name: string): Partial<ProviderSlot> {
+  const workflowNames = fitSlots(slot.workflowNames);
+  workflowNames[slot.workflowIndex] = name;
+  return { workflowNames };
 }
 
 export function defaultImageGenSettings(): ImageGenSettings {
@@ -130,9 +181,24 @@ function sanitizeSlot(p: ImageProvider, raw: unknown): ProviderSlot {
     model: typeof r.model === "string" ? r.model : base.model,
     style: r.style === "tags" || r.style === "prose" ? r.style : "",
     negative: typeof r.negative === "string" ? r.negative : "",
-    workflowJson: typeof r.workflowJson === "string" ? r.workflowJson : "",
+    ...sanitizeWorkflows(r),
     timeoutSecs: typeof r.timeoutSecs === "number" && r.timeoutSecs > 0 ? r.timeoutSecs : 0,
   };
+}
+
+/**
+ * 保管枠の読み込み。**`workflowJson` を正とする** — 保管枠を持たない旧データ (2026-10-15 以前)
+ * は `workflowJson` が 1 枠目に入り、既存のワークフローが黙って消えない。
+ */
+function sanitizeWorkflows(
+  r: Partial<ProviderSlot>,
+): Pick<ProviderSlot, "workflowJson" | "workflowSlots" | "workflowNames" | "workflowIndex"> {
+  const workflowJson = typeof r.workflowJson === "string" ? r.workflowJson : "";
+  const idx = typeof r.workflowIndex === "number" ? Math.floor(r.workflowIndex) : 0;
+  const workflowIndex = idx >= 0 && idx < WORKFLOW_SLOTS ? idx : 0;
+  const workflowSlots = fitSlots(r.workflowSlots);
+  workflowSlots[workflowIndex] = workflowJson;
+  return { workflowJson, workflowSlots, workflowNames: fitSlots(r.workflowNames), workflowIndex };
 }
 
 /**

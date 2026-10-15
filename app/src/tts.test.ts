@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { DEFAULT_SETTINGS, planSegments, voiceEngineKey, withCharacterVoice, type SpokenSegment } from "./tts";
+import { DEFAULT_SETTINGS, planSegments, VOICE_NONE, voiceEngineKey, withCharacterVoice, type SpokenSegment } from "./tts";
 
 const SEGS: SpokenSegment[] = [
   { speaker: null, name: "", text: "教室が静まる。" },
@@ -20,6 +20,14 @@ describe("planSegments", () => {
       { text: "教室が静まる。", voice: null },
       { text: "遅いわね", voice: "7" },
       { text: "……", voice: null },
+      { text: "毎度", voice: null },
+    ]);
+  });
+
+  it("声を『なし』にした人物の台詞は読まない (地の文と他の人物は読む)", () => {
+    expect(planSegments(SEGS, "all", { rinka: VOICE_NONE, yukina: "3" })).toEqual([
+      { text: "教室が静まる。", voice: null },
+      { text: "……", voice: "3" },
       { text: "毎度", voice: null },
     ]);
   });

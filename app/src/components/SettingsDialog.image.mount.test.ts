@@ -10,6 +10,8 @@ import { flushPromises, type VueWrapper } from "@vue/test-utils";
 import { describe, expect, it } from "vitest";
 
 import { t } from "../i18n";
+import { currentSlot, loadImageGenSettings, toBackendConfig, withWorkflowText } from "../imageGen";
+import { useGameStore } from "../stores/game";
 import { ipcCalls, mountWith, type IpcTable } from "../test/mount";
 import SettingsDialog from "./SettingsDialog.vue";
 
@@ -108,5 +110,45 @@ describe("画像生成のプロバイダ xAI", () => {
     await provider.setValue("gemini");
     await flushPromises();
     expect(detailOptions(w)).toEqual(["standard", "high"]);
+  });
+});
+
+/**
+ * ComfyUI のワークフローを 3 つまで保管し、選んだものを生成に使う (2026-10-15 ユーザー要望)。
+ *
+ * Red の確かめ方: SettingsDialog の保管枠ボタンが withWorkflowIndex を通さず workflowIndex だけを
+ * 変えると、backend へ送るワークフローが切り替わらず落ちる。
+ */
+describe("ComfyUI のワークフローの保管枠", () => {
+  it("枠を切り替えると生成に使うワークフローが替わり、戻すと元の本文と名前が残っている", async () => {
+    const w = await openImageTab({});
+    const game = useGameStore();
+    await selectBy(w, t("settings.image.provider")).setValue("comfy");
+    await flushPromises();
+    game.setImageGenSlot(withWorkflowText(currentSlot(game.imageGen), '{"a":1}'));
+    await w.get('[data-testid="workflow-name"]').setValue("SDXL");
+    await w.get('[data-testid="workflow-name"]').trigger("change");
+    await flushPromises();
+
+    const slots = () => w.findAll('[data-testid="workflow-slot"]');
+    expect(slots().map((b) => b.text())).toEqual([
+      "SDXL",
+      t("settings.image.workflowSlotEmpty", { n: 2 }),
+      t("settings.image.workflowSlotEmpty", { n: 3 }),
+    ]);
+
+    await slots()[1].trigger("click");
+    await flushPromises();
+    expect(toBackendConfig(game.imageGen).workflow_json).toBeNull(); // 空の枠
+    game.setImageGenSlot(withWorkflowText(currentSlot(game.imageGen), '{"b":2}'));
+    await flushPromises();
+    expect(toBackendConfig(game.imageGen).workflow_json).toBe('{"b":2}');
+
+    await slots()[0].trigger("click");
+    await flushPromises();
+    expect(toBackendConfig(game.imageGen).workflow_json).toBe('{"a":1}');
+    expect(slots().map((b) => b.text())).toEqual(["SDXL", "2", t("settings.image.workflowSlotEmpty", { n: 3 })]);
+    // 再読み込みしても残る (localStorage)。
+    expect(currentSlot(loadImageGenSettings()).workflowSlots).toEqual(['{"a":1}', '{"b":2}', ""]);
   });
 });

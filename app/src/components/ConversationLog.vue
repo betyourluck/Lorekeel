@@ -5,6 +5,7 @@ import { t } from "../i18n";
 import DiceReveal from "./DiceReveal.vue";
 import DecisionPanel from "./DecisionPanel.vue";
 import ContestPanel from "./ContestPanel.vue";
+import Icon from "./Icon.vue";
 
 const game = useGameStore();
 
@@ -70,7 +71,7 @@ function statRollFinal(sr: StatRollView): number {
           >
             {{ seg.text }}
           </p>
-          <div v-else class="flex items-start gap-3" data-testid="dialogue-line">
+          <div v-else class="group/line flex items-start gap-3" data-testid="dialogue-line">
             <!-- アイコンは CSS background で描画 (asset protocol の MIME に寛容 = 顔アイコン行と同じ)。 -->
             <span
               class="mt-5 w-10 h-10 shrink-0 rounded-full overflow-hidden border border-ash bg-ash/40 bg-cover bg-center flex items-center justify-center text-parchment/70"
@@ -88,6 +89,19 @@ function statRollFinal(sr: StatRollView): number {
                 {{ seg.text }}
               </div>
             </div>
+            <!-- このセリフだけを読み直す (読み上げ機能が ON のとき・吹き出しにホバーで浮き出る)。 -->
+            <button
+              v-if="game.ttsFeature"
+              type="button"
+              class="mt-6 shrink-0 p-1.5 rounded-full text-glow/60 hover:text-ember hover:bg-glow/10 transition-opacity
+                     opacity-0 group-hover/line:opacity-100 focus:opacity-100"
+              :title="t('tts.replay')"
+              :aria-label="t('tts.replay')"
+              data-testid="dialogue-replay"
+              @click="game.replaySegment(seg)"
+            >
+              <Icon name="speaker" :size="14" />
+            </button>
           </div>
         </template>
       </div>

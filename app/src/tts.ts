@@ -88,6 +88,13 @@ const LS_VOICES = "kataribe.tts.voices";
  */
 const LS_CHARACTER_VOICES = "kataribe.tts.characterVoices";
 
+/**
+ * キャラ別の声の「なし」(2026-10-15 ユーザー要望)。この登場人物の台詞は読まない。
+ * 空の話者 ID (= 語り手と同じ) とは別の値 — 空は割り当てを消す意味で既に使っている。
+ * 話者 ID と衝突しない綴りにする (VOICEVOX は数字、AivisSpeech は数字、webSpeech は音声名)。
+ */
+export const VOICE_NONE = "__none__";
+
 let adapter: VoiceEngineAdapter | null = null;
 let booting: Promise<VoiceEngineAdapter | null> | null = null;
 /** アダプタを組んだ時の設定。変わったら組み直す。 */
@@ -114,6 +121,15 @@ let generation = 0;
  * 順序が崩れる。**自前の鎖に繋ぐ**ことで、直列と順序保存を同時に満たす。
  */
 let chain: Promise<void> = Promise.resolve();
+/**
+ * 段 (セリフ) の通し番号。スキップを「次のセリフへ」にするため、鎖に積む文に
+ * どの段の文かを持たせる (2026-10-15 ユーザー要望 — 従来はターン全体を捨てていた)。
+ */
+let partSeq = 0;
+/** 最後に読み始めた段の番号。スキップはこの段の残りの文を捨てる。 */
+let lastStartedPart = 0;
+/** この番号以下の段は読まない (スキップ済み)。 */
+let skipThrough = 0;
 
 /** この環境で読み上げできるか (WebView2/Chromium は speechSynthesis を持つ)。 */
 export function isSupported(): boolean {
@@ -375,6 +391,7 @@ export interface SpeechPart {
  * - 地の文: 語り手の声。範囲が `dialogue` なら読まない
  * - 登場人物の台詞: 割り当てがあればその声、無ければ語り手の声
  * - 名もない人物の台詞 (`speaker` null・`name` あり): 語り手の声 (枠は要望が出てから)
+ * - 声を「なし」(`VOICE_NONE`) にした人物の台詞: 読まない
  */
 export function planSegments(
   segments: SpokenSegment[],
@@ -388,6 +405,8 @@ export function planSegments(
     const isLine = seg.name.trim() !== "";
     if (!isLine && scope === "dialogue") continue;
     const voice = isLine && seg.speaker ? voices[seg.speaker] ?? null : null;
+    // 声を「なし」にした人物の台詞は読まない (地の文と他の人物は読む)。
+    if (voice === VOICE_NONE) continue;
     out.push({ text, voice });
   }
   return out;
@@ -436,6 +455,20 @@ export async function speakSegments(
   await speakParts(planSegments(segments, s.scope, loadCharacterVoices(s, pkg)), opts);
 }
 
+/**
+ * セリフ 1 つを読み直す (会話ログの吹き出しの読み上げボタン)。前の読み上げは打ち切る。
+ *
+ * **範囲 (台詞だけ / すべて) と「なし」は見ない** — 押したのはその一言を聞くためなので、
+ * 設定で読まないことにしていても読む。声を「なし」にした人物は語り手の声で読む
+ * (読まない設定に声の割り当ては無い)。
+ */
+export async function replaySegment(seg: SpokenSegment, pkg: string): Promise<void> {
+  const text = seg.text.trim();
+  if (!text) return;
+  const assigned = seg.speaker ? loadCharacterVoices(loadSettings(), pkg)[seg.speaker] ?? null : null;
+  await speakParts([{ text, voice: assigned === VOICE_NONE ? null : assigned }]);
+}
+
 async function speakParts(parts: SpeechPart[], opts?: { queue?: boolean }): Promise<void> {
   if (parts.every((p) => !p.text.trim())) return;
   if (!opts?.queue) {
@@ -446,18 +479,24 @@ async function speakParts(parts: SpeechPart[], opts?: { queue?: boolean }): Prom
   }
   // 続けて足す時は現在の世代に相乗りする (互いを無効化しない)。
   const mine = generation;
-  const a = await ensureAdapter();
-  if (!a) return;
+  if (!(await ensureAdapter())) return;
   // アダプタ生成を待つ間に stop() / 次のターンが来ていたら、もう投入しない。
   if (mine !== generation) return;
   for (const part of parts) {
     const body = part.text.trim();
     if (!body) continue;
+    const seq = ++partSeq;
     const sentences = splitSentence ? splitSentence(body) : [body];
     for (const sentence of sentences) {
       chain = chain.then(async () => {
         // 鎖に積んだ後で打ち切られたら (stop / 次のターン) 残りは読まない。
-        if (mine !== generation) return;
+        // スキップされた段の残りの文も読まない (次の段から続ける)。
+        if (mine !== generation || seq <= skipThrough) return;
+        // アダプタは文ごとに取り直す — スキップで再生中のアダプタを捨てた (stop() の注記)
+        // 後も、同じ鎖の続きを新しいアダプタで読むため。
+        const a = await ensureAdapter();
+        if (!a || mine !== generation || seq <= skipThrough) return;
+        lastStartedPart = seq;
         // 声は鎖の中で切り替える — 鎖は 1 文ずつ合成と再生を待つので、前の文に混ざらない
         // (ライブラリは合成のたびに options.speaker を読む)。変わるときだけ呼ぶ。
         const want = part.voice ?? narratorVoice;
@@ -508,6 +547,24 @@ export async function test(sample: string, voice?: string): Promise<void> {
  */
 export function stop(): void {
   generation++;
+  interrupt();
+}
+
+/**
+ * いま読んでいるセリフ (段) を飛ばして、次のセリフから続ける (2026-10-15 ユーザー要望)。
+ * 従来のスキップはターンの読み上げ全体を捨てていた。
+ *
+ * 世代は進めない — 鎖は生きたまま、飛ばした段の残りの文だけが空回りする。再生中の文は
+ * アダプタの stop() が reject するので鎖は止まらない (ライブラリは activeRequest も
+ * 待機中の request も reject する = 鎖の await が必ず settle する)。
+ */
+export function skip(): void {
+  skipThrough = Math.max(skipThrough, lastStartedPart);
+  interrupt();
+}
+
+/** 再生中の音を止める (世代は触らない)。stop() と skip() の共通部。 */
+function interrupt(): void {
   const dying = adapter;
   const wasPlaying = dying?.isPlaying() ?? false; // stop() が畳む前に見る
   dying?.stop();
