@@ -8,7 +8,7 @@ AI Dungeon 这类 LLM-GM 一定会崩溃的死因，不是文笔，而是**遗�
 
 这个架构的副作用：因为引擎保证了正确性，Lorekeel 在**便宜、免费或完全本地**的模型上也能很好地运行。引擎会兜住小模型的错误，所以不需要前沿模型也能获得连贯的游戏——差别只在于文采的丰富程度。
 
-![Lorekeel in play](images/lorekeel_ui.png)
+![Lorekeel in play](images/lorekeel_ui.webp)
 
 *运行中的剧本包——GM 在场景背景上的旁白，右侧是当下目标与在场角色。一切都由底下的确定性引擎驱动。*
 

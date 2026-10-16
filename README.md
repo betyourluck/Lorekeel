@@ -8,7 +8,7 @@ The failure mode that always breaks AI Dungeon–style LLM GMs isn't weak prose 
 
 A side effect of that architecture: because the engine guarantees correctness, Lorekeel runs well on **cheap, free, or fully local models**. The engine backs up a small model's mistakes, so you don't need a frontier model to get a coherent game — only richer prose.
 
-![Lorekeel in play](images/lorekeel_ui.png)
+![Lorekeel in play](images/lorekeel_ui.webp)
 
 *A scenario package in play — the GM's narration over a scene background, with live goals and the characters present in the scene on the right. Everything is driven by the deterministic engine underneath.*
 
