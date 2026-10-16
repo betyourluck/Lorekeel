@@ -15,6 +15,8 @@
 //! cargo run -p harness --bin play --save my_save.yaml               # オートセーブ先の指定 (既定 kataribe_autosave.yaml)
 //! cargo run -p harness --bin play --seed 42                         # seed 固定 (テスト/再現用。省略時は毎回変わる)
 //! cargo run -p harness --bin play < actions.txt            # 台本を流し込む
+//! cargo run -p harness --bin play -- --package packages/x --seed 42 --save tmp.yaml --observe out.jsonl < script.txt
+//!                                                          # spec 35 Phase E の計器 (1 ターン 1 行)
 //!
 //! # 検分 (API キー不要・LLM 呼び出しゼロ)。生成 → 検める のループ用。
 //! cargo run -p harness --bin play -- lint packages/xxx
@@ -35,6 +37,8 @@ use harness::{
     Campaign, Summarizer, TurnOutcome,
 };
 use llm_client::{LlmClient, LlmConfig};
+
+mod observe;
 
 /// 既定シナリオ (cwd 非依存: crate からの相対で解決)。houkago は fixtures 移設済。
 const DEFAULT_SCENARIO: &str =
@@ -354,6 +358,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if let Some(v) = take_flag_value(&mut args, "--summary-base-url")? {
         std::env::set_var("SUMMARY_LLM_BASE_URL", v);
     }
+    // spec 35 Phase E: `--observe <path.jsonl>` で 1 ターン 1 行の計器を追記する (提案の形・
+    // 却下の理由・段の内訳)。台本の行頭の `[P1]` は計器のときだけ印として外す。
+    let observe_path: Option<PathBuf> = take_flag_value(&mut args, "--observe")?.map(PathBuf::from);
     let summary_client: Option<LlmClient> = match LlmConfig::summary_from_env(client.config())? {
         Some(c) => {
             eprintln!("[あらすじ要約] {} / model={}", c.base_url, c.model);
@@ -431,6 +438,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         harness::SavedContent::Scenario {
             path: scenario_arg.clone().unwrap_or_default(),
         }
+    };
+    let observe_package = match &content_ref {
+        harness::SavedContent::Campaign { path }
+        | harness::SavedContent::Package { path }
+        | harness::SavedContent::Scenario { path } => path.clone(),
     };
     let mut package_version = String::new();
 
@@ -523,6 +535,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     println!("(行動を入力。Ctrl-D / Ctrl-Z で終了)\n");
     eprintln!("[オートセーブ] {}", save_path.display());
+    let mut observe_out: Option<std::fs::File> = match &observe_path {
+        Some(p) => {
+            let f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(p)
+                .map_err(|e| format!("--observe の出力先を開けません ({}): {e}", p.display()))?;
+            eprintln!("[計器] {} (spec 35 Phase E)", p.display());
+            Some(f)
+        }
+        None => None,
+    };
+    let mut observe_index = 0usize;
 
     // --- ターンループ ---
     let stdin = io::stdin();
@@ -590,12 +615,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Some(Err(e)) => return Err(e.into()),
             None => break, // EOF
         };
+        // spec 35 Phase E: 台本の印は計器のときだけ外す (通常のプレイでは行をそのまま行動にする)。
+        let (tag, action_text) = if observe_out.is_some() {
+            let (t, a) = observe::split_tag(action.trim());
+            (t, a.to_string())
+        } else {
+            (None, action.trim().to_string())
+        };
+        observe_index += 1;
+        let loc_before = state.location.clone();
+        let usage_before = client.usage_ledger();
+        // 計器が無効なら記録せず素通しする (本番のループは変えない)。
+        let recorder = observe::Recorder::new(&client, observe_out.is_some());
 
         let outcome = run_turn(
-            &client,
+            &recorder,
             &mut state,
             &scenario,
-            action.trim(),
+            &action_text,
             MAX_ATTEMPTS,
             lang,
             &pending_lore,    // 前ターンの伏線を注入
@@ -607,6 +644,36 @@ async fn main() -> Result<(), Box<dyn Error>> {
             &[],              // 多人数プレイは GUI 専用 (spec 23)。CLI は常に単騎
         )
         .await;
+        let proposals = recorder.into_proposals();
+        if let Some(out) = observe_out.as_mut() {
+            let after = client.usage_ledger();
+            let record = observe::turn_record(
+                observe::TurnMeta {
+                    model: &client.config().model,
+                    package: &observe_package,
+                    index: observe_index,
+                    tag,
+                    turn: state.turn,
+                    moved: state.location != loc_before,
+                    usage: (
+                        after.requests.saturating_sub(usage_before.requests),
+                        after.prompt_tokens.saturating_sub(usage_before.prompt_tokens),
+                        after.completion_tokens.saturating_sub(usage_before.completion_tokens),
+                    ),
+                },
+                &outcome,
+                proposals,
+            );
+            // 計器の失敗はプレイを止めない (警告だけ)。
+            match serde_json::to_string(&record) {
+                Ok(line) => {
+                    if let Err(e) = writeln!(out, "{line}") {
+                        eprintln!("[警告] 計器の書き込み失敗: {e}");
+                    }
+                }
+                Err(e) => eprintln!("[警告] 計器の記録を組めません: {e}"),
+            }
+        }
         pending_lore = Vec::new(); // 注入済み。今ターンの発火で詰め直す。
         pending_checks = Vec::new();
         match outcome {
@@ -633,7 +700,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 // tags/checks は engine 事実の機械タグ = retrieval の接地、spec 08-B)。
                 history.push(harness::chronicle_entry(
                     state.turn,
-                    action.trim(),
+                    &action_text,
                     &summary,
                     &narration,
                     &beat_texts,

@@ -351,12 +351,16 @@ Phase E の目的は、D2 / D3 / D7 で「Phase E で見て決める」と先送
   パースに失敗した提案は `malformed` として残す。
 - **変えるのは bin (`crates/harness/src/main.rs`) だけ**。gm_core・harness の lib・app・frontend は不変
   (= prompt も schema も動かず、キャッシュの安定プレフィックスにも触れない)。
-- 1 ターン 1 行の jsonl:
-  `{model, package, turn, tag, attempts, forms[], retries[{kind, reasons[バリアント名]}], accepted, segs{narr, dlg, extra}, quote_lines[], moved, prompt_tokens, completion_tokens}`。
+- 1 ターン 1 行の jsonl (実装した形、2026-10-16):
+  `{model, package, index, turn, tag, accepted, attempts, proposals[{form: segments(count, speakers) | raw(chars) | malformed | error(detail)}], retries[{kind: rejected(reasons[{code, …}]) | malformed(detail)}], last_reasons[], error, segs{narr, dlg, extra}, quote_lines[], moved, requests, prompt_tokens, completion_tokens}`。
+  却下理由は `RejectReason` の serde 形 (`code` つき) をそのまま載せる (話者のラベルと候補も入る = ②の仕分けの素材)。
+  `index` は台本の何行目か、`turn` はターン後の `GameState.turn`、usage はそのターンの GM の client の差分。
   `quote_lines` は「」/ `“”` を含む地の文の段の本文 (③の手作業分類の素材)。測定用の出力なのでスクラッチに置き、
   app のログ (本文を書かない規則) とは別物として扱う。
 - PoC: 記録する提案者が `segments` / `raw` / パース失敗の 3 形を正しく記録する (偽の提案者で) + `--observe` の行が
   jsonl として読める。
+- 台本の行頭の `[P1]` (ASCII の英数字・`_`・`-` で 1〜16 字) は**計器のときだけ**印として外す。通常のプレイでは
+  行をそのまま行動にする。印は経緯ログにも入らない。
 - 実行時は **`--save <スクラッチのパス>` を必ず付ける** (既定のオートセーブ先 `kataribe_autosave.yaml` は repo 直下に書かれる)。
 
 ### 指標の定義 (測る前に固定)
@@ -416,7 +420,7 @@ Phase E の目的は、D2 / D3 / D7 で「Phase E で見て決める」と先送
 
 ### 手順
 
-1. E-0 計器 (`--observe` + PoC)
+1. E-0 計器 (`--observe` + PoC) — **✅ 2026-10-16 実装** (下の記録)
 2. E-1 試走: muse-spark × friday_lemmon で 10 ターン。jsonl の欄と台本を直す
 3. E-2 本走: 残りの組み合わせ。安いモデルから、Opus 5.5 は最後
 4. E-3 手作業: ③の分類と②の正しい / 誤った却下の仕分け
@@ -428,3 +432,22 @@ Phase E の目的は、D2 / D3 / D7 で「Phase E で見て決める」と先送
 - 台本プレイは実プレイと違う (誘いの行動は意図して偏らせている。率は自然な行動の分だけで語る)。
 - 1 モデル 30 ターンでも、③のように稀な事象は 0〜数件しか出ない。「0 件」は「起きない」ではない (#53)。
 - GUI の実プレイでは①は見えない (app に計器を入れないため)。①は台本プレイの数字だけで判断する。
+
+### E-0 の実装の記録 (2026-10-16)
+
+- `crates/harness/src/observe.rs` (bin だけのモジュール): `Recorder` (提案者を包んで形を記録、無効なら素通し) /
+  `turn_record` (1 ターンの記録を組む純関数) / `split_tag`。`main.rs` は `--observe` の解析・出力先を追記で開く・
+  ターンごとに `Recorder` を作る (campaign 遷移で `client` を `&mut` にするので、包みはターンの外に持ち越さない)・
+  usage の差分・書き込みの失敗は警告だけ、を足しただけ。gm_core・harness の lib・app・frontend は不変。
+- PoC 3 本 (play の bin の中、`cargo test --workspace` に入る): 提案の形の記録 (段の配列・文字列・壊れた出力・接続の失敗・
+  無効時は記録しない) / `run_turn` を本物のまま通して 1 行を組む (不在のアリスで却下 → 店名の「」・台詞・名もない人物で受理
+  = 理由の `code`・段の内訳・`quote_lines`・usage) / 台本の印の取り出し。**Red は 3 本とも確認** (印は期待値の不一致、
+  残り 2 本は未実装の panic)。
+- **結線の確認 (課金なし)**: つながらない接続先 (`127.0.0.1:9`) と 1 行の台本 `[P1] 店に入る` で friday_lemmon を流し、
+  jsonl に `tag: "P1"`・パッケージ・接続失敗の理由つきの 1 行が書かれることを確認した。実 LLM では未実行 (E-1 で)。
+- 実行の形 (cargo の `--package` と衝突しないよう、ビルド済みの実行ファイルを直に叩く):
+
+  ```text
+  cargo build -p harness --bin play
+  LLM_BASE_URL=... LLM_MODEL=... LLM_API_KEY=... ./target/debug/play --package <dir> --seed 42 --save <スクラッチ>/save.yaml --observe <スクラッチ>/e.jsonl < script.txt
+  ```
