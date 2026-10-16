@@ -394,6 +394,9 @@ export interface SpeechPart {
  *   store は先に `foldMobLines` で `名前「…」` の地の文へ畳んでから渡すが、ここでも同じ扱いにする
  * - 声を「なし」(`VOICE_NONE`) にした人物の台詞: 読まない
  */
+/** 主人公の話者 id (gm_core `PLAYER`)。主人公の台詞は吹き出しで出すが読み上げない (2026-10-16)。 */
+export const PLAYER_SPEAKER = "player";
+
 export function planSegments(
   segments: SpokenSegment[],
   scope: TtsScope,
@@ -403,6 +406,8 @@ export function planSegments(
   for (const seg of segments) {
     const text = seg.text.trim();
     if (!text) continue;
+    // 主人公の台詞は読まない (プレイヤー自身の言葉に声を付けない)。
+    if (seg.speaker === PLAYER_SPEAKER) continue;
     // 台詞は登場人物のものだけ。モブ (speaker なし) は地の文 (2026-10-15 ユーザー要望)。
     const isLine = seg.name.trim() !== "" && seg.speaker !== null;
     if (!isLine && scope === "dialogue") continue;
@@ -466,7 +471,7 @@ export async function speakSegments(
  */
 export async function replaySegment(seg: SpokenSegment, pkg: string): Promise<void> {
   const text = seg.text.trim();
-  if (!text) return;
+  if (!text || seg.speaker === PLAYER_SPEAKER) return;
   const assigned = seg.speaker ? loadCharacterVoices(loadSettings(), pkg)[seg.speaker] ?? null : null;
   await speakParts([{ text, voice: assigned === VOICE_NONE ? null : assigned }]);
 }

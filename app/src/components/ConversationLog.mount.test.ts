@@ -154,6 +154,25 @@ describe("セリフの読み上げボタン", () => {
     expect(spy).toHaveBeenCalledWith(expect.objectContaining({ speaker: "rinka", text: "遅いわね" }));
   });
 
+  it("主人公の吹き出しは名前と顔アイコンで出すが、読み上げボタンは付けない (2026-10-16)", async () => {
+    const wrapper = mountWith(ConversationLog, {}, {});
+    const game = useGameStore();
+    game.ttsFeature = true;
+    game.log = [
+      {
+        kind: "narration",
+        text: "",
+        segments: [...SEGMENTS, { speaker: "player", name: "ゆうじ", icon: "asset://yuji.webp", text: "行くぞ" }],
+      },
+    ];
+    await flushPromises();
+    const lines = wrapper.findAll('[data-testid="dialogue-line"]');
+    expect(lines.map((l) => l.get('[data-testid="dialogue-name"]').text())).toEqual(["凛花", "ゆうじ"]);
+    expect(lines[1].get('[data-testid="dialogue-avatar"]').attributes("style") ?? "").toContain("yuji.webp");
+    expect(lines[0].findAll('[data-testid="dialogue-replay"]')).toHaveLength(1);
+    expect(lines[1].findAll('[data-testid="dialogue-replay"]')).toHaveLength(0);
+  });
+
   it("読み上げ機能が OFF なら出さない", async () => {
     const wrapper = mountWith(ConversationLog, {}, {});
     const game = useGameStore();

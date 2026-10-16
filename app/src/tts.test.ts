@@ -32,6 +32,12 @@ describe("planSegments", () => {
     ]);
   });
 
+  it("主人公の台詞は読まない (吹き出しは出すが声は付けない = 2026-10-16)", () => {
+    const withPlayer: SpokenSegment[] = [...SEGS, { speaker: "player", name: "ゆうじ", text: "行くぞ" }];
+    expect(planSegments(withPlayer, "all", { player: "7" }).map((p) => p.text)).not.toContain("行くぞ");
+    expect(planSegments(withPlayer, "dialogue", {}).map((p) => p.text)).not.toContain("行くぞ");
+  });
+
   it("台詞だけ: 地の文を読まない。モブ (登場人物にいない人物) の台詞も地の文として読まない", () => {
     expect(planSegments(SEGS, "dialogue", { rinka: "7" }).map((p) => p.text)).toEqual(["遅いわね", "……"]);
   });

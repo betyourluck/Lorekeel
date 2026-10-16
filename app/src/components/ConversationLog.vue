@@ -2,6 +2,7 @@
 import { useGameStore, degreeLabel, statRollLine } from "../stores/game";
 import type { StatRollView } from "../types/api";
 import { t } from "../i18n";
+import { PLAYER_SPEAKER } from "../tts";
 import DiceReveal from "./DiceReveal.vue";
 import DecisionPanel from "./DecisionPanel.vue";
 import ContestPanel from "./ContestPanel.vue";
@@ -90,9 +91,10 @@ function statRollFinal(sr: StatRollView): number {
                 {{ seg.text }}
               </div>
             </div>
-            <!-- このセリフだけを読み直す (読み上げ機能が ON のとき・吹き出しにホバーで浮き出る)。 -->
+            <!-- このセリフだけを読み直す (読み上げ機能が ON のとき・吹き出しにホバーで浮き出る)。
+                 主人公の台詞は読み上げないので付けない (2026-10-16)。 -->
             <button
-              v-if="game.ttsFeature"
+              v-if="game.ttsFeature && seg.speaker !== PLAYER_SPEAKER"
               type="button"
               class="mt-6 shrink-0 p-1.5 rounded-full text-glow/60 hover:text-ember hover:bg-glow/10 transition-opacity
                      opacity-0 group-hover/line:opacity-100 focus:opacity-100"

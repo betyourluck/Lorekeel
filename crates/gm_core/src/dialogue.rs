@@ -2,7 +2,8 @@
 //!
 //! GM の語り (`StateDelta.narration`) を「地の文と話者つき台詞を順に並べた段」にする。
 //! **本文は検証しない** (LLM の領分) が、**話者は照合する** — 台詞が登場人物の id つきで出れば、
-//! その場にいない人物の台詞 (#47・#49) と主人公の台詞の代筆をエンジンの事実で却下できる。
+//! その場にいない人物の台詞 (#47・#49) と、多人数で人が操作している人物の台詞の代筆をエンジンの事実で
+//! 却下できる。単騎の主人公の台詞は通す (主人公の吹き出しで出し読み上げない = 2026-10-16 ユーザー決定)。
 //!
 //! 処理の順序 (data_contract `DialogueSegments.processing_order`):
 //! parse (llm_client) → sanitize (llm_client) → [`resolve_narration`] → `adjudicate` →
@@ -16,7 +17,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::engine::{apply, ApplyOutcome, Verdict};
 use crate::reason::RejectReason;
-use crate::spine::Scenario;
+use crate::spine::{Protagonist, Scenario};
 use crate::state::{EntityId, GameState, StateDelta, PLAYER};
 
 /// 語りの 1 段。`speaker` が無ければ地の文、あれば台詞。
@@ -229,6 +230,14 @@ fn resolve_label(scenario: &Scenario, label: &str) -> Result<Speaker, Box<Reject
         }
         _ => {}
     }
+    // 手順 2b: 主人公の名前の揺れ (プロフィール冒頭の呼び名と読み)。2026-10-16 実プレイ: 主人公の名前が
+    // 「ゆうじ」でプロフィールが「日暮 悠二（ひぐらし ゆうじ）」の盤面で、GM が「悠二」と書くと
+    // 手順 4 のモブになり地の文に畳まれていた。手順 3 より前に置く (「ひぐらしゆうじ」が「ゆうじ」を
+    // 含むせいで書き直しに回らないように)。完全一致だけなので「ゆうじの母」は手順 3 のまま。
+    let squeezed = squeeze(label);
+    if protagonist_aliases(&scenario.protagonist).contains(&squeezed) {
+        return Ok(Speaker::Entity(PLAYER.to_string()));
+    }
     // 手順 3: 近い / 含む → 書き直させる (取り違えより再生成 1 回のほうが安い)。
     let mut candidates: Vec<String> = Vec::new();
     for (id, name) in &named {
@@ -241,6 +250,44 @@ fn resolve_label(scenario: &Scenario, label: &str) -> Result<Speaker, Box<Reject
     }
     // 手順 4: 名もない人物。
     Ok(Speaker::Extra(label.to_string()))
+}
+
+/// 空白を除いた形 (「日暮 悠二」と「日暮悠二」を同じに扱う)。
+fn squeeze(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// 主人公の呼び名の揺れ (手順 2b)。表示名と、プロフィールの最初の一文にある「括弧の前の名前」と
+/// 「括弧の中の読み」の、それぞれ全体と空白で区切った部分 (空白は除いて比べる)。2〜12 字に限り、
+/// 12 字を超える部分は区切りもしない — 名前の無い長い一文 (英語のプロフィール等) から語を拾わない。
+/// 括弧の後ろ (「30才の男性」) は見ない。
+fn protagonist_aliases(p: &Protagonist) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |s: &str| {
+        let t = squeeze(s);
+        if (2..=12).contains(&t.chars().count()) && !out.contains(&t) {
+            out.push(t);
+        }
+    };
+    push(&p.name);
+    let first = p.profile.trim().split(['。', '\n', '.', '、', ',']).next().unwrap_or("");
+    let (name_part, reading) = match first.find(['（', '(']) {
+        Some(i) => {
+            let open = first[i..].chars().next().map_or(1, char::len_utf8);
+            (&first[..i], first[i + open..].split(['）', ')']).next().unwrap_or(""))
+        }
+        None => (first, ""),
+    };
+    for part in [name_part, reading] {
+        if squeeze(part).chars().count() > 12 {
+            continue;
+        }
+        push(part);
+        for tok in part.split_whitespace() {
+            push(tok);
+        }
+    }
+    out
 }
 
 /// `label` が既知の名前 `target` に近いか、含むか (手順 3)。`target` が空なら常に false。
@@ -346,7 +393,8 @@ fn raw_line_as_dialogue(scenario: &Scenario, line: &str) -> Option<ResolvedSegme
 }
 
 /// 解決済みの段の話者を照合する (data_contract `DialogueSegments.apply_checked` の ②)。
-/// `before` = ターン開始時の顔ぶれ、`after` = 適用後の顔ぶれ。
+/// `before` = ターン開始時の顔ぶれ、`after` = 適用後の顔ぶれ。`controlled` = 多人数で人が操作している
+/// 人物 (多人数では主人公も入る)。単騎の主人公は常にその場にいて、台詞も通す (2026-10-16)。
 pub fn check_speakers(
     before: &BTreeSet<EntityId>,
     after: &BTreeSet<EntityId>,
@@ -357,8 +405,10 @@ pub fn check_speakers(
     let present: Vec<String> = before.union(after).cloned().collect();
     for seg in segments {
         let Some(Speaker::Entity(id)) = &seg.speaker else { continue };
-        let r = if id == PLAYER || controlled.iter().any(|c| c == id) {
+        let r = if controlled.iter().any(|c| c == id) {
             RejectReason::SpeakerControlled { speaker: id.clone() }
+        } else if id == PLAYER {
+            continue;
         } else if !before.contains(id) && !after.contains(id) {
             RejectReason::SpeakerNotPresent { speaker: id.clone(), present: present.clone() }
         } else {
@@ -519,18 +569,56 @@ triggers:
         assert!(v[2].text.contains("店員「いらっしゃい」"));
     }
 
-    /// 【手順 0 / 2】`player`・主人公の表示名・主人公を指す語はすべて主人公に解決され、照合で却下。
+    /// 【手順 0 / 2】`player`・主人公の表示名・主人公を指す語はすべて主人公に解決される。
+    /// **単騎では主人公の台詞を通す** (主人公の吹き出しで出し、読み上げない = 2026-10-16 ユーザー決定。
+    /// 主人公は常にその場にいる)。多人数で人が操作しているとき (`controlled` に入る) は従来どおり却下。
     #[test]
-    fn protagonist_labels_resolve_to_player_and_are_rejected() {
+    fn protagonist_lines_pass_in_solo_and_are_rejected_when_controlled() {
         for label in ["player", "Player", "坂上", "私", "主人公"] {
             assert_eq!(resolve_one(label), Ok(Speaker::Entity(PLAYER.into())), "{label}");
         }
         let segs = vec![ResolvedSegment { speaker: Some(Speaker::Entity(PLAYER.into())), text: "…".into() }];
         let none = BTreeSet::new();
+        assert_eq!(check_speakers(&none, &none, &segs, &[]), Vec::new(), "単騎: 主人公の台詞は通る (不在扱いもしない)");
         assert_eq!(
-            check_speakers(&none, &none, &segs, &[]),
-            vec![RejectReason::SpeakerControlled { speaker: PLAYER.into() }]
+            check_speakers(&none, &none, &segs, &[PLAYER.into()]),
+            vec![RejectReason::SpeakerControlled { speaker: PLAYER.into() }],
+            "多人数: 人が操作する主人公の台詞は却下"
         );
+    }
+
+    /// 【手順 2b】名前の揺れ: 主人公のプロフィール冒頭の呼び名 (括弧の前の名前と括弧の中の読み、
+    /// それぞれ空白で区切った部分も) は主人公に解決する。2026-10-16 実プレイ: 主人公の名前が「ゆうじ」で
+    /// プロフィールが「日暮 悠二」の盤面で、GM が「悠二」と書くとモブとして地の文に畳まれていた。
+    /// 冒頭の名前の外の語 (「男性」「田中」) は拾わず、主人公の名前を含む別人 (「ゆうじの母」) は従来どおり書き直させる。
+    #[test]
+    fn protagonist_profile_names_resolve_to_player() {
+        let mut s = sc();
+        s.protagonist.name = "ゆうじ".into();
+        s.protagonist.profile = "日暮 悠二（ひぐらし ゆうじ）。28歳、無職の男性。元上司の田中を避けている。".into();
+        for label in ["悠二", "日暮悠二", "日暮 悠二", "日暮", "ひぐらし", "ひぐらしゆうじ", "ゆうじ"] {
+            assert_eq!(resolve_label(&s, label), Ok(Speaker::Entity(PLAYER.into())), "{label}");
+        }
+        for label in ["男性", "田中", "店員"] {
+            assert_eq!(resolve_label(&s, label), Ok(Speaker::Extra(label.into())), "{label}");
+        }
+        assert!(matches!(resolve_label(&s, "ゆうじの母").map_err(|b| *b), Err(RejectReason::UnknownSpeaker { .. })));
+        // 文字列の救済も同じ解決を通る。
+        let v = resolve_narration(&s, &Narration::Raw("悠二「行くぞ」".into())).unwrap();
+        assert_eq!(v[0].speaker, Some(Speaker::Entity(PLAYER.into())));
+
+        // 名前が空白無しで、括弧の中だけ読みがある形。
+        s.protagonist.name = "春樹".into();
+        s.protagonist.profile = "戸渡春樹（とたり はるき）30才の男性。休日は推し活をしている。".into();
+        for label in ["戸渡春樹", "はるき", "とたり", "とたりはるき"] {
+            assert_eq!(resolve_label(&s, label), Ok(Speaker::Entity(PLAYER.into())), "{label}");
+        }
+        assert_eq!(resolve_label(&s, "男性"), Ok(Speaker::Extra("男性".into())));
+
+        // 名前の無い長い一文 (英語) からは語を拾わない。
+        s.protagonist.name = "Me".into();
+        s.protagonist.profile = "A young man who embarked on a journey to escape his tedious daily life.".into();
+        assert_eq!(resolve_label(&s, "man"), Ok(Speaker::Extra("man".into())));
     }
 
     /// 【手順 0 / 2】主人公の表示名が空でも、空ラベルや部分一致で主人公に誤爆しない。

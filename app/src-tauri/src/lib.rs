@@ -569,7 +569,7 @@ struct SegmentView {
     text: String,
 }
 
-fn segment_views(scenario: &Scenario, segments: &[gm_core::ResolvedSegment]) -> Vec<SegmentView> {
+fn segment_views(scenario: &Scenario, segments: &[gm_core::ResolvedSegment], lang: Lang) -> Vec<SegmentView> {
     segments
         .iter()
         .map(|seg| {
@@ -578,6 +578,24 @@ fn segment_views(scenario: &Scenario, segments: &[gm_core::ResolvedSegment]) -> 
                 None => SegmentView { speaker: None, name: String::new(), icon: None, text },
                 Some(gm_core::Speaker::Extra(label)) => {
                     SegmentView { speaker: None, name: label.clone(), icon: None, text }
+                }
+                // 主人公の台詞 (単騎では通す = 2026-10-16) は主人公の名前と顔アイコンで出す。
+                // 登場人物の表には居ないので、引くと名前が `player`・アイコン無しになる。
+                Some(gm_core::Speaker::Entity(id)) if id == PLAYER => {
+                    let name = scenario.protagonist.name.trim();
+                    let name = if !name.is_empty() {
+                        name
+                    } else if lang == Lang::En {
+                        "You"
+                    } else {
+                        "あなた"
+                    };
+                    SegmentView {
+                        speaker: Some(id.clone()),
+                        name: name.to_string(),
+                        icon: scenario.protagonist.icon.clone(),
+                        text,
+                    }
                 }
                 Some(gm_core::Speaker::Entity(id)) => {
                     let def = scenario.characters.get(id);
@@ -4960,7 +4978,7 @@ async fn do_play_turn(
             TurnView {
                 accepted: true,
                 narration: normalize(&narration),
-                segments: segment_views(&sess.scenario, &segments),
+                segments: segment_views(&sess.scenario, &segments, sess.lang),
                 rolls: rolls
                     .iter()
                     .map(|r| RollView {
@@ -6268,13 +6286,35 @@ mod tests {
             ResolvedSegment { speaker: Some(Speaker::Extra("店員".into())), text: "毎度".into() },
             ResolvedSegment { speaker: Some(Speaker::Entity("nameless".into())), text: "…".into() },
         ];
-        let v = super::segment_views(&sc, &segs);
+        let v = super::segment_views(&sc, &segs, gm_core::Lang::Ja);
         assert_eq!(v[0], super::SegmentView { speaker: None, name: String::new(), icon: None, text: "霧が出た。\n静かだ。".into() });
         assert_eq!(v[1], super::SegmentView { speaker: Some("rinka".into()), name: "凛花".into(), icon: Some("rinka.webp".into()), text: "遅いわね".into() });
         assert_eq!(v[2], super::SegmentView { speaker: None, name: "店員".into(), icon: None, text: "毎度".into() });
         assert_eq!(v[3].name, "nameless", "表示名が空なら id");
         let cast = super::cast_view(&sc);
         assert_eq!(cast.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["nameless", "rinka"]);
+    }
+
+    /// 【主人公の吹き出し (2026-10-16)】主人公 (`player`) の段は主人公の名前と顔アイコンで出す
+    /// (登場人物の表から引くと名前が `player`・アイコン無しになっていた)。名前が空なら「あなた」/「You」。
+    #[test]
+    fn segment_views_give_the_protagonist_name_and_icon() {
+        let mut sc = gm_core::Scenario::from_yaml(
+            "title: t\nstart: a\nallowed_flags: []\ngoal: { kind: always }\n\
+             protagonist: { name: ゆうじ, icon: yuji.webp }\n\
+             locations:\n  a: { description: x, exits: [] }\n",
+        )
+        .unwrap();
+        use gm_core::{ResolvedSegment, Speaker};
+        let segs = vec![ResolvedSegment { speaker: Some(Speaker::Entity("player".into())), text: "行くぞ".into() }];
+        let v = super::segment_views(&sc, &segs, gm_core::Lang::Ja);
+        assert_eq!(
+            v[0],
+            super::SegmentView { speaker: Some("player".into()), name: "ゆうじ".into(), icon: Some("yuji.webp".into()), text: "行くぞ".into() }
+        );
+        sc.protagonist.name = String::new();
+        assert_eq!(super::segment_views(&sc, &segs, gm_core::Lang::Ja)[0].name, "あなた");
+        assert_eq!(super::segment_views(&sc, &segs, gm_core::Lang::En)[0].name, "You");
     }
 
     /// 【本人未知属性の UI 秘匿 + 場所表示名 (2026-07-08)】`hidden_attributes` はプレイヤー UI

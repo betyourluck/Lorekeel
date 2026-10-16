@@ -305,7 +305,24 @@ locations:
         assert!(reasons.iter().any(|r| matches!(r, RejectReason::ItemNotHere { .. })), "{reasons:?}");
     }
 
-    /// 【spec 35: 多人数】人が操作している仲間の台詞は GM が書けない (主人公は単騎でも常に)。
+    /// 【spec 35 改訂 (2026-10-16)】単騎では主人公の台詞を却下しない — 1 回目で受理され、
+    /// 段には主人公 (`player`) として残る (提示層が主人公の吹き出しで出し、読み上げない)。
+    #[tokio::test]
+    async fn protagonist_line_is_accepted_in_solo_play() {
+        let sc = dialogue_scenario();
+        let mut s = sc.initial_state(1);
+        let p = ScriptedProposer::new(vec![spoken(&[("", "教室が静まる。"), ("坂上", "行くぞ")])]);
+        let outcome =
+            run_turn(&p, &mut s, &sc, "x", 2, Lang::Ja, &[], &[], &[], &[], &[], &[], &[]).await.unwrap();
+        let TurnOutcome::Accepted { attempts, gm_narration, segments, .. } = outcome else {
+            panic!("単騎では受理されるべき")
+        };
+        assert_eq!(attempts, 1, "主人公の台詞で書き直させない");
+        assert_eq!(gm_narration, "教室が静まる。\n坂上 (player):「行くぞ」");
+        assert_eq!(segments[1].speaker, Some(gm_core::Speaker::Entity("player".into())));
+    }
+
+    /// 【spec 35: 多人数】人が操作している人物 (主人公も仲間も) の台詞は GM が書けない。
     #[tokio::test]
     async fn controlled_companion_lines_are_rejected_in_party_play() {
         let sc = dialogue_scenario();
