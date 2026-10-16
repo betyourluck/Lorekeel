@@ -22,3 +22,6 @@ Thumbs.db
 
 # winget マニフェストの生成先 (正本は microsoft/winget-pkgs 側。Fuseforks と同じ流儀)
 manifests/
+
+# 計測の出力 (語りの本文を含む。spec 35 Phase E など)
+/measure/**/out/

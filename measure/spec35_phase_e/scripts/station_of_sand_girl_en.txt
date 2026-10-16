@@ -1,0 +1,10 @@
+Step off the train and look around the deserted platform.
+Walk into the wooden waiting room and look at the book on the table.
+[P1] Without leaving the waiting room, call out loudly to the girl I saw on the platform and ask her what this station is called.
+[P3] Check whether there is a station attendant behind the ticket window, and ask him when the next train comes.
+[P4] Go back out to the platform and greet the girl sitting on the bench.
+Ask her how long she has been waiting at this station.
+[P2] Smile and say, "Mind if I wait here with you for a while?"
+Walk along the rusted tracks to see where they lead.
+Tell her that the same platform seems to appear no matter how far we walk.
+Head back to the platform and ask her about the locked door in the waiting room.

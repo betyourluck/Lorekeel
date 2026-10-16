@@ -440,7 +440,7 @@ Phase E の目的は、D2 / D3 / D7 で「Phase E で見て決める」と先送
 1. E-0 計器 (`--observe` + PoC) — **✅ 2026-10-16 実装** (下の記録)
 2. E-1 試走: muse-spark × friday_lemmon で 10 ターン。jsonl の欄と台本を直す — **✅ 2026-10-16 に grok-4.3 で実施**
    (CLI が読めるのが repo の `.env` の鍵だけだったため。下の記録)
-3. E-2 本走: 残りの組み合わせ。安いモデルから、Opus 5.5 は最後
+3. E-2 本走: 残りの組み合わせ。安いモデルから、Opus 5.5 は最後 — **道具は `measure/spec35_phase_e/` (2026-10-16、下の記録)。マスターの端末で回す**
 4. E-3 手作業: ③の分類と②の正しい / 誤った却下の仕分け
 5. E-4 判断と台帳: specs/35 (本節に結果) / CLAUDE.md / 新しい罠は failures.md
 6. 並行: ユーザーの実プレイで吹き出しと声の体感。セーブから③を数える予備観測のスクリプトはそのまま使える
@@ -552,3 +552,27 @@ Phase E の目的は、D2 / D3 / D7 で「Phase E で見て決める」と先送
   (拾うもの 4 形・拾わないもの 7 形)。**Red は 3 本とも期待値の不一致で確認**してから Green。
 - **実データでの確認**: 同じ正規表現を E-1 の 2 周分の語り 83 行 (台詞の表示形 `岬あかり「…」` 8 行・店名の「」を含む) に当て、
   拾ったのは 2 周目の `山崎源蔵 (genzo):「いらっしゃい」` の 1 行だけだった。
+
+### E-2 の道具 (2026-10-16)
+
+- 置き場: `measure/spec35_phase_e/` = `run.ps1` (1 モデルで台本 3 本を回す) / `report.py` (集計と、手で分類する読み物
+  `<package>.read.txt`) / `scripts/*.txt` (台本 3 本) / `README.md` (回し方)。出力 `out/` は語りの本文を含むので
+  `.gitignore` に入れた。
+- **モデルの設定は Lorekeel の登録モデルと同じ値**にした (settings.json の `kataribe.aiModelProfiles` から読んだ接続先・
+  モデル名・思考の深さ・出力上限)。muse = muse-spark-1.3-contributor (medium / 16384) / gpt6 = gpt-6-luna (medium / 160000) /
+  opus = claude-opus-5-5 (未設定 / 16000) / gemini = gemini-4-argon (未設定 / 16000) / sakura = preview/Qwen3.6-35B-A3B
+  (未設定 / `.env` の 4096。計画の「弱いモデル」枠) / grok = repo の `.env` (grok-4.3)。
+- **鍵**: CLI は OS の資格情報ストアを読まない (harness は keyring に依存しない) ので、`run.ps1` が実行のたびに伏せ字で入力させ、
+  そのプロセスの環境変数にだけ渡して終わったら元に戻す。Lorekeel の資格情報ストアから読む形は採らなかった
+  (秘密を読み出す経路を repo に置かない)。
+- **パッケージの差し替え**: 計画の 2 本目 yuminaristars は**キャンペーン形式で、CLI の `--package` が読めない**
+  (`campaign.yaml` をシナリオとして読もうとして `missing field locations` で落ちる。GUI は `load_campaign_package` で読める)。
+  マスターがよく遊んでいる単発の ui_and_ruka (1LDK姉妹) に替えた。**ui_and_ruka は成人向けの設定を含む**ので、台本の行動は
+  日常の場面だけにしたが、system の設定だけで生成を断るプロバイダーがありうる (断られたターンも記録として残す)。
+  英語の station_of_sand_girl_en は登場人物が 1 人 (Sayo) なので、P1 は「出会う前に待合室から叫ぶ」形にした。
+- **課金なしの確認**: つながらない接続先 (`-Preset dryrun -MaxLines 1`) で 3 本を流し、接続先とモデル名が子プロセスに渡ること・
+  3 本とも読めること・実行後に親の環境変数が元に戻ること・日本語の台本が化けずに CLI に届くこと (`LLM_DEBUG=1` の送信内容で確認) を
+  確かめた。`report.py` は E-1 2 周目のデータで表と読み物が出ることと、「却下後に消えた」の判定 (却下の原因でない op と
+  台詞の段が消えた件を拾い、話者が原因の却下では拾わない) を作り物の 1 ターンで確かめた。
+- **CLI の欠け (別の作業)**: `play --package` がキャンペーン形式を読めない。GUI と同じ `load_campaign_package` +
+  `advance_campaign_injected` に揃えれば直る。
