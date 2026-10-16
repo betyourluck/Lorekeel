@@ -10,7 +10,7 @@
 //! 出力は測定用で、本文は「」/ `“”` を含む地の文の段だけを載せる (③の手作業分類の素材)。
 //! app のログ (本文を書かない規則) とは別物。
 
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 
 use gm_core::{RejectReason, Speaker};
 use harness::{DeltaProposer, HarnessError, RetryCause, TurnOutcome};
@@ -22,9 +22,10 @@ use serde::Serialize;
 #[serde(tag = "form", rename_all = "snake_case")]
 pub(crate) enum Proposal {
     /// 段の配列 (単一オブジェクトの救済もここ)。`speakers` は話者の欄の生の文字列 (地の文は数えない)。
-    Segments { count: usize, speakers: Vec<String> },
+    /// `ops` は提案した op の種類 (`move` / `set_flag` …、書かれた順)。却下の後の再提出で何が消えたかを見る。
+    Segments { count: usize, speakers: Vec<String>, ops: Vec<String> },
     /// 文字列で返った (gm_core の救済で段に分けられる)。
-    Raw { chars: usize },
+    Raw { chars: usize, ops: Vec<String> },
     /// 構造化出力が壊れて読めなかった (`LlmError::Parse`)。
     Malformed,
     /// それ以外の提案者の失敗 (接続など)。
@@ -38,13 +39,34 @@ impl Proposal {
                 gm_core::Narration::Segments(segs) => Proposal::Segments {
                     count: segs.len(),
                     speakers: segs.iter().filter_map(|s| s.speaker.clone()).collect(),
+                    ops: op_names(&d.ops),
                 },
-                gm_core::Narration::Raw(text) => Proposal::Raw { chars: text.chars().count() },
+                gm_core::Narration::Raw(text) => {
+                    Proposal::Raw { chars: text.chars().count(), ops: op_names(&d.ops) }
+                }
             },
             Err(HarnessError::Proposer(llm_client::LlmError::Parse { .. })) => Proposal::Malformed,
             Err(e) => Proposal::Error { detail: e.to_string() },
         }
     }
+}
+
+/// op の種類の名前 (serde のタグ `op` の値)。
+fn op_names(ops: &[gm_core::StateOp]) -> Vec<String> {
+    ops.iter()
+        .filter_map(|op| serde_json::to_value(op).ok()?.get("op")?.as_str().map(str::to_string))
+        .collect()
+}
+
+/// ⑦ GM 向けの書式の漏れ: 地の文の 1 行が `名前 (id):「…」` (直前の語りの還流 = `plain_for_gm` の台詞の形) で
+/// 始まっているか。E-1 2 周目で GM がこの形をそのまま地の文の段に書いた (画面に id が出て、声も付かない)。
+/// 括弧とコロンは全角も受ける (書き写すときに全角へ崩れうるため)。表示用の `名前「…」` は③の側で数える。
+pub(crate) fn is_format_leak(line: &str) -> bool {
+    static LEAK: LazyLock<regex::Regex> = LazyLock::new(|| {
+        // 名前 (空でない・括弧を含まない) + 任意の空白 + 括弧に入った空白の無い id + コロン + 「
+        regex::Regex::new(r"^\s*\S[^()（）]*?\s?[(（][^\s()（）]+[)）]\s?[:：]\s?「").expect("固定の正規表現")
+    });
+    LEAK.is_match(line)
 }
 
 /// 提案者を包み、提案の形を記録する。`enabled` が偽なら何も記録しない (= `--observe` 無しの経路)。
@@ -116,6 +138,8 @@ pub(crate) struct TurnRecord {
     pub segs: SegCounts,
     /// 「」/『』/`“”` を含む地の文の段の本文。
     pub quote_lines: Vec<String>,
+    /// ⑦ GM 向けの書式 `名前 (id):「…」` で書かれた地の文の行 ([`is_format_leak`])。
+    pub format_leaks: Vec<String>,
     pub moved: bool,
     pub requests: u64,
     pub prompt_tokens: u64,
@@ -153,6 +177,7 @@ pub(crate) fn turn_record(
         error: None,
         segs: SegCounts::default(),
         quote_lines: Vec::new(),
+        format_leaks: Vec::new(),
         moved: meta.moved,
         requests: meta.usage.0,
         prompt_tokens: meta.usage.1,
@@ -178,6 +203,9 @@ pub(crate) fn turn_record(
                         if seg.text.contains(['「', '『', '“']) {
                             r.quote_lines.push(seg.text.clone());
                         }
+                        r.format_leaks.extend(
+                            seg.text.lines().filter(|l| is_format_leak(l)).map(|l| l.trim().to_string()),
+                        );
                     }
                     Some(Speaker::Entity(_)) => r.segs.dlg += 1,
                     Some(Speaker::Extra(_)) => r.segs.extra += 1,
@@ -211,7 +239,7 @@ pub(crate) fn split_tag(line: &str) -> (Option<String>, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gm_core::{Lang, Scenario, Segment, StateDelta};
+    use gm_core::{Lang, Scenario, Segment, StateDelta, StateOp};
     use std::collections::VecDeque;
 
     /// 台本どおりに結果を返す fake 提案者。
@@ -245,9 +273,14 @@ mod tests {
     /// 話者の欄は生の文字列で残す (誤った却下の仕分けに使う)。`--observe` 無しなら何も記録しない。
     #[tokio::test]
     async fn recorder_records_the_form_of_each_proposal() {
+        let mut with_ops = spoken(&[("", "教室。"), ("あかり", "やあ")]);
+        with_ops.ops = vec![
+            StateOp::Move { to: "cafe".into() },
+            StateOp::SetFlag { key: "met".into(), value: true },
+        ];
         let fake = Fake(Mutex::new(VecDeque::from(vec![
-            Ok(spoken(&[("", "教室。"), ("あかり", "やあ")])),
-            Ok(StateDelta::new("凛花「遅い」", vec![])),
+            Ok(with_ops),
+            Ok(StateDelta::new("凛花「遅い」", vec![StateOp::AddItem { item: "鍵".into() }])),
             Err(parse_error()),
             Err(HarnessError::NoProposal("切れた".into())),
         ])));
@@ -258,8 +291,12 @@ mod tests {
         assert_eq!(
             rec.into_proposals(),
             vec![
-                Proposal::Segments { count: 2, speakers: vec!["あかり".into()] },
-                Proposal::Raw { chars: 6 },
+                Proposal::Segments {
+                    count: 2,
+                    speakers: vec!["あかり".into()],
+                    ops: vec!["move".into(), "set_flag".into()],
+                },
+                Proposal::Raw { chars: 6, ops: vec!["add_item".into()] },
                 Proposal::Malformed,
                 Proposal::Error { detail: "提案が得られない: 切れた".into() },
             ]
@@ -295,7 +332,12 @@ locations:
         let mut s = sc.initial_state(1);
         let fake = Fake(Mutex::new(VecDeque::from(vec![
             Ok(spoken(&[("alice", "やあ")])),
-            Ok(spoken(&[("", "喫茶「夕凪」の看板が鳴る。"), ("rinka", "遅いわね"), ("店員", "いらっしゃい")])),
+            Ok(spoken(&[
+                ("", "喫茶「夕凪」の看板が鳴る。"),
+                ("rinka", "遅いわね"),
+                ("店員", "いらっしゃい"),
+                ("", "奥から声がした。\n山崎凛花 (rinka):「お待たせ」"),
+            ])),
         ])));
         let rec = Recorder::new(&fake, true);
         let outcome =
@@ -313,8 +355,13 @@ locations:
         assert!(r.accepted);
         assert_eq!(r.attempts, 2);
         assert_eq!(r.proposals.len(), 2);
-        assert_eq!(r.segs, SegCounts { narr: 1, dlg: 1, extra: 1 });
-        assert_eq!(r.quote_lines, vec!["喫茶「夕凪」の看板が鳴る。".to_string()]);
+        assert_eq!(r.segs, SegCounts { narr: 2, dlg: 1, extra: 1 });
+        assert_eq!(r.quote_lines.len(), 2, "「」を含む地の文の段は 2 つ: {:?}", r.quote_lines);
+        assert_eq!(
+            r.format_leaks,
+            vec!["山崎凛花 (rinka):「お待たせ」".to_string()],
+            "⑦ は地の文の段の中の行単位で拾う (店名の「」は拾わない)"
+        );
         let RetryRecord::Rejected { reasons } = &r.retries[0] else { panic!("却下のはず: {:?}", r.retries) };
         assert!(matches!(reasons[0], RejectReason::SpeakerNotPresent { .. }), "{reasons:?}");
         assert_eq!((r.requests, r.prompt_tokens, r.completion_tokens), (2, 100, 10));
@@ -326,6 +373,32 @@ locations:
         assert_eq!(v["retries"][0]["reasons"][0]["code"], "speaker_not_present");
         assert_eq!(v["proposals"][0]["form"], "segments");
         assert_eq!(v["tag"], "P1");
+        assert_eq!(v["format_leaks"][0], "山崎凛花 (rinka):「お待たせ」");
+    }
+
+    /// 【⑦】GM 向けの書式 `名前 (id):「…」` だけを漏れとして拾う。店名の「」・表示用の `名前「…」`
+    /// (③の側)・括弧の後にコロンの無い地の文は拾わない。全角の括弧とコロンは受ける。
+    #[test]
+    fn format_leak_detects_only_the_gm_facing_dialogue_form() {
+        for leak in [
+            "山崎源蔵 (genzo):「いらっしゃい」",
+            "岬あかり(akari):「やあ」",
+            "源蔵 （genzo）：「よう」",
+            "  店員 (clerk):「毎度」",
+        ] {
+            assert!(is_format_leak(leak), "漏れとして拾うべき: {leak}");
+        }
+        for not_leak in [
+            "喫茶「夕凪」の看板が鳴る。",
+            "岬あかり「やあ」",
+            "彼は (小声で) 言った「待って」",
+            "メモ (2):",
+            "(genzo):「名前の無い行」",
+            "源蔵 (gen zo):「空白入りは id ではない」",
+            "",
+        ] {
+            assert!(!is_format_leak(not_leak), "漏れではない: {not_leak}");
+        }
     }
 
     /// 【台本の印】行頭の `[P1]` だけを印として取り、行動からは外す。印の形でないものは行動のまま。
