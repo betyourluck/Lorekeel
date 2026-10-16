@@ -27,7 +27,8 @@ pub const SAVE_VERSION: u32 = 1;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SavedContent {
-    /// `play --package <dir>` / GUI のパッケージ (単発 scenario entry)。
+    /// `play --package <dir>` / GUI のパッケージ (単発 entry・キャンペーン形式とも。
+    /// キャンペーン形式は [`SessionSave::module`] に現在モジュールが入る)。
     Package { path: String },
     /// `play --campaign <file>` (campaign file 直指定)。
     Campaign { path: String },

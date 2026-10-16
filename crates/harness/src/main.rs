@@ -23,8 +23,10 @@
 //! cargo run -p harness --bin play -- lint packages/*        # 複数まとめて
 //! ```
 //!
-//! キャンペーンモードでは goal 到達ごとに [`advance_campaign`] が発火 GoalId で次モジュールを
-//! 選び、状態を持ち越して骨格を差し替える (reached→transition の結線、PoC-2c)。
+//! キャンペーンモードでは goal 到達ごとに [`advance_campaign_with`](harness::advance_campaign_with)
+//! が発火 GoalId で次モジュールを選び、状態を持ち越して骨格を差し替える (reached→transition の
+//! 結線、PoC-2c)。`--package` は entry が campaign.yaml のパッケージ (キャンペーン形式) も読み、
+//! 遷移先のモジュールにも package の player/globals/world を注入する (GUI と同じ経路)。
 
 use std::error::Error;
 use std::io::{self, BufRead, Write};
@@ -33,8 +35,8 @@ use std::path::{Path, PathBuf};
 
 use gm_core::{GameState, Lang, Scenario};
 use harness::{
-    advance_campaign, inject_cast, load_campaign, load_lore, load_module, resolve_recall, run_turn,
-    Campaign, Summarizer, TurnOutcome,
+    inject_cast, load_campaign, load_lore, load_module, resolve_recall, run_turn, Campaign,
+    PackageManifest, Summarizer, TurnOutcome,
 };
 use llm_client::{LlmClient, LlmConfig};
 
@@ -446,11 +448,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     let mut package_version = String::new();
 
-    let (campaign, mut current_module, mut scenario, root): (
+    // 5 つ目 = キャンペーン形式のパッケージの manifest。遷移先モジュールへの注入に使う
+    // (`--campaign` と単発は None = 従来どおり注入なしの遷移 / 遷移なし)。
+    let (campaign, mut current_module, mut scenario, root, campaign_manifest): (
         Option<Campaign>,
         Option<String>,
         Scenario,
         PathBuf,
+        Option<PackageManifest>,
     ) = if let Some(camp_path) = &campaign_arg {
         let camp = load_campaign(Path::new(camp_path))?;
         let root = root_of(camp_path);
@@ -461,11 +466,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .unwrap_or_else(|| camp.start.clone());
         let scen = load_module(&camp, &root, &start)?;
         eprintln!("[キャンペーン] {} / モジュール={start}", camp.title);
-        (Some(camp), Some(start), scen, root)
+        (Some(camp), Some(start), scen, root, None)
     } else if let Some(dir) = &package_arg {
         let root = PathBuf::from(dir);
-        let loaded = harness::load_package(&root)?;
-        eprintln!("[パッケージ] {}", loaded.manifest.title);
+        // entry が campaign.yaml なら開始モジュール (再開時はセーブのモジュール) を注入込みで、
+        // 単発なら entry シナリオを読む (GUI の open_package と同じ分岐)。
+        let resume_module = resume_save.as_ref().and_then(|s| s.module.as_deref());
+        let loaded = harness::open_package_dir(&root, resume_module)?;
+        match &loaded.module {
+            Some(m) => eprintln!("[パッケージ] {} / モジュール={m}", loaded.manifest.title),
+            None => eprintln!("[パッケージ] {}", loaded.manifest.title),
+        }
         // 版不一致は警告のみ (typo 修正でセーブが全滅しないよう拒否しない)。
         if let Some(save) = &resume_save {
             if save.package_version != loaded.manifest.version {
@@ -476,7 +487,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         }
         package_version = loaded.manifest.version.clone();
-        (None, None, loaded.scenario, root)
+        let manifest = loaded.campaign.is_some().then(|| loaded.manifest.clone());
+        (loaded.campaign, loaded.module, loaded.scenario, root, manifest)
     } else {
         let scenario_path = scenario_arg.unwrap_or_else(|| DEFAULT_SCENARIO.to_string());
         let yaml = std::fs::read_to_string(&scenario_path)
@@ -485,7 +497,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let root = root_of(&scenario_path);
         // シナリオが cast 宣言した外部キャラだけを注入する。
         inject_cast(&mut scen, &root.join("characters"))?;
-        (None, None, scen, root)
+        (None, None, scen, root, None)
     };
 
     // 伏線 lore (root の隣の memoria/) をロード。トリガー発火点で recall する (memoria_bridge)。
@@ -869,7 +881,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     match &campaign {
                         Some(camp) => {
                             let from = current_module.as_deref().unwrap_or("");
-                            match advance_campaign(camp, &root, &mut campaign_memory, from, &scenario, &state)? {
+                            match harness::advance_campaign_with(
+                                camp,
+                                &root,
+                                campaign_manifest.as_ref(),
+                                &mut campaign_memory,
+                                from,
+                                &scenario,
+                                &state,
+                            )? {
                                 // 辺が在る = 次モジュールへ。状態を持ち越し骨格だけ差し替える。
                                 Some(adv) => {
                                     // spec 10: 章の締めであらすじ圧縮 (章替わりマーカーを刻む前 =

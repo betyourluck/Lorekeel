@@ -50,7 +50,8 @@ mod turn;
 
 pub use asset::{is_valid_asset_id, resolve_asset, AssetKind};
 pub use campaign::{
-    advance_campaign, advance_campaign_injected, load_campaign, load_module, load_module_injected,
+    advance_campaign, advance_campaign_injected, advance_campaign_with, load_campaign, load_module,
+    load_module_injected,
     Advance, Campaign, CampaignEdge, CampaignMemory, ModuleId,
 };
 pub use inspect::{inspect, inspect_package, inspect_scenario_file, InspectReport};
@@ -65,6 +66,7 @@ pub use settings_sheets::{
 };
 pub use package::{
     character_lints, inject_package, is_campaign_entry, load_campaign_package, load_package,
+    open_package_dir, OpenedPackage,
     manifest_lints, read_manifest, Globals,
     LoadedCampaignPackage, LoadedPackage, PackageManifest, PlayerDef,
 };

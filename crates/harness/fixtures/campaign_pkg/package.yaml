@@ -1,0 +1,22 @@
+# PoC 用: entry が campaign.yaml のパッケージ (キャンペーン形式)。
+# CLI `play --package` と GUI が同じ分岐 (harness::open_package_dir) を通ることを固定する。
+# 配布物 (packages/) に結合しないための最小盤面。player/globals/world が**各モジュールへ**
+# 注入されることを観測する (ステージの hp は package の値に上書きされる)。
+
+title: 二段のキャンペーン
+description: キャンペーン形式パッケージの読み込みと遷移の PoC 用。
+author: test
+version: 0.1.0
+engine: ">=0.1"
+
+entry: campaign.yaml
+
+world: |
+  試験用の二つの部屋。
+
+player:
+  name: 試験者
+  stats: { hp: 12 }
+
+globals:
+  flags: [met_guide]
