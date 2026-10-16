@@ -1,0 +1,10 @@
+# ステージ A: hp は 3 だが package の player.stats (12) が勝つ。cleared で goal done。
+title: ステージA
+start: room_a
+initial_stats: { hp: 3 }
+allowed_flags: [cleared]
+goals:
+  - id: done
+    when: { kind: flag_is, key: cleared, value: true }
+locations:
+  room_a: { description: 部屋A, exits: [] }

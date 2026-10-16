@@ -1,0 +1,8 @@
+# a で done に着くと b へ。b は終端。
+title: 二段のキャンペーン
+start: a
+modules:
+  a: scenarios/stage_a.yaml
+  b: scenarios/stage_b.yaml
+edges:
+  - { from: a, on_goal: done, to: b }

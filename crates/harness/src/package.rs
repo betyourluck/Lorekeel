@@ -323,6 +323,62 @@ pub fn load_campaign_package(dir: &Path) -> Result<LoadedCampaignPackage, Harnes
     })
 }
 
+/// [`open_package_dir`] の戻り。単発 entry とキャンペーン entry を 1 つの形で返す。
+#[derive(Debug, Clone)]
+pub struct OpenedPackage {
+    pub manifest: PackageManifest,
+    /// 開いたシナリオ (`inject_cast` + [`inject_package`] + `validate` 済)。
+    /// キャンペーン形式なら開いたモジュールの骨格。
+    pub scenario: Scenario,
+    /// キャンペーン形式なら地図 (campaign.yaml)。単発なら `None`。
+    pub campaign: Option<crate::campaign::Campaign>,
+    /// 開いたモジュール id。単発なら `None`。
+    pub module: Option<crate::campaign::ModuleId>,
+    /// 非 fatal な作者向け警告。
+    pub warnings: Vec<String>,
+}
+
+/// パッケージフォルダを entry の形を問わず開く。
+///
+/// entry が campaign.yaml なら [`load_campaign_package`] で地図と開始モジュールを読み、
+/// `module` (再開時のセーブのモジュール) が開始と違えば、そのモジュールを
+/// [`load_module_injected`](crate::campaign::load_module_injected) で注入込みで開く。
+/// 単発 entry は [`load_package`] そのもので、`module` は無視する。GUI の `open_package` と
+/// CLI `play --package` の分岐の正本 (別々に持つと片方だけキャンペーン形式を読めない形に
+/// 割れる。2026-10-16 に CLI だけが読めなかった)。
+///
+/// 空のモジュール id は「指定なし」として開始モジュールへ。地図に無い id はエラー。
+pub fn open_package_dir(dir: &Path, module: Option<&str>) -> Result<OpenedPackage, HarnessError> {
+    let manifest = read_manifest(dir)?;
+    if !is_campaign_entry(&manifest.entry) {
+        let loaded = load_package(dir)?;
+        return Ok(OpenedPackage {
+            manifest: loaded.manifest,
+            scenario: loaded.scenario,
+            campaign: None,
+            module: None,
+            warnings: loaded.warnings,
+        });
+    }
+    let loaded = load_campaign_package(dir)?;
+    let target = module
+        .filter(|m| !m.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| loaded.start_module.clone());
+    let scenario = if target == loaded.start_module {
+        loaded.scenario
+    } else {
+        crate::campaign::load_module_injected(&loaded.campaign, dir, &loaded.manifest, &target)?
+    };
+    Ok(OpenedPackage {
+        manifest: loaded.manifest,
+        scenario,
+        campaign: Some(loaded.campaign),
+        module: Some(target),
+        warnings: loaded.warnings,
+    })
+}
+
 // =============================================================================
 // PoC: 配布単位フォルダのロードと注入 (Red→Green)
 // 「package で一度宣言 → 各モジュールへ注入」を実証。gm_core 無改修。
@@ -475,6 +531,62 @@ mod tests {
             vec!["クラス".to_string(), "種族".to_string()],
             "主人公の attribute も宣言順"
         );
+    }
+
+    /// キャンペーン形式の PoC fixture (entry = campaign.yaml、player/globals/world つき)。
+    fn campaign_pkg_dir() -> PathBuf {
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/campaign_pkg")).to_path_buf()
+    }
+
+    /// 【CLI `--package` の欠け】entry が campaign.yaml のパッケージを開くと、開始モジュールが
+    /// package 注入込みで返り、地図と開始 id も一緒に返る。再開 (モジュール指定) も同じ経路。
+    /// Red (2026-10-16): 単発 entry としてしか読まず `missing field \`locations\`` で落ちた
+    /// (実機の `play --package D:/語り部/yuminaristars` と同じ形)。
+    #[test]
+    fn open_package_dir_opens_campaign_entry_with_injection() {
+        let dir = campaign_pkg_dir();
+        let opened = open_package_dir(&dir, None).expect("キャンペーン形式でも開ける");
+        assert!(opened.campaign.is_some(), "地図を返す");
+        assert_eq!(opened.module.as_deref(), Some("a"), "開始モジュールから");
+        assert_eq!(opened.scenario.title, "ステージA");
+        // package の player.stats (12) がモジュールの hp (3) に勝つ = 注入が効いている。
+        assert_eq!(opened.scenario.initial_stats.get("hp").map(|v| v.initial()), Some(12));
+        assert_eq!(opened.scenario.protagonist.name, "試験者");
+        assert_eq!(opened.scenario.world.trim(), "試験用の二つの部屋。");
+        assert!(opened.scenario.allowed_flags.contains("met_guide"), "globals も注入");
+
+        // 再開: セーブに刻まれた途中モジュールを、同じく注入込みで開く。
+        let resumed = open_package_dir(&dir, Some("b")).expect("途中モジュールから開ける");
+        assert_eq!(resumed.module.as_deref(), Some("b"));
+        assert_eq!(resumed.scenario.title, "ステージB");
+        assert_eq!(resumed.scenario.initial_stats.get("hp").map(|v| v.initial()), Some(12));
+        assert!(resumed.scenario.allowed_flags.contains("met_guide"));
+
+        // 空のモジュール id は「指定なし」として開始モジュールへ (旧セーブの形に寛容)。
+        let empty = open_package_dir(&dir, Some("")).expect("開ける");
+        assert_eq!(empty.module.as_deref(), Some("a"));
+        // 地図に無いモジュールはエラー (黙って開始モジュールへ戻さない)。
+        assert!(open_package_dir(&dir, Some("nowhere")).is_err());
+    }
+
+    /// 【回帰】単発 entry は従来どおり `load_package` と同じものを返す (地図もモジュールも無い)。
+    /// 単発でモジュール id が渡っても無視する (GUI の再開経路と同じ)。
+    #[test]
+    fn open_package_dir_single_entry_is_unchanged() {
+        let direct = load_package(&pkg_dir()).expect("単発を読める");
+        for module in [None, Some("anything")] {
+            let opened = open_package_dir(&pkg_dir(), module).expect("単発を開ける");
+            assert!(opened.campaign.is_none());
+            assert!(opened.module.is_none());
+            assert_eq!(opened.manifest.title, direct.manifest.title);
+            assert_eq!(opened.scenario.title, direct.scenario.title);
+            assert_eq!(
+                opened.scenario.initial_stats.get("hp").map(|v| v.initial()),
+                Some(10),
+                "package の player.stats が注入される (従来どおり)"
+            );
+            assert_eq!(opened.warnings, direct.warnings);
+        }
     }
 }
 

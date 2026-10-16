@@ -208,7 +208,7 @@ pub fn advance_campaign(
     scenario: &Scenario,
     state: &GameState,
 ) -> Result<Option<Advance>, HarnessError> {
-    advance_with(campaign, root, None, memory, current_module, scenario, state)
+    advance_campaign_with(campaign, root, None, memory, current_module, scenario, state)
 }
 
 /// [`advance_campaign`] の **package 注入版**。campaign-entry パッケージで使う
@@ -222,12 +222,16 @@ pub fn advance_campaign_injected(
     scenario: &Scenario,
     state: &GameState,
 ) -> Result<Option<Advance>, HarnessError> {
-    advance_with(campaign, root, Some(manifest), memory, current_module, scenario, state)
+    advance_campaign_with(campaign, root, Some(manifest), memory, current_module, scenario, state)
 }
 
-/// goal 到達後の前進本体。`manifest` を渡すと遷移先モジュールへ package を注入する。
+/// goal 到達後の前進本体。`manifest` を渡すと遷移先モジュールへ package を注入する
+/// (= [`advance_campaign_injected`])、`None` なら注入しない (= [`advance_campaign`])。
 /// `memory` は spec 02 の場所フラグ蓄積: 遷移元を harvest し、遷移先を overlay する。
-fn advance_with(
+///
+/// 呼び出し側が manifest の有無をそのまま渡せる形として公開している — CLI は `--campaign`
+/// (manifest なし) とキャンペーン形式の `--package` (manifest あり) を同じループで回す。
+pub fn advance_campaign_with(
     campaign: &Campaign,
     root: &Path,
     manifest: Option<&PackageManifest>,
@@ -318,6 +322,41 @@ mod tests {
     }
     fn d(ops: Vec<StateOp>) -> StateDelta {
         StateDelta::new("", ops)
+    }
+
+    /// 【CLI `--package` の遷移】キャンペーン形式のパッケージでは、goal 到達で移った先の
+    /// モジュールにも package の player/globals/world が注入される (GUI と同じ)。manifest を
+    /// 渡さない経路 (= `--campaign`) は従来どおりモジュールの素の骨格のまま。
+    /// Red (2026-10-16): CLI は manifest を渡す口を持たず、遷移先が素の骨格 (hp 5・世界観なし) だった。
+    #[test]
+    fn campaign_package_transition_injects_package_into_next_module() {
+        let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/campaign_pkg"));
+        let opened = crate::package::open_package_dir(root, None).expect("開ける");
+        let camp = opened.campaign.clone().expect("キャンペーン形式");
+        let a = opened.scenario.clone();
+        let mut s = a.initial_state(1);
+        apply(&mut s, &a, &d(vec![StateOp::SetFlag { key: "cleared".into(), value: true }]))
+            .expect("cleared は allowed");
+        assert_eq!(a.reached(&s).as_deref(), Some("done"));
+
+        // manifest あり (キャンペーン形式の `--package`): 遷移先にも注入が効く。
+        let mut mem = CampaignMemory::new();
+        let adv = advance_campaign_with(&camp, root, Some(&opened.manifest), &mut mem, "a", &a, &s)
+            .expect("advance 成功")
+            .expect("辺があるので遷移");
+        assert_eq!(adv.module_id, "b");
+        assert_eq!(adv.scenario.initial_stats.get("hp").map(|v| v.initial()), Some(12));
+        assert_eq!(adv.scenario.protagonist.name, "試験者");
+        assert_eq!(adv.scenario.world.trim(), "試験用の二つの部屋。");
+        assert!(adv.scenario.allowed_flags.contains("met_guide"));
+
+        // manifest なし (`--campaign`): モジュールの素の骨格のまま (挙動は変えない)。
+        let mut mem = CampaignMemory::new();
+        let raw = advance_campaign_with(&camp, root, None, &mut mem, "a", &a, &s)
+            .expect("advance 成功")
+            .expect("辺があるので遷移");
+        assert_eq!(raw.scenario.initial_stats.get("hp").map(|v| v.initial()), Some(5));
+        assert!(raw.scenario.world.is_empty());
     }
 
     /// 【地図の参照】edges が (from, on_goal) → to を authored 順で引ける。辺が無ければ None。

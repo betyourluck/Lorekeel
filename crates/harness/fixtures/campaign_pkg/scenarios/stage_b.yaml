@@ -1,0 +1,7 @@
+# ステージ B: 遷移先。注入が無ければ hp 5・世界観なしのまま (= `--campaign` の経路)。
+title: ステージB
+start: room_b
+initial_stats: { hp: 5 }
+goal: { kind: always }
+locations:
+  room_b: { description: 部屋B, exits: [] }
