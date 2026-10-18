@@ -13,7 +13,7 @@
 //! - v1beta は camelCase を受理する (キー名は serde rename_all で固定)
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::canonical;
 use crate::error::LlmError;
@@ -446,6 +446,31 @@ pub(crate) fn adapt_schema(schema: &Value) -> Value {
                 // 黙って落とすのではなく名指しで拒む側)。閉世界の意図は description で伝える。
                 if k == "additionalProperties" {
                     continue;
+                }
+                // schemars は `Option<T>` を `"type": ["string", "null"]` と出すが、Gemini の
+                // Schema は `type` が proto の enum (単一値) で、配列は 400
+                // `Proto field is not repeating, cannot start list` (2026-10-19 実機、spec 35 の
+                // 段の `speaker` が schema で初めての Option)。Gemini の表し方は単一の `type` +
+                // `nullable: true`。非 null の型が複数なら `anyOf` に割る (型の和は持てない)。
+                if k == "type" {
+                    if let Value::Array(types) = v {
+                        let nullable = types.iter().any(|t| t == "null");
+                        let non_null: Vec<&Value> = types.iter().filter(|t| *t != "null").collect();
+                        match non_null.as_slice() {
+                            [] => {}
+                            [one] => {
+                                out.insert("type".into(), (*one).clone());
+                            }
+                            many => {
+                                let alts = many.iter().map(|t| json!({ "type": t })).collect();
+                                out.insert("anyOf".into(), Value::Array(alts));
+                            }
+                        }
+                        if nullable {
+                            out.insert("nullable".into(), Value::Bool(true));
+                        }
+                        continue;
+                    }
                 }
                 let key = if k == "oneOf" { "anyOf" } else { k.as_str() };
                 out.insert(key.to_string(), adapt_schema(v));

@@ -253,6 +253,57 @@ mod tests {
         assert_eq!(p["properties"]["path"]["type"], "string");
     }
 
+    /// 【実機 400 (2026-10-19, gemini-4-argon)】schemars は `Option<T>` を `"type": ["string", "null"]`
+    /// と出すが、Gemini の Schema は `type` が単一値 (proto の enum) で、配列を置くと
+    /// `Proto field is not repeating, cannot start list` の 400。spec 35 の段の `speaker` が
+    /// schema で初めての Option なので v0.7.4 以降の Gemini 全般で起きる。adapt_schema が
+    /// 単一の `type` + `nullable: true` に畳む (Gemini の OpenAPI サブセットの表し方)。
+    #[test]
+    fn gemini_folds_type_arrays_into_nullable_for_tool_schemas() {
+        fn no_type_arrays(v: &Value, path: &str) {
+            match v {
+                Value::Object(m) => {
+                    if let Some(Value::Array(_)) = m.get("type") {
+                        panic!("type が配列のまま: {path} = {v}");
+                    }
+                    for (k, x) in m {
+                        no_type_arrays(x, &format!("{path}.{k}"));
+                    }
+                }
+                Value::Array(a) => a.iter().enumerate().for_each(|(i, x)| no_type_arrays(x, &format!("{path}[{i}]"))),
+                _ => {}
+            }
+        }
+        // 実際に送る emit_delta の schema (narration.items.properties.speaker が Option)。
+        let mut req = request(vec![ChatMessage::user("x")]);
+        req.tools[0].parameters = crate::state_delta_schema();
+        let v = to_value(&gemini::encode(&req));
+        let p = &v["tools"][0]["functionDeclarations"][0]["parameters"];
+        let speaker = &p["properties"]["narration"]["items"]["properties"]["speaker"];
+        assert_eq!(speaker["type"], "string", "{speaker}");
+        assert_eq!(speaker["nullable"], true, "{speaker}");
+        assert!(speaker.get("description").is_some(), "他のキーは残る: {speaker}");
+        no_type_arrays(p, "parameters");
+        // 入れ子・複数型・null だけの形。複数の非 null 型は anyOf へ (Gemini は type の和を持たない)。
+        let mut req = request(vec![ChatMessage::user("x")]);
+        req.tools[0].parameters = json!({
+            "type": "object",
+            "properties": {
+                "a": { "type": ["integer", "null"] },
+                "b": { "type": ["string", "integer"] },
+                "c": { "type": ["string", "integer", "null"] },
+                "d": { "type": "object", "properties": { "e": { "type": ["boolean", "null"] } } }
+            }
+        });
+        let v = to_value(&gemini::encode(&req));
+        let p = &v["tools"][0]["functionDeclarations"][0]["parameters"]["properties"];
+        assert_eq!(p["a"], json!({ "type": "integer", "nullable": true }));
+        assert_eq!(p["b"], json!({ "anyOf": [{ "type": "string" }, { "type": "integer" }] }));
+        assert_eq!(p["c"], json!({ "anyOf": [{ "type": "string" }, { "type": "integer" }], "nullable": true }));
+        assert_eq!(p["d"]["properties"]["e"], json!({ "type": "boolean", "nullable": true }));
+        no_type_arrays(p, "properties");
+    }
+
     /// `EDITOR_LLM_*` はあらすじの別指定と同じ継承則: 未指定フィールドは GM 設定を継ぐ。
     #[test]
     fn editor_profile_inherits_unspecified_fields_from_base() {

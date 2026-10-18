@@ -3065,3 +3065,36 @@ PoC はローカル HTTP サーバから `summary` つきの応答を流して `
 
 **接地の限界**: 9/13 の「Web 版より忘れる・矛盾がある」報告との因果は測っていない。経緯ログが
 台詞の切れ端だったことは事実だが、それが体感の主因かは、修正後の実プレイで比べるまで分からない。
+
+## crates/llm_client (2026-10-19 — Gemini に Option の欄を初めて送ったら 400)
+
+### 113. schema に「初めての形」が入ったとき、adapter の変換表はその形を知らない
+
+**観察**: ユーザーが `gemini-4-argon` でターンを始めると即 400 — `Invalid JSON payload received.
+Unknown name "type" at tools[0].function_declarations[0].parameters.properties[0].value.items.properties[0].value:
+Proto field is not repeating, cannot start list.`。パスを辿ると `properties[0]` = `narration`、
+`items.properties[0]` = `speaker`。実際に送っている `emit_delta` の schema を生成して「`type` が
+配列の箇所」を全部洗うと、**ここ 1 箇所だけ**が `"type": ["string", "null"]` だった。
+
+**機序**: schemars は `Option<T>` を `type: [T, "null"]` と出す。Gemini の Schema は `type` が
+proto の enum (単一値) で、配列を置けば JSON→proto の変換で落ちる (モデルに依らない API 側の
+検証)。`StateDelta` には 2026-10-14 の spec 35 まで `Option` の欄が無く、`gemini::adapt_schema`
+(#52 の oneOf→anyOf、#99 の additionalProperties 剥がし) はこの形を一度も見ていなかった。
+spec 35 の実 LLM 確認は gpt-6-luna と muse-spark で、Gemini は E-2 の preset に入れたまま回していない
+= **v0.7.4 以降の Gemini 全般で起きていたはず**で、gemini-4 固有ではない (3.5-flash での再現は未確認)。
+
+**処方**: `adapt_schema` が `type` の配列を Gemini の表し方 (単一の `type` + `nullable: true`) に
+畳む。非 null の型が複数なら `anyOf: [{type}, …]` に割る (Gemini は型の和を持たない)。PoC は
+実際の `state_delta_schema()` を encode して `speaker` が `type: string, nullable: true` になることと
+出力の全域に `type` の配列が残らないことを固定 (Red は実機と同じ `["string","null"]` で落ちた)。
+
+**一般化**: **adapter の変換表は、通した形しか知らない**。schema は型から機械生成するので
+「Rust 側に `Option` を 1 つ足す」だけで wire に新しい形が生えるが、その形を各 adapter が受けるかは
+型検査もテストも見ていない (golden は変更前の形を凍結する道具で、新しい形には鳴らない)。
+型に新しい種類の欄 (Option / enum の新しい形 / map) を足したら、**全 adapter の encode を実 schema で
+通す**か、少なくとも adapter の変換表 (`adapt_schema` の match) を読み直す。今回は #52・#99 と同じ
+関数に 3 つ目の腕が足されただけで、3 回とも「実機の 400 を見てから」だった。
+
+**接地の限界**: 修正後の実 API は未確認 (鍵は私の手元に無い)。`nullable: true` が Gemini に
+受理されることは API リファレンスの Schema 定義 (OpenAPI 3.0 サブセット・`nullable` 欄あり) に依る
+推論で、実機は次のターンでユーザーが見る。

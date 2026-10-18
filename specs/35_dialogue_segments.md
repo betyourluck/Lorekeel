@@ -563,6 +563,8 @@ Phase E の目的は、D2 / D3 / D7 で「Phase E で見て決める」と先送
   モデル名・思考の深さ・出力上限)。muse = muse-spark-1.3-contributor (medium / 16384) / gpt6 = gpt-6-luna (medium / 160000) /
   opus = claude-opus-5-5 (未設定 / 16000) / gemini = gemini-4-argon (未設定 / 16000) / sakura = preview/Qwen3.6-35B-A3B
   (未設定 / `.env` の 4096。計画の「弱いモデル」枠) / grok = repo の `.env` (grok-4.3)。
+  **←2026-10-19: gemini は 10-19 の修正 (failures #113) より前のビルドでは 1 ターン目から 400 で回らない** — 段の `speaker: Option<String>` が
+  schema に出す `type: ["string","null"]` を Gemini の Schema が受けないため。E-2 の gemini は修正後のビルドで回すこと。
 - **鍵**: CLI は OS の資格情報ストアを読まない (harness は keyring に依存しない) ので、`run.ps1` が実行のたびに伏せ字で入力させ、
   そのプロセスの環境変数にだけ渡して終わったら元に戻す。Lorekeel の資格情報ストアから読む形は採らなかった
   (秘密を読み出す経路を repo に置かない)。
