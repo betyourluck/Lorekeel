@@ -220,8 +220,12 @@ function engineOptions(s: TtsSettings): Record<string, unknown> {
         aivisSpeechVolumeScale: s.volume,
       };
     case "openaiCompatible":
-      // **未検証** (2026-07-22): サーバーを立てずに口だけ作った。CORS を返すか、
-      // 実際に鳴るかは実サーバーで要確認。速度以外のパラメータは API に無い。
+      // 実サーバーで確かめた (2026-10-19、Irodori-TTS-Server 8088、failures #114): 送る形は正しく
+      // curl では 200 で WAV が返るが、**WebView からは届かない** — サーバーに CORS が無く preflight
+      // が 405 (fetch は net::ERR_FAILED)。届いてもライブラリの fetch は 30 秒固定で、CPU の合成
+      // (3.6 秒の音声に 45 秒) は毎回切れる。速度以外のパラメータは API に無い。
+      // `voice` は空だと送らない = Irodori は `IRODORI_DEFAULT_VOICE` 未設定なら 400 なので
+      // 話者 ID に `none` (Voice Design) か voices/ のファイル名を入れる。
       return {
         engineType: "openaiCompatible",
         openAiCompatibleApiUrl: effectiveUrl(s),

@@ -3106,3 +3106,39 @@ prompt 7181 / completion 324、n=1)。同じログに `[LLM_CACHE] cachedContent
 形だった (ターンは落ちない・課金も無い・往復と log だけ)。作成を 400 で拒まれた fingerprint をセッション内で
 覚えて Bypass する latch を入れた (specs/13 の追補)。**fallback が正しく働いているときほど、その失敗が
 毎回起きていることは log を読まないと分からない** — 「落ちない」と「無駄が無い」は別。
+
+## app frontend (2026-10-19 — OpenAI 互換 TTS の口を初めて実サーバーに当てた)
+
+### 114. 「汎用の口」はブラウザから届く保証を含まない — CORS とタイムアウトはサーバーとライブラリの側にある
+
+**観察**: ユーザーが Irodori-TTS を立てた (最初は `http://127.0.0.1:7860/`)。サウンド設定で OpenAI 互換
+エンジンを選び試聴すると「失敗: Failed to fetch TTS from OpenAI-compatible TTS.」。調べると 7860 は
+Irodori-TTS 本体の **Gradio 画面** (`/gradio_api/call/_run_generation` しか無い) で、OpenAI 互換の
+`/v1/audio/speech` は別リポジトリ **Irodori-TTS-Server** (既定 8088) の口だった。ユーザーが 8088 を立てた後:
+
+- curl (アプリと同じ本文 `model: irodori-tts` / `input` / `speed`) → `voice` 無しは 400
+  `No voice was provided and IRODORI_DEFAULT_VOICE is not set.`、`voice: none` で **200・audio/wav 3.64 秒**。
+  ただし初回 439 秒 (`IRODORI_PRELOAD=false` でモデル読み込み込み)、温まっても **44.9 秒** (この機は GPU なし・fp32)。
+- アプリ (dev サーバ `localhost:1420` の WebView 相当) から同じ URL → preflight `OPTIONS` が **405**、
+  `Access-Control-Allow-Origin` なし → fetch は `net::ERR_FAILED`、試聴は「VoiceEngineError: Network error while fetching TTS audio」。
+  README に CORS の設定は無い。
+
+**機序**: 2026-07-22 に「Irodori 個別対応でなく汎用の口」として足した OpenAI 互換エンジンは、**wire の形**
+(URL・JSON の欄・応答のバイト列) だけを約束していた。ブラウザから届くかは別の 2 層で決まる — ①サーバーが
+CORS を返すか (VOICEVOX / AivisSpeech は Origin を反映するので動いていた = 「汎用の口」が動く前提を
+**たまたま満たすサーバーで検証していた**) ②ライブラリの `fetchWithTimeout` 既定 30 秒 (engine は 3 つ目の
+引数を渡さず、設定からも届かない)。どちらも Kataribe の口を直しても越えられない。画像生成 (spec 24) が
+「HTTP は全部 backend」にした理由 (CSP・鍵) がここにもそのまま当たる — backend には CORS も CSP も無く、
+タイムアウトも自前で持てる。
+
+**処方 (未着手)**: TTS の OpenAI 互換経路を backend command (`synthesize_speech` → bytes) に移す案が本命で、
+spec 1 本ぶん。その前に試聴の失敗文言が HTTP の状態 (404 / CORS / timeout) を区別しないので、少なくとも
+console にしか出ない情報を画面に出す改善は小さい。`voice` が空だと送らない仕様は UI の説明に無かったので
+「Irodori は `none` を入れる」を注記した (`tts.ts` のコメント)。
+
+**一般化**: **「互換の口」を足すときは、wire の形・到達性 (CORS / CSP)・時間 (タイムアウト) の 3 つを別々に数える**。
+wire の形だけ PoC で固定しても、到達性はサーバー側・時間はライブラリ側に在り、どちらも実サーバーに当てるまで見えない。
+2026-07-22 の「未検証」の申告は正しかったが、未検証の中身が 3 層あることは申告していなかった。
+
+**接地の限界**: 配布ビルド (Tauri の WebView) では CSP `connect-src` が localhost を許すので 8088 自体は
+射程内だが、CORS で止まるのは同じはず (未確認・dev サーバで観測)。GPU 機での合成時間は未測定。
