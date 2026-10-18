@@ -1,6 +1,6 @@
 # spec 36 — 読み上げの OpenAI 互換経路を backend 経由に
 
-**Status**: Draft (2026-10-19 起草、failures #114 起点)。契約は Phase 0 で data_contract に `TtsBackendRoute` 節を凍結する (起草時点では未記載)。
+**Status**: Draft **rev2** (2026-10-19 起草 → 同日ユーザー査読〔矛盾 5 + 要修正 4〕を反映)。契約は Phase 0 で data_contract に `TtsBackendRoute` 節を凍結する (起草時点では未記載。**凍結する中身は本 rev2 の D2 / D6 / D7 で全部決めた** — Phase 0 は写すだけ)。
 
 ---
 
@@ -23,7 +23,7 @@
 ### 位置づけ
 
 - 2026-07-22 の「Irodori 個別対応でなく汎用の口」は不変。経路を backend に移すだけで、口の形
-  (OpenAI の `/v1/audio/speech`) は変えない。
+  (OpenAI の `/v1/audio/speech`) は変えない。Irodori 固有の `irodori: {...}` 欄は送らない。
 - 他 3 エンジン (ブラウザ内蔵 / VOICEVOX / AivisSpeech) は**触らない**。動いているものを動かさない。
   VOICEVOX / AivisSpeech は Origin を反映する CORS を返すので、「汎用の口が動く前提をたまたま満たす
   サーバーで検証していた」のが #114 の機序。
@@ -34,6 +34,7 @@
   サーバーではない。参照音声の upload まで要るので別物。
 - `stream_format: sse` (チャンク単位の SSE) — v2。まず 1 文 1 リクエストで成立させる。
 - 旧 3 エンジンの backend 移設 — 動いているので動機が無い。
+- 鍵欄 (= クラウドの `/v1/audio/speech` を開く) — **v1 の型から外す** (D3)。
 - 作者がキャラに声を書く欄 (spec 35 のスコープ外のまま)。
 
 ---
@@ -48,10 +49,11 @@
 | 中断は `interrupt()` = `adapter.stop()` + **再生中だったらアダプタを捨てる** (#72 の罠)。`stop()` は世代を進め、`skip()` は進めない | `app/src/tts.ts` 545〜 |
 | 試聴は `test()` が `speakText` を直に await し、**失敗を投げる** (設定の接地) | `app/src/tts.ts` 531〜 / `SettingsDialog.vue` `testVoice` |
 | 設定は `TtsSettings {engine, serverUrl, speaker, rate, pitch, volume, model, scope}` (localStorage `kataribe.tts.*`)。OpenAI 互換は URL が**エンドポイント全体** | `app/src/tts.ts` 19〜 |
-| CSP: `connect-src` は localhost のみ・`media-src` は `'self' asset: blob:` (**`data:` は無い**) | `app/src-tauri/tauri.conf.json` |
-| backend の先例: 画像生成は `ImageGenConfig` を command に渡し、HTTP は reqwest・応答は base64 → frontend で data URL。タイムアウトはプロバイダ別既定 + `timeout_secs` 上書き | `app/src-tauri/src/image_gen.rs` / `lib.rs` `generate_image` |
+| CSP: `connect-src` は localhost のみ・`media-src` は `'self' asset: blob:` (**`data:` は無い** → 再生は Blob URL 一択) | `app/src-tauri/tauri.conf.json` |
+| backend の先例: 画像生成は `ImageGenConfig` を command に渡し、HTTP は reqwest・応答は base64 文字列で運ぶ (`tauri::ipc::Response` の生バイト返しは repo に先例なし)。タイムアウトはプロバイダ別既定 + `timeout_secs: Option<u64>` 上書き | `app/src-tauri/src/image_gen.rs` / `lib.rs` `generate_image` |
 | 秘密の env は `SECRET_ENV_KEYS` の一覧だけが資格情報ストアへ行く (`IMAGE_API_KEY_*` が先例) | `app/src-tauri/src/secret_store.rs` |
-| Irodori-TTS-Server: `voice` 省略は `IRODORI_DEFAULT_VOICE` 未設定なら 400。`none` = Voice Design。任意の bearer `IRODORI_API_KEY`。`IRODORI_PRELOAD=false` 既定で初回にモデルを読む | README (2026-10-19) / `/health` |
+| あらすじの待ち時間 select: UI は `0 = 既定` の数値、command `set_summary_timeout` は 0 を**空の env** に写し、harness 側が未設定を既定へ倒す | `SettingsDialog.vue` / `lib.rs` |
+| Irodori-TTS-Server: `voice` 省略は `IRODORI_DEFAULT_VOICE` 未設定なら 400。`none` = Voice Design (参照なし)。**参照なしだと 80 字チャンクごとに声の調子が変わりうる** (README 明記)。`/health` はモデルを読まない。`IRODORI_PRELOAD` 既定 false = 初回リクエストでモデルを読む (実測 439 秒)。任意の bearer `IRODORI_API_KEY` | README (2026-10-19) / `/health` |
 
 ---
 
@@ -60,52 +62,119 @@
 ### D1. 経路の分岐は engine 1 つだけ
 
 `engine === "openaiCompatible"` のときだけ合成を backend command へ回す。他 3 エンジンはライブラリのまま。
-`tts.ts` に合成の継ぎ目 `Synth` (1 文を合成して再生し終えるまで待つ / 止める / 再生中か) を切り、
-実装を 2 つ持つ:
+`tts.ts` に合成の継ぎ目 `Synth` を切り、実装を 2 つ持つ:
 
-- `LibrarySynth` = 今の `VoiceEngineAdapter` の包み (speakText / stop / isPlaying)。挙動不変。
-- `BackendSynth` = `invoke("synthesize_speech")` → bytes → `Blob` → `URL.createObjectURL` → `HTMLAudioElement.play()`。
-  再生終了 (`ended` / `error`) で resolve、`stop()` は `pause()` して**自分で reject する** (#72 の罠 =
-  ライブラリの stop が play の Promise を settle しない、を自分では踏まない形)。Object URL は再生後に revoke。
+```ts
+interface Synth {
+  /** 1 文を合成して再生し終えるまで待つ。中断されたら reject。 */
+  speak(sentence: string, voice: string): Promise<void>;
+  /** 再生中の音を止める。進行中の speak は reject させる。 */
+  stop(): void;
+  isPlaying(): boolean;
+  /** interrupt() が「このインスタンスは捨てて作り直せ」と判断する材料 (#72)。 */
+  discardOnStop: boolean;
+}
+```
 
-鎖 (`chain`) / 世代 / `skipThrough` / 声の切替は `Synth` の外にあり不変。`updateOptions({speaker})` に当たるものは
-`BackendSynth` では次のリクエストの `voice` 欄になるだけ。
+- `LibrarySynth` = 今の `VoiceEngineAdapter` の包み。`speak` は `updateOptions({speaker})` (声が変わるときだけ) → `speakText`。
+  `discardOnStop = true` (#72: 再生中に止めたアダプタは二度と喋らないので捨てる — 現行の `interrupt()` と同じ)。
+- `BackendSynth` = `invoke("synthesize_speech")` → base64 → `Uint8Array` → `Blob` → `URL.createObjectURL` →
+  `HTMLAudioElement.play()`。`ended` / `error` で resolve / reject、**`stop()` は `pause()` して自分で reject する**
+  (#72 の罠 = ライブラリの stop が play の Promise を settle しない、を自分では踏まない形)。Object URL は
+  `ended` / `error` / `stop()` のいずれでも revoke する (1 文 1 URL、取りこぼし無し)。`discardOnStop = false` —
+  インスタンスが持つ状態は再生中の `Audio` 1 つだけで、`stop()` がそれを畳むので作り直す理由が無い。
+
+鎖 (`chain`) / 世代 (`generation`) / `skipThrough` は `Synth` の外にあり**不変**。`interrupt()` は
+`synth.stop()` → `discardOnStop && wasPlaying` のときだけ捨てる、と一般化する (Library では現行と同じ、
+Backend では捨てない)。**挙動の分岐は `discardOnStop` の 1 bit に閉じ込める**。
 
 ### D2. backend = `tts.rs` (encode / decode 純関数 + HTTP ドライバ)
 
-- command `synthesize_speech(config: TtsRouteConfig, text: String) -> SpeechView`。
-- `TtsRouteConfig { endpoint (全体 URL), model, voice: Option, speed: f32, timeout_secs: Option<u64>, api_key: Option }`。
-- `SpeechView { mime, data_b64 }` — 画像と同じく base64 文字列で運ぶ (WAV 1 文 ≈ 350 KB → 470 KB。
-  `tauri::ipc::Response` の生バイト返しは repo に先例が無いので v1 は base64、measure が要れば v2)。
-- 失敗は構造化: `Http { status, body_head }` / `Timeout { secs }` / `Connect` / `Shape` (audio でない)。
-  frontend の試聴はこれをそのまま文面に出す (今は 404 も CORS も timeout も「失敗」の一語)。
-- 既定タイムアウト **120 秒** (#114 の 45 秒 + モデル読み込みの余地。あらすじ要約の既定と同じ値)。
-  `timeout_secs` は設定サウンドタブの select (60 / 120 / 180 / 300 / 600、0 = 既定) で、あらすじの
-  `set_summary_timeout` と同じ「0 = 空 = backend の既定」の流儀。
-- CSP は backend に無いので触らない。`media-src blob:` は既にある。
+command `synthesize_speech(config: TtsRouteConfig, text: String) -> Result<SpeechView, TtsRouteError>`。
 
-### D3. 鍵は v1 では持たない (未決 1)
+```rust
+pub struct TtsRouteConfig {
+    pub endpoint: String,          // エンドポイント全体 (…/v1/audio/speech)
+    pub model: String,             // 必須 (空は Shape で弾く = ライブラリと同じ)
+    pub voice: String,             // 必須。空は frontend で `none` に正規化済み (D5)。encode は常に送る
+    pub speed: f32,                // 0.25〜4.0 に clamp (OpenAI の範囲)
+    pub timeout_secs: Option<u64>, // None = 既定 120。frontend が UI の 0 を None に写す (D6)
+}
+pub struct SpeechView { pub mime: String, pub data_b64: String }
+pub enum TtsRouteError {
+    Http { status: u16, body_head: String },   // 4xx/5xx。本文先頭 200 字
+    Timeout { secs: u64 },                     // 待ち時間切れ。現在値を載せる (OutputTruncated と同じ理由)
+    Network { detail: String },                // 接続拒否・DNS・途中切断 (reqwest の非 status エラー全部)
+    Shape { detail: String },                  // 応答が audio/* でない・本文空・設定不備 (model 空)
+}
+```
 
-Irodori の bearer は任意で既定 unset。backend 経由なら鍵が WebView に載らないので、OpenAI 本家や
-クラウドの `/v1/audio/speech` も同じ口で使えるようになる — これは 2026-07-22 に CSP で**閉じた**判断の
-再訪になるので、v1 は鍵欄を作らず、欲しくなったら `TTS_API_KEY_OPENAI_COMPAT` を `SECRET_ENV_KEYS` に
-足す (1 欄 + 資格情報ストア 1 キー)。
+- **鍵は持たない** (v1)。`api_key` 欄も bearer も無い。将来のクラウド対応は data_contract に名前 `TTS_API_KEY_OPENAI_COMPAT` を
+  **予約として書くだけ** (型には足さない = 足すときは additive)。
+- 返りは base64 文字列 (画像と同じ運び方・1 文 WAV ≈ 350 KB → 470 KB)。**frontend は data URL にしない** (CSP の
+  `media-src` に `data:` が無い) — `atob → Uint8Array → Blob → createObjectURL` に統一する (D1)。コピー 1 回は許容。
+  生バイト (`tauri::ipc::Response`) は未決 4 (v2)。
+- mime は応答の `content-type` から取り、`audio/` で始まらなければ `Shape`。
+- **CORS の種別は無い** — backend の reqwest はブラウザではないので CORS が存在しない。#114 の `net::ERR_FAILED` は
+  この経路では**起きない**のが処方そのもので、残る失敗は上の 4 種で尽きる。
+- 画像生成 (`image_gen.rs`) と同じ置き場・同じ流儀 (encode / decode は純関数・HTTP は 1 関数)。
 
-### D4. 中断と backend の進行中リクエスト (未決 2)
+### D3. 鍵は v1 の型から外す (査読 1 の反映)
 
-`stop()` / `skip()` は frontend の再生を止めるが、backend で走っている reqwest は止めない (Tauri の
-command に cancel は無い)。結果は世代で捨てる。サーバー側は `IRODORI_MAX_CONCURRENT_SYNTHESIS=1`
-なので、捨てたリクエストが終わるまで次の文は待たされる (CPU なら最大 45 秒)。v1 はこの待ちを許容し、
-効くなら v2 で `tokio::select!` + 世代 token で drop する。
+起草時は `api_key: Option` を持ちつつ「v1 では持たない」と書いていた = 型が「鍵あり」の契約を名乗っていた。
+rev2 は**型から消す**。`SECRET_ENV_KEYS` にも足さない。クラウドの `/v1/audio/speech` を開くかは 2026-07-22 に
+CSP で閉じた判断の再訪なので別 spec (37 以降) で、そのときに `api_key: Option` を additive に足す。
 
-### D5. 分割は文単位のまま (未決 3)
+### D4. 中断の契約 (査読 5 の反映)
 
-`splitSentence` で 1 文 1 リクエスト (他エンジンと同じ)。Irodori 側にも 80 字のチャンク分割があり、
-`voice` 未指定だとチャンクごとに声が変わりうる (README) — Kataribe は `voice` を必ず送る形にするので
-(話者 ID が空なら `none` を既定で送る = **#114 の 400 を UI の説明なしに踏ませない**)、二重分割は
-声の揺れにならない。段まとめ送りは CPU だと 1 段 数分になるので採らない。
+- `stop()` / `skip()` → `interrupt()` → `synth.stop()`。`BackendSynth` は再生中の `Audio` を `pause()` し URL を revoke し、
+  進行中の `speak()` を reject する (鎖の await は必ず settle する = 現行の不変条件を保つ)。
+- **進行中の `invoke` は止めない** (Tauri の command に cancel は無い)。`speak()` は `invoke` が解決した後・再生の前に
+  `generation` を見て、古ければ結果を捨てる (再生しない・URL も作らない)。
+- **サーバー側の直列待ちは世代をまたぐときだけ起きる**: 同じ鎖 (同じ世代) の中は元から 1 文ずつ直列なので余計な待ちは
+  無い。`stop()` で捨てた合成がサーバーで走っている間に次のターンの最初の文を投げると、Irodori は
+  `MAX_CONCURRENT_SYNTHESIS=1` なので**捨てた 1 文ぶん** (この機で最大 45 秒) 待たされる。待ちは次のターンの
+  読み上げの**出だし**に出る (鎖の途中に無音が入るのではない)。v1 はこれを許容し、読み上げの操作列に
+  「合成中」の表示を出して無音でないことを示す。drop (`tokio::select!` + 世代 token) は未決 2 (v2)。
 
-### D6. 計器 (spec 30) には載せない
+### D5. `voice` は必ず送る・空は frontend で `none` に (査読 2 の反映)
+
+- 型は `voice: String` (必須)。`Option` は持たない — 「送らない」と「`none` を送る」を 1 つの None に重ねると
+  型が嘘になる (査読 2)。
+- 空 → `none` の正規化は **`tts.ts` の責務** (`toRouteConfig(settings)`)。`none` は Irodori の Voice Design の
+  語彙で、他の OpenAI 互換サーバー (OpenAI 本家の `alloy` 等・openedai-speech) では 400 になりうる — それは
+  **D2 の `Http { status, body_head }` が本文ごと画面に出す**ので、沈黙にはならない。UI の話者 ID の説明に
+  「空なら `none` を送る (Irodori の参照なし)。他のサーバーはそのサーバーの voice 名を入れる」を書く。
+- **80 字チャンクと声の揺れ (査読「その他」3 の反映)**: Irodori は `voice` が参照つき (voices/ のファイル) なら
+  チャンク間で声を保つが、**`none` (参照なし) ではチャンクごとに調子が変わりうる**と README が明記している。
+  起草時の「`voice` を送るので揺れない」は `none` には当てはまらない — **訂正**。Kataribe 側で 80 字に再分割しても
+  参照が無い限り揺れは消えないので、v1 は再分割しない。安定した声が要るなら voices/ に参照を置いてその名前を
+  話者 ID に入れる (作法として UI の説明と package_spec には書かない = プレイヤー側の設定)。Phase D で `none` の
+  揺れを 1 ターンぶん耳で確かめ、耐えないなら Irodori 固有欄 `irodori.chunking_enabled=false` の opt-in を v2 で検討
+  (汎用の口に vendor 欄を混ぜる判断になるので v1 では入れない)。
+
+### D6. タイムアウト (査読 4 と「その他」4 の反映)
+
+- 既定 **120 秒**は**温まった後の 1 文** (45 秒) 向け。**初回 439 秒は 120 秒では必ず切れる**ので、起草時の
+  select だけでは「初回は必ず失敗し、理由が分からない」になっていた。処方 2 つ:
+  1. **試聴はウォームアップを兼ねる**: `test()` は設定値と **600 秒の大きい方**で待ち、ボタンの説明に
+     「初回はモデルの読み込みで数分かかることがある。サーバー側で `IRODORI_PRELOAD=true` にすれば起動時に読む」を書く。
+     (`/health` はモデルを読まないので、ウォームアップは実合成でしか起きない。)
+  2. **本番の読み上げの Timeout は文面で理由を言う**: 失敗の表示 (読み上げの操作列のトースト) に
+     「N 秒で待ち切れなかった。初回ならサーバーがモデルを読み込み中かもしれない — 設定の試聴で温めるか待ち時間を伸ばす」。
+     読み上げの失敗は従来どおりプレイを止めない (その文が飛ぶ) が、**沈黙にはしない**。
+- `timeout_secs` の変換規則: UI の select は `0 = 既定` の数値 (localStorage `kataribe.tts.timeoutSecs`、既存の
+  `TtsSettings` に欄を足す)。`toRouteConfig` が **`0` を `null` (= Rust の `None`)** に写す。backend は
+  `timeout_secs.unwrap_or(120).max(5)`。あらすじの `set_summary_timeout` は「0 を空の env に写す」形で**同じ規則の
+  別の表現** (あちらは env が器、こちらは Option)。
+
+### D7. Phase 0 で凍結する中身 (「その他」2 の反映)
+
+Phase 0 は**決めない**。rev2 の D2 (型 3 つと失敗 4 種・base64・mime の取り方) / D5 (`voice` 必須・空 → `none` は frontend) /
+D6 (既定 120・`0 → None`・試聴は max(設定, 600)) を data_contract `TtsBackendRoute` に**写す**だけにする。
+Phase A は凍結済みの形を実装する。
+
+### D8. 計器 (spec 30) には載せない
 
 ローカル TTS は課金が無く、Irodori の応答にも usage は無い。画像の `ImageLedger` に相当するものは v1 では持たない。
 
@@ -113,33 +182,52 @@ command に cancel は無い)。結果は世代で捨てる。サーバー側は
 
 ## Phase
 
-- **0**: data_contract に `TtsBackendRoute` (command の形・既定タイムアウト・失敗の種別・鍵なし) を凍結。
-- **A (backend)**: `tts.rs` の encode (body の形・`voice` 既定 `none`・bearer は None なら送らない) /
-  decode (content-type から mime、audio でなければ Shape) を純関数で + command + 登録。
-  PoC: 純関数 2〜3 本 + **ローカル HTTP サーバから WAV を流して command の入口を通す 1 本**
-  (#109 の教訓 = 純関数だけでは配線の穴が見えない) + live 1 本 (ignored、実 Irodori)。
-- **B (frontend seam)**: `Synth` 2 実装、`speakParts` / `test` / `interrupt` を seam 越しに。他 3 エンジンの
-  経路は **mount テストで byte 一致**は取れないので、ライブラリ adapter への呼び出し列 (speakText / stop /
-  updateOptions の順) を偽装ライブラリで固定している既存テスト (spec 35 Phase D) が回帰を見る。
-  `BackendSynth` は `invoke` を偽装して「1 文 1 invoke・停止で reject・声は欄で渡る」を mount で固定。
-- **C (設定)**: サウンドタブに待ち時間の select + 失敗文言 (status / timeout / connect を区別)。
-  話者 ID の説明に「Irodori は `none` か voices/ のファイル名」。
-- **D (実測)**: Irodori-TTS-Server (CPU) で 1 ターンぶん読み切る / 試聴の失敗 3 種が区別して出る /
-  `stop()` 直後の次ターンがサーバーの直列待ちでどれだけ遅れるか (D4 の判断材料)。GPU 機は未測定のまま申告。
+- **0**: data_contract に `TtsBackendRoute` (D7 の中身) + 予約名 `TTS_API_KEY_OPENAI_COMPAT` (未使用) を凍結。
+- **A (backend)**: `tts.rs` の encode (body = `{model, input, voice, speed}`・`voice` は常に送る・clamp) / decode
+  (content-type → mime・`audio/*` でなければ Shape) を純関数で + command + 登録。
+  PoC: 純関数 2〜3 本 + **ローカル HTTP サーバから WAV を流して command の入口を通す 1 本** (#109 の教訓 =
+  純関数だけでは配線の穴が見えない。400 / 非 audio / タイムアウトの 3 失敗が 4 種のどれに写るかもここで) +
+  live 1 本 (ignored、実 Irodori)。
+- **B (frontend seam)**: `Synth` 2 実装、`speakParts` / `test` / `interrupt` を seam 越しに。`LibrarySynth` は
+  ライブラリ adapter への呼び出し列 (speakText / stop / updateOptions の順) を偽装ライブラリで固定している既存テスト
+  (spec 35 Phase D) が回帰を見る。`BackendSynth` は `invoke` を偽装して「1 文 1 invoke・`voice` は空なら `none`・
+  stop で reject・古い世代の結果は再生しない・URL は必ず revoke」を mount で固定。
+- **C (設定と表示)**: サウンドタブに待ち時間の select (60 / 120 / 180 / 300 / 600、0 = 既定) + 試聴は max(設定, 600) +
+  失敗文言 (Http / Timeout / Network / Shape を区別、Timeout は初回の読み込みの可能性を言う) + 話者 ID の説明 +
+  読み上げの操作列に「合成中」。
+- **D (実測)**: Irodori-TTS-Server (CPU) で 1 ターンぶん読み切る / 試聴の初回 (モデル読み込み) が 600 秒の中で通る /
+  失敗 4 種が区別して出る / `stop()` 直後の次ターンの出だしの待ち (D4) / `none` のチャンク間の声の揺れ (D5)。
+  GPU 機は未測定のまま申告。
 
 ---
 
 ## 未決
 
-1. 鍵欄を作るか (= クラウド TTS を開くか)。v1 は作らない (D3)。
-2. backend の進行中リクエストの drop (D4)。v1 は許容。
-3. 文単位 / 段単位 (D5)。v1 は文単位。
-4. base64 か生バイト (`tauri::ipc::Response`) か。v1 は base64 (先例に揃える)。
+1. ~~鍵欄~~ → **v1 の型から外すと決めた** (D3)。クラウド対応は別 spec。
+2. backend の進行中リクエストの drop (D4)。v1 は許容 + 「合成中」表示。
+3. ~~文単位 / 段単位~~ → 文単位 (D5)。`none` の揺れは Irodori の性質で、Kataribe の分割では消えない。
+   `irodori.chunking_enabled=false` の opt-in は v2 の検討事項。
+4. base64 か生バイト (`tauri::ipc::Response`) か。v1 は base64 (先例に揃える・1 文 470 KB で測って重ければ v2)。
 
-## 接地の限界 (起草時点)
+## 査読の反映記録 (2026-10-19 rev2)
+
+| 指摘 | 受け方 |
+|---|---|
+| 1. `api_key` が D2 / D3 / Phase 0 で三つ巴 | **受けた**。型から消し、名前だけ data_contract に予約 (D3) |
+| 2. `voice: Option` と「必ず送る」の矛盾 | **受けた**。`voice: String` 必須、空 → `none` は `tts.ts` (D5)。`none` が Irodori の語彙である点を追記 |
+| 3. 転送形式が D1 / D2 / CSP で不一致 | **受けた**。base64 → decode → Blob → ObjectURL に統一、revoke の契機を明記、画像の data URL の引用を撤回 (D1 / D2) |
+| 4. 120 秒が初回 439 秒を救えない | **受けた**。試聴 = ウォームアップ (max(設定, 600)) + Timeout の文面で初回の可能性を言う + `IRODORI_PRELOAD` の案内 (D6) |
+| 5. `stop()` と直列待ちの関係 | **受けた**。`discardOnStop` で分岐を 1 bit に閉じ、待ちは「世代をまたぐときの次ターンの出だしだけ」と限定、「合成中」表示 (D1 / D4) |
+| 他 1. `Cors / Network` が無い | **半分**。backend の reqwest に CORS は存在しない (ブラウザの機構) ので `Cors` は作らない。`Connect` は `Network { detail }` に広げ、DNS・途中切断も拾う (D2) |
+| 他 2. Phase 0 の凍結と Phase A の決定の順序逆転 | **受けた**。決める場所を D2 / D5 / D6 に寄せ、Phase 0 は写すだけ (D7) |
+| 他 3. 80 字チャンクで声が保たれる保証が無い | **受けた・訂正**。`none` は参照なしなので README どおり揺れうる。再分割では消えないので v1 は手を入れず Phase D で測る (D5) |
+| 他 4. `0 → None` の変換が書かれていない | **受けた**。`toRouteConfig` が 0 を null に、backend は `unwrap_or(120).max(5)` (D6) |
+
+## 接地の限界 (rev2 時点)
 
 - CORS で止まることは **dev サーバ (localhost:1420) で観測**した。配布ビルドの WebView も同じ Origin
   規則なので同じはずだが未確認。
 - 45 秒/文はこの機 (GPU なし) の値。GPU 機では 30 秒以内に収まる可能性があり、そのときは 3 の動機が
   消えて 2 (CORS) だけが残る — どちらにせよ backend 経由で両方消える。
-- Irodori 以外の OpenAI 互換 TTS サーバーで CORS がどうかは測っていない (openedai-speech 等)。
+- Irodori 以外の OpenAI 互換 TTS サーバーで CORS がどうか・`none` を受けるかは測っていない (openedai-speech 等)。
+- `none` のチャンク間の揺れは README の記述に依っており、耳で確かめていない (Phase D)。
