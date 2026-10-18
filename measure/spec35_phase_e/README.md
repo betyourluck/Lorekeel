@@ -23,6 +23,8 @@
 
 計画では 2 本目を yuminaristars にしていたが、**CLI の `--package` はキャンペーン形式 (入口が `campaign.yaml`) を
 読めない** (GUI は読める) ので、マスターがよく遊んでいる単発の ui_and_ruka に替えた。
+この欠けは 2026-10-16 に直した (`689afbe`) ので、CLI の `play --package` は yuminaristars を読める。
+ただし `run.ps1` の `-Package` は 3 本の固定の組なので、回すには台本と `$packages` への追加が要る。
 
 ## 回し方
 

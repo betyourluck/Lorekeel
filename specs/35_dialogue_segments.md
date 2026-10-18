@@ -576,7 +576,8 @@ Phase E の目的は、D2 / D3 / D7 で「Phase E で見て決める」と先送
   確かめた。`report.py` は E-1 2 周目のデータで表と読み物が出ることと、「却下後に消えた」の判定 (却下の原因でない op と
   台詞の段が消えた件を拾い、話者が原因の却下では拾わない) を作り物の 1 ターンで確かめた。
 - **CLI の欠け (別の作業)**: `play --package` がキャンペーン形式を読めない。GUI と同じ `load_campaign_package` +
-  `advance_campaign_injected` に揃えれば直る。
+  `advance_campaign_injected` に揃えれば直る。**←✅2026-10-16 に別のセッションで修正** (`689afbe`、main へマージ `98fb5be`)。
+  yuminaristars も CLI で読めるようになったが、E-2 の台本と `run.ps1` は ui_and_ruka のまま (道具と計画は変えていない)。
 
 ## 改訂: 単騎の主人公の台詞 (2026-10-16 ユーザー決定)
 
