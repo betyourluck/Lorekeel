@@ -3098,3 +3098,11 @@ spec 35 の実 LLM 確認は gpt-6-luna と muse-spark で、Gemini は E-2 の 
 **接地の限界**: 修正後の実 API は未確認 (鍵は私の手元に無い)。`nullable: true` が Gemini に
 受理されることは API リファレンスの Schema 定義 (OpenAPI 3.0 サブセット・`nullable` 欄あり) に依る
 推論で、実機は次のターンでユーザーが見る。
+
+**追補 (2026-10-19 同日)**: 修正後の実 API は **Green** (ユーザー実測、gemini-4-argon で 1 ターン受理、
+prompt 7181 / completion 324、n=1)。同じログに `[LLM_CACHE] cachedContent 作成失敗 → full request に
+フォールバック: … Explicit caching is not supported for models/gemini-4-argon.` が出ていた — spec 13 の
+明示キャッシュをこのモデルが持たず、作成の失敗は handle に残らないので**毎ターン同じ 400 を踏み直す**
+形だった (ターンは落ちない・課金も無い・往復と log だけ)。作成を 400 で拒まれた fingerprint をセッション内で
+覚えて Bypass する latch を入れた (specs/13 の追補)。**fallback が正しく働いているときほど、その失敗が
+毎回起きていることは log を読まないと分からない** — 「落ちない」と「無駄が無い」は別。

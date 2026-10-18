@@ -338,14 +338,23 @@ pub(crate) enum CacheAction {
 
 /// cache 判定 (純粋・spec 13 D2/D3)。`enabled` off / `static_chars < min_chars` は Bypass。
 /// handle の fingerprint が現在と一致すれば Reuse、それ以外 (None/不一致) は Create。
+///
+/// `rejected_fp`: 作成を **400 で拒まれた** fingerprint (セッション内 latch、2026-10-19 実機
+/// `Explicit caching is not supported for models/gemini-4-argon.`)。400 は同じ静的プレフィックスに
+/// 対して決定論なので、一致する間は Create せず Bypass — 失敗は handle に残らず毎ターン同じ 400 を
+/// 踏み直していた。別シナリオ / 別モデルは fingerprint が変わるので改めて試す。
 pub(crate) fn decide_cache_action(
     enabled: bool,
     min_chars: usize,
     static_chars: usize,
     current_fp: u64,
     handle: Option<&CacheHandle>,
+    rejected_fp: Option<u64>,
 ) -> CacheAction {
     if !enabled || static_chars < min_chars {
+        return CacheAction::Bypass;
+    }
+    if rejected_fp == Some(current_fp) {
         return CacheAction::Bypass;
     }
     match handle {

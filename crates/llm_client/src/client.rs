@@ -156,6 +156,12 @@ pub struct LlmClient {
     /// spec 13: Gemini 明示キャッシュのセッションハンドル。fingerprint が現在の静的プレフィックスと
     /// 一致すれば reuse、違えば作り直す (campaign 遷移等)。失効時はクリアして full request へ透過。
     gemini_cache: Mutex<Option<gemini::CacheHandle>>,
+    /// spec 13: `cachedContents` の作成を **400 で拒まれた** fingerprint (セッション内 latch)。
+    /// 一致する間は作成を再試行しない — `Explicit caching is not supported for models/…` のように
+    /// モデルが明示キャッシュを持たない場合、fallback でターンは落ちないが毎ターン同じ 400 を
+    /// 踏み直していた (2026-10-19 実機 gemini-4-argon)。5xx / ネットワークは一過性なので覚えない。
+    /// `anthropic_forced` / `tool_mode` と同じ「400 から学ぶ」流儀。
+    gemini_cache_rejected: Mutex<Option<u64>>,
     /// Anthropic ネイティブ経路で名指しの `tool_choice` を送ってよいか (セッション内 latch)。
     /// 初期値 true。`tool_choice: type "tool" and "any" are not supported for this model.` の
     /// 400 を受けたら false に倒し、以後は auto + 一行の指示で送る (Opus 5.5 / Sonnet 5.5 /
@@ -195,6 +201,7 @@ impl LlmClient {
             cache_stat: Mutex::new(CacheStat { floor, ..CacheStat::default() }),
             call_seq: std::sync::atomic::AtomicU64::new(0),
             gemini_cache: Mutex::new(None),
+            gemini_cache_rejected: Mutex::new(None),
             anthropic_forced: std::sync::atomic::AtomicBool::new(true),
             role: String::new(),
             usage: Mutex::new(LlmLedger::default()),
@@ -843,12 +850,14 @@ impl LlmClient {
         let action = {
             let guard = self.gemini_cache.lock();
             let handle = guard.as_ref().ok().and_then(|g| g.as_ref());
+            let rejected = self.gemini_cache_rejected.lock().ok().and_then(|g| *g);
             gemini::decide_cache_action(
                 self.config.gemini_cache_enabled,
                 self.config.gemini_cache_min_chars,
                 static_chars,
                 fp,
                 handle,
+                rejected,
             )
         };
         let cache_name = match action {
@@ -857,8 +866,17 @@ impl LlmClient {
             gemini::CacheAction::Create => match self.gemini_create_cache(&req, fp).await {
                 Ok(name) => Some(name),
                 Err(e) => {
+                    // 400 は同じ静的プレフィックスに対して決定論 (モデルが明示キャッシュを持たない・
+                    // 最小トークン未満 等) → この fingerprint では二度と作りに行かない。
+                    let latched = matches!(e, LlmError::Api { status: 400, .. });
+                    if latched {
+                        if let Ok(mut g) = self.gemini_cache_rejected.lock() {
+                            *g = Some(fp);
+                        }
+                    }
                     if std::env::var("LLM_CACHE_DEBUG").is_ok() {
-                        eprintln!("[LLM_CACHE] cachedContent 作成失敗 → full request にフォールバック: {e}");
+                        let note = if latched { " (このセッションでは再試行しない)" } else { "" };
+                        eprintln!("[LLM_CACHE] cachedContent 作成失敗 → full request にフォールバック{note}: {e}");
                     }
                     None
                 }

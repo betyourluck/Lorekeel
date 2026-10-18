@@ -184,3 +184,26 @@ Anthropic は encode で system 末尾に cache_control を差すだけ (無状�
    掃除するか。掃除しないと TTL まで storage 課金が残る — 短 TTL なら気にしない方針を推す。
 5. **他プロバイダへの一般化は不要** — Anthropic 済 / OpenAI 互換・Grok は明示 API 無し。
    本 spec は Gemini 単独で閉じる (spec 12 の adapter 分離の恩恵)。
+
+## 追補 (2026-10-19) — 明示キャッシュを持たないモデルへの latch
+
+ユーザー実機 (`gemini-4-argon`) で `POST /v1beta/cachedContents` が
+`Explicit caching is not supported for models/gemini-4-argon.` (400 INVALID_ARGUMENT) を返した。
+D2 の fallback どおりターンは落ちない (full request で 7181 / 324 が通った) が、**作成の失敗は
+`CacheHandle` に残らない**ので `decide_cache_action` は次のターンも `Create` を返し、毎ターン同じ
+400 を 1 回ずつ踏み直していた (課金は無い・往復と `[LLM_CACHE]` の行だけ増える)。
+
+処方: `LlmClient.gemini_cache_rejected: Mutex<Option<u64>>` に**作成を 400 で拒まれた fingerprint** を
+覚え、`decide_cache_action(.., rejected_fp)` が一致する間は `Bypass` を返す。fingerprint 単位なので
+別シナリオ・別モデル (fingerprint に model が入る) では改めて試す。5xx / ネットワーク失敗は一過性
+なので覚えない (従来どおり次のターンで再試行)。`anthropic_forced` (failures #108) /
+`tool_mode_downgrade` (#78) と同じ「400 から学ぶ」セッション内 latch。
+
+PoC: `gemini_cache_create_rejected_with_400_is_not_retried_in_session` — ローカル HTTP サーバに
+400 → 生成 → 生成 の台本を持たせ、受けたリクエストの要求行を記録して「作成 1 回・生成 2 回」を固定
+(Red = latch を外すと 2 ターン目が作成を叩き直し、台本の 3 本目を作成の応答として読んで落ちる)。
+`decide_cache_action` の純関数テストにも拒まれた fp → Bypass / 別 fp → Create を追加。
+
+接地の限界: gemini-4 系で**暗黙**キャッシュが効くか (turn 2 以降の `cachedContentTokenCount`) は
+未測定。効かなければ gemini-4 ではキャッシュなしで回ることになる (3.5-flash の ~8000 トークン崖
+#54 とは別の話)。

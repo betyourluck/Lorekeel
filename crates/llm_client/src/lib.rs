@@ -1447,11 +1447,22 @@ mod tests {
     /// 互換経路にだけ入れて Anthropic / Gemini 経路に入れ忘れていた (2026-10-05) のは、まさに
     /// 純関数のテストでは見えない配線の穴だった。
     fn serve_scripted(bodies: Vec<&'static str>) -> String {
+        serve_scripted_with(bodies.into_iter().map(|b| (200, b)).collect()).0
+    }
+
+    /// [`serve_scripted`] の一般形: 応答ごとの状態コードを指定でき、受けたリクエストの
+    /// 要求行 (`POST /v1beta/cachedContents HTTP/1.1` 等) を到着順に記録して返す —
+    /// 「どの口を何回叩いたか」を数える PoC (明示キャッシュの latch) 用。
+    fn serve_scripted_with(
+        responses: Vec<(u16, &'static str)>,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen_w = seen.clone();
         std::thread::spawn(move || {
-            for body in bodies {
+            for (status, body) in responses {
                 let (mut s, _) = listener.accept().unwrap();
                 // ヘッダ終端まで読み、Content-Length 分の本文を読み切ってから返す
                 // (読み残すと送信側がリセットを受けうる)。
@@ -1465,6 +1476,7 @@ mod tests {
                     }
                 };
                 let head = String::from_utf8_lossy(&buf[..head_end]).to_ascii_lowercase();
+                seen_w.lock().unwrap().push(head.lines().next().unwrap_or("").to_string());
                 let len: usize = head
                     .lines()
                     .find_map(|l| l.strip_prefix("content-length:"))
@@ -1475,13 +1487,42 @@ mod tests {
                     buf.extend_from_slice(&chunk[..n]);
                 }
                 let resp = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 s.write_all(resp.as_bytes()).unwrap();
             }
         });
-        format!("http://{addr}")
+        (format!("http://{addr}"), seen)
+    }
+
+    /// 【明示キャッシュの latch (2026-10-19、ユーザー実機 gemini-4-argon)】`cachedContents` の作成が
+    /// `Explicit caching is not supported for models/gemini-4-argon.` の 400 で拒まれると、fallback で
+    /// ターンは落ちないが、失敗は handle に残らないので**毎ターン 1 回ずつ同じ 400 を踏み直す**
+    /// (課金は無いが往復と log が増える)。400 は同じ静的プレフィックスに対して決定論なので、
+    /// 拒まれた fingerprint はそのセッションで再試行せず Bypass する。5xx / ネットワークは latch しない。
+    #[tokio::test]
+    async fn gemini_cache_create_rejected_with_400_is_not_retried_in_session() {
+        use crate::config::Provider;
+        const REJECT: &str = r#"{"error":{"code":400,"message":"Explicit caching is not supported for models/gemini-4-argon.","status":"INVALID_ARGUMENT"}}"#;
+        const GEN: &str = r#"{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":3,"totalTokenCount":13}}"#;
+        // 台本 = 作成 400 → 1 ターン目の生成 → 2 ターン目の生成。latch が無いと 2 ターン目も作成を
+        // 叩きに行き、台本の 3 本目 (生成の本文) を cachedContents の応答として読んでしまう。
+        let (base, seen) = serve_scripted_with(vec![(400, REJECT), (200, GEN), (200, GEN)]);
+        let mut cfg = LlmConfig::new(base, "sk-test", "gemini-4-argon");
+        cfg.provider = Provider::Gemini;
+        cfg.max_retries = 1;
+        cfg.gemini_cache_enabled = true;
+        cfg.gemini_cache_min_chars = 0; // 小さな静的プレフィックスでもサイズゲートを通す
+        let c = LlmClient::new(cfg).unwrap();
+        let r1 = c.generate(user_msgs()).await;
+        let r2 = c.generate(user_msgs()).await;
+        let lines = seen.lock().unwrap().clone();
+        assert_eq!(r1.as_deref().ok(), Some("ok"), "1 ターン目: 作成 400 → fallback で通る: {r1:?} {lines:?}");
+        assert_eq!(r2.as_deref().ok(), Some("ok"), "2 ターン目: 作成を再試行せず通る: {r2:?} {lines:?}");
+        let creates = lines.iter().filter(|l| l.contains("cachedcontents")).count();
+        let gens = lines.iter().filter(|l| l.contains("generatecontent")).count();
+        assert_eq!((creates, gens), (1, 2), "作成は 1 回だけ・生成は 2 回: {lines:?}");
     }
 
     fn scripted_client(provider: crate::config::Provider, bodies: Vec<&'static str>) -> LlmClient {
@@ -1889,17 +1930,26 @@ mod tests {
     fn gemini_decide_cache_action_reuse_create_bypass() {
         use gemini::{decide_cache_action, CacheAction, CacheHandle};
         let (big, small, min) = (5000usize, 100usize, 4000usize);
-        assert!(matches!(decide_cache_action(false, min, big, 1, None), CacheAction::Bypass), "無効化");
-        assert!(matches!(decide_cache_action(true, min, small, 1, None), CacheAction::Bypass), "サイズゲート未満");
-        assert!(matches!(decide_cache_action(true, min, big, 1, None), CacheAction::Create), "handle 無し→作成");
+        assert!(matches!(decide_cache_action(false, min, big, 1, None, None), CacheAction::Bypass), "無効化");
+        assert!(matches!(decide_cache_action(true, min, small, 1, None, None), CacheAction::Bypass), "サイズゲート未満");
+        assert!(matches!(decide_cache_action(true, min, big, 1, None, None), CacheAction::Create), "handle 無し→作成");
         let h = CacheHandle { name: "cachedContents/x".into(), fingerprint: 42 };
-        match decide_cache_action(true, min, big, 42, Some(&h)) {
+        match decide_cache_action(true, min, big, 42, Some(&h), None) {
             CacheAction::Reuse(n) => assert_eq!(n, "cachedContents/x", "fp 一致→既存を参照"),
             other => panic!("Reuse を期待: {other:?}"),
         }
         assert!(
-            matches!(decide_cache_action(true, min, big, 99, Some(&h)), CacheAction::Create),
+            matches!(decide_cache_action(true, min, big, 99, Some(&h), None), CacheAction::Create),
             "fp 不一致 (別シナリオ)→作り直し"
+        );
+        // 作成を 400 で拒まれた fingerprint は Bypass (latch)、別の fingerprint なら改めて Create。
+        assert!(
+            matches!(decide_cache_action(true, min, big, 7, None, Some(7)), CacheAction::Bypass),
+            "拒まれた fp → 再試行しない"
+        );
+        assert!(
+            matches!(decide_cache_action(true, min, big, 8, None, Some(7)), CacheAction::Create),
+            "別 fp (別シナリオ/別モデル) → 改めて作成"
         );
     }
 
