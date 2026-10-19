@@ -14,6 +14,7 @@ mod editor;
 mod editor_lint;
 mod editor_vocab;
 mod image_gen;
+mod tts;
 mod ref_stock;
 mod rename;
 mod secret_store;
@@ -1486,6 +1487,16 @@ struct GeneratedImageView {
 /// → ロックを離す → プロンプト書き (generate) と画像 HTTP (数十秒〜分) を**ロック無しで**待つ →
 /// ②再ロックして世代が一致すれば原本を置く。生成の間ターンが回せなくなるのを避けるため。
 /// 世代不一致 (生成中に新規/ロード/遷移) は破棄して Err (トーストに理由)。
+/// spec 36: 読み上げの OpenAI 互換経路 (1 文を合成して base64 で返す)。鍵は持たない。
+/// 失敗は `TtsRouteError` (serde tag `kind`) のまま返し、frontend が 4 種を区別して文面にする。
+#[tauri::command]
+async fn synthesize_speech(
+    config: tts::TtsRouteConfig,
+    text: String,
+) -> Result<tts::SpeechView, tts::TtsRouteError> {
+    tts::synthesize(&config, &text).await
+}
+
 #[tauri::command]
 async fn generate_image(
     app: tauri::AppHandle,
@@ -5768,6 +5779,7 @@ pub fn run() {
             set_image_api_key,
             image_gen_probe,
             generate_image,
+            synthesize_speech,
             save_generated_image,
             list_settings_sheets,
             set_reference_slot,

@@ -665,6 +665,9 @@ interface GameState {
   // クイックトグルの ON/OFF (会話ペイン右下、localStorage 永続、未設定は ON)。
   // 機能スイッチの内側で効く (切れば記憶する)。
   ttsEnabled: boolean;
+  // backend で合成中 (spec 36、OpenAI 互換経路だけ)。操作列が「合成中」を出す —
+  // サーバーの直列待ち (次ターンの出だし) を無音にしない。
+  ttsBusy: boolean;
   // backend があらすじ圧縮中 (synopsis-compacting イベント)。ローディング文言を切り替える。
   compacting: boolean;
   // backend がエピローグ生成中 (epilogue-writing イベント、spec 11)。同じくローディング文言用。
@@ -755,6 +758,7 @@ export const useGameStore = defineStore("game", {
       factsPolicy: "locked",
       ttsFeature: tts.loadFeature(),
       ttsEnabled: tts.loadEnabled(),
+      ttsBusy: false,
       imageGen: loadImageGenSettings(),
       generatedImage: null,
       // この一枚への追加指示 (spec 27 B-2)。**揮発** — localStorage に入れない。恒久にしたい
@@ -878,6 +882,20 @@ export const useGameStore = defineStore("game", {
       this.ttsFeature = on;
       tts.saveFeature(on);
       if (!on) tts.stop();
+    },
+    // spec 36: backend 経路の「合成中」と失敗を store へ橋渡しする (App.vue の onMounted から一度)。
+    // 失敗はトースト — 読み上げの失敗はプレイを止めないが、沈黙にはしない。
+    initTtsBridge(): () => void {
+      const offBusy = tts.onSynthesizing((on) => {
+        this.ttsBusy = on;
+      });
+      const offFail = tts.onRouteFailure((e) => {
+        this.logToast = t("store.ttsRouteFailed", { msg: tts.describeError(e, t) });
+      });
+      return () => {
+        offBusy();
+        offFail();
+      };
     },
     // 読み上げの ON/OFF。OFF にした瞬間、今喋っているものも止める (設定と体感を一致させる)。
     toggleTts(): void {

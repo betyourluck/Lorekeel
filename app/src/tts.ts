@@ -9,6 +9,7 @@
 // **値の import は動的だけ** (`import type` は型のみで実体を持たない) — 静的に一つでも
 // 値を取ると、TTS を使わないセッションでもライブラリが起動時に読み込まれる。
 import type { VoiceEngineAdapter } from "@aituber-onair/voice";
+import { invoke } from "@tauri-apps/api/core";
 
 /** 対応エンジン。ブラウザ内蔵は導入ゼロ、ローカル 2 種は別アプリの常駐が要る。 */
 export type TtsEngine = "webSpeech" | "voicevox" | "aivisSpeech" | "openaiCompatible";
@@ -32,6 +33,11 @@ export interface TtsSettings {
   model: string;
   /** 読み上げる範囲 (spec 35)。既定 `all` = 従来どおり地の文も台詞も読む。 */
   scope: TtsScope;
+  /**
+   * OpenAI 互換 (backend 経由、spec 36) の待ち時間 (秒)。**0 = 既定** (backend の 120 秒) — 既定値を
+   * frontend に焼かない (あらすじの待ち時間と同じ流儀)。`toRouteConfig` が 0 を null に写す。
+   */
+  timeoutSecs: number;
 }
 
 /** ローカルエンジンの既定エンドポイント (ライブラリの定数と同じ値)。 */
@@ -74,6 +80,7 @@ export const DEFAULT_SETTINGS: TtsSettings = {
   volume: 1.0,
   model: "",
   scope: "all",
+  timeoutSecs: 0,
 };
 
 const LS_FEATURE = "kataribe.tts.feature";
@@ -95,18 +102,38 @@ const LS_CHARACTER_VOICES = "kataribe.tts.characterVoices";
  */
 export const VOICE_NONE = "__none__";
 
-let adapter: VoiceEngineAdapter | null = null;
-let booting: Promise<VoiceEngineAdapter | null> | null = null;
-/** アダプタを組んだ時の設定。変わったら組み直す。 */
+/**
+ * 合成と再生の継ぎ目 (spec 36 D1)。鎖 (`chain`) / 世代 / スキップはこの外にあり、実装が 2 つある:
+ * - `LibrarySynth` = `@aituber-onair/voice` の `VoiceEngineAdapter` の包み (webSpeech / VOICEVOX / AivisSpeech)
+ * - `BackendSynth` = backend command `synthesize_speech` → Blob URL → `HTMLAudioElement` (OpenAI 互換)
+ *
+ * OpenAI 互換だけを backend に回す理由 (failures #114): サーバーに CORS が無いと WebView からは
+ * 届かず、届いてもライブラリの fetch は 30 秒固定で CPU の合成に収まらない。
+ */
+interface Synth {
+  /** 1 文を合成して再生し終えるまで待つ。中断されたら reject。 */
+  speak(sentence: string, voice: string): Promise<void>;
+  /** 再生中の音を止め、進行中の speak を reject させる。 */
+  stop(): void;
+  isPlaying(): boolean;
+  /**
+   * 再生中に止めたら捨てて作り直すか (#72: ライブラリのアダプタは再生中に stop() すると
+   * `isProcessingQueue` が true のまま残り二度と喋らない)。backend 側は持つ状態が再生中の
+   * Audio 1 つだけなので捨てる理由が無い。**挙動の分岐はこの 1 bit に閉じる**。
+   */
+  readonly discardOnStop: boolean;
+}
+
+let synth: Synth | null = null;
+let booting: Promise<Synth | null> | null = null;
+/** 合成器を組んだ時の設定。変わったら組み直す。 */
 let builtWith = "";
 /** 文分割 (長文の打ち切り対策)。アダプタと同じ動的 import から受け取る。 */
 let splitSentence: ((text: string) => string[]) | null = null;
 /** 選んだ日本語音声名 (webSpeech)。アダプタを組み直すたびに探し直さないため。 */
 let pickedJaVoice = "";
-/** 語り手の声 (設定の話者、未指定なら自動選択)。アダプタを組むときに決まる。 */
+/** 語り手の声 (設定の話者、未指定なら自動選択)。合成器を組むときに決まる。 */
 let narratorVoice = "";
-/** アダプタに今設定されている話者。声が変わるときだけ updateOptions を呼ぶ。 */
-let currentVoice = "";
 /** 今読み上げている世代。stop() / 次のターンで進め、古い世代の残りを捨てる。 */
 let generation = 0;
 /**
@@ -183,10 +210,10 @@ export function saveSettings(s: TtsSettings): void {
   invalidate();
 }
 
-/** 設定が変わったのでアダプタを捨てる (次回 speak で組み直す)。 */
+/** 設定が変わったので合成器を捨てる (次回 speak で組み直す)。 */
 export function invalidate(): void {
   stop();
-  adapter = null;
+  synth = null;
   booting = null;
   builtWith = "";
 }
@@ -271,25 +298,253 @@ async function pickJapaneseVoice(): Promise<string> {
 }
 
 /** アダプタを遅延生成する (TTS を使うまでエンジン群のチャンクを読み込まない)。 */
-async function ensureAdapter(): Promise<VoiceEngineAdapter | null> {
+/** ライブラリのアダプタの包み。声は `updateOptions({speaker})` で、変わるときだけ呼ぶ。 */
+class LibrarySynth implements Synth {
+  readonly discardOnStop = true;
+  private currentVoice: string;
+  constructor(private readonly adapter: VoiceEngineAdapter, initialVoice: string) {
+    this.currentVoice = initialVoice;
+  }
+  async speak(sentence: string, voice: string): Promise<void> {
+    // 鎖は 1 文ずつ合成と再生を待つので、ここで切り替えても前の文に混ざらない
+    // (ライブラリは合成のたびに options.speaker を読む)。
+    if (voice !== this.currentVoice) {
+      this.adapter.updateOptions({ speaker: voice });
+      this.currentVoice = voice;
+    }
+    await this.adapter.speakText(sentence);
+  }
+  stop(): void {
+    this.adapter.stop();
+  }
+  isPlaying(): boolean {
+    return this.adapter.isPlaying();
+  }
+}
+
+/** backend command `synthesize_speech` の送り側の形 (契約 `TtsBackendRoute.config`)。 */
+export interface TtsRouteConfig {
+  endpoint: string;
+  model: string;
+  voice: string;
+  speed: number;
+  timeout_secs: number | null;
+}
+
+/** backend の失敗 4 種 (契約 `TtsBackendRoute.errors`)。UI がこれを区別して文面にする。 */
+export type RouteFailure =
+  | { kind: "http"; status: number; body_head: string }
+  | { kind: "timeout"; secs: number }
+  | { kind: "network"; detail: string }
+  | { kind: "shape"; detail: string };
+
+/** backend 経路の失敗。`failure.kind` で区別できる (404 も timeout も「失敗」の一語に潰さない)。 */
+export class RouteError extends Error {
+  constructor(readonly failure: RouteFailure) {
+    super(describeFailure(failure));
+    this.name = "RouteError";
+  }
+  /** invoke の reject 値 (serde tag `kind` の object) から。形が違えば network 扱い。 */
+  static from(e: unknown): RouteError {
+    if (e instanceof RouteError) return e;
+    const f = e as Partial<RouteFailure> | null;
+    if (f && typeof f === "object" && typeof f.kind === "string") return new RouteError(f as RouteFailure);
+    return new RouteError({ kind: "network", detail: String(e) });
+  }
+}
+
+function describeFailure(f: RouteFailure): string {
+  switch (f.kind) {
+    case "http":
+      return `HTTP ${f.status}: ${f.body_head}`;
+    case "timeout":
+      return `timeout after ${f.secs}s`;
+    case "network":
+      return `network: ${f.detail}`;
+    default:
+      return `shape: ${f.detail}`;
+  }
+}
+
+/**
+ * 失敗を人の読む文に (UI 用)。backend の 4 種は i18n の文面へ、それ以外は String(e)。
+ * tts.ts は i18n を import しない (store と部品が持つ `t` を遅延 import すると循環になる) ので、
+ * 文面の鍵と引数だけ返す純関数 `routeMessage` を `describeError` が引く。
+ */
+export function routeMessage(f: RouteFailure): { key: string; args: Record<string, string | number> } {
+  switch (f.kind) {
+    case "http":
+      return { key: "settings.voice.routeHttp", args: { status: f.status, body: f.body_head } };
+    case "timeout":
+      return { key: "settings.voice.routeTimeout", args: { secs: f.secs, warmup: WARMUP_TIMEOUT_SECS } };
+    case "network":
+      return { key: "settings.voice.routeNetwork", args: { detail: f.detail } };
+    default:
+      return { key: "settings.voice.routeShape", args: { detail: f.detail } };
+  }
+}
+
+/** UI の文面。`translate` は i18n の `t` (呼び出し側が渡す)。 */
+export function describeError(e: unknown, translate?: (key: string, args?: Record<string, string | number>) => string): string {
+  if (e instanceof RouteError) {
+    if (!translate) return e.message;
+    const { key, args } = routeMessage(e.failure);
+    return translate(key, args);
+  }
+  return String(e);
+}
+
+/** 中断 (stop / skip / 次のターン)。失敗ではないので通知しない。 */
+class Interrupted extends Error {
+  constructor() {
+    super("interrupted");
+    this.name = "Interrupted";
+  }
+}
+
+/**
+ * 設定 → backend の config (純関数、契約 `TtsBackendRoute.config`)。
+ * - `voice` は**必ず入れる**: 空なら `none` (Irodori の参照なし。省くと `IRODORI_DEFAULT_VOICE`
+ *   未設定で 400 = #114)。他サーバーで `none` が通らなければ http の本文がそのまま画面に出る
+ * - `timeout_secs`: 設定の 0 は null (= backend の既定 120)。`minTimeoutSecs` は試聴のウォームアップ
+ *   (初回のモデル読み込みは実測 439 秒 — 120 では必ず切れる) で max(設定, 600) にするため
+ */
+export function toRouteConfig(s: TtsSettings, voice: string | null, minTimeoutSecs = 0): TtsRouteConfig {
+  const set = Number.isFinite(s.timeoutSecs) && s.timeoutSecs > 0 ? Math.floor(s.timeoutSecs) : 0;
+  const eff = Math.max(set, minTimeoutSecs);
+  return {
+    endpoint: effectiveUrl(s),
+    model: s.model.trim(),
+    voice: (voice ?? s.speaker).trim() || "none",
+    speed: s.rate,
+    timeout_secs: eff > 0 ? eff : null,
+  };
+}
+
+type BusyListener = (busy: boolean) => void;
+type FailureListener = (err: RouteError) => void;
+const busyListeners = new Set<BusyListener>();
+const failureListeners = new Set<FailureListener>();
+let busyCount = 0;
+
+/** backend で合成中か (読み上げの操作列が「合成中」を出す = サーバーの直列待ちを無音にしない)。 */
+export function onSynthesizing(cb: BusyListener): () => void {
+  busyListeners.add(cb);
+  return () => busyListeners.delete(cb);
+}
+
+/** 本番の読み上げで backend 経路が失敗したとき (試聴は投げるのでここには来ない)。 */
+export function onRouteFailure(cb: FailureListener): () => void {
+  failureListeners.add(cb);
+  return () => failureListeners.delete(cb);
+}
+
+function setBusy(delta: 1 | -1): void {
+  const before = busyCount > 0;
+  busyCount = Math.max(0, busyCount + delta);
+  const after = busyCount > 0;
+  if (before !== after) for (const cb of busyListeners) cb(after);
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/**
+ * backend 経由の合成器 (spec 36)。1 文 = 1 invoke。再生は Blob URL + `HTMLAudioElement`
+ * (CSP の `media-src` に `data:` は無く `blob:` はある)。
+ *
+ * `stop()` は `pause()` して**自分で reject する** — ライブラリの stop が play の Promise を
+ * settle しない罠 (#72) を自分では踏まない。進行中の invoke は止められない (Tauri の command に
+ * cancel は無い) ので、解決後に `stopped` を見て**再生しない** (URL も作らない)。
+ */
+class BackendSynth implements Synth {
+  readonly discardOnStop = false;
+  private stopped = false;
+  private current: { audio: HTMLAudioElement; url: string; reject: (e: Error) => void; cleanup: () => void } | null = null;
+  constructor(
+    private readonly settings: TtsSettings,
+    private readonly minTimeoutSecs = 0,
+  ) {}
+  async speak(sentence: string, voice: string): Promise<void> {
+    this.stopped = false;
+    const config = toRouteConfig(this.settings, voice, this.minTimeoutSecs);
+    setBusy(1);
+    let view: { mime: string; data_b64: string };
+    try {
+      view = await invoke<{ mime: string; data_b64: string }>("synthesize_speech", { config, text: sentence });
+    } catch (e) {
+      throw RouteError.from(e);
+    } finally {
+      setBusy(-1);
+    }
+    if (this.stopped) throw new Interrupted();
+    const url = URL.createObjectURL(new Blob([base64ToBytes(view.data_b64)], { type: view.mime }));
+    const audio = new Audio(url);
+    const vol = this.settings.volume;
+    audio.volume = Number.isFinite(vol) ? Math.min(1, Math.max(0, vol)) : 1;
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        audio.removeEventListener("ended", done);
+        audio.removeEventListener("error", fail);
+        URL.revokeObjectURL(url);
+        if (this.current?.audio === audio) this.current = null;
+      };
+      const done = () => {
+        cleanup();
+        resolve();
+      };
+      const fail = () => {
+        cleanup();
+        reject(new RouteError({ kind: "shape", detail: "audio playback failed" }));
+      };
+      audio.addEventListener("ended", done);
+      audio.addEventListener("error", fail);
+      this.current = { audio, url, reject, cleanup };
+      audio.play().catch(fail);
+    });
+  }
+  stop(): void {
+    this.stopped = true;
+    const cur = this.current;
+    if (!cur) return;
+    cur.audio.pause();
+    cur.cleanup();
+    cur.reject(new Interrupted());
+  }
+  isPlaying(): boolean {
+    return this.current !== null;
+  }
+}
+
+async function ensureSynth(minTimeoutSecs = 0): Promise<Synth | null> {
   const s = loadSettings();
-  const key = JSON.stringify(s);
-  if (adapter && builtWith === key) return adapter;
+  const key = JSON.stringify(s) + "|" + minTimeoutSecs;
+  if (synth && builtWith === key) return synth;
   if (booting && builtWith === key) return booting;
   builtWith = key;
   booting = (async () => {
     if (s.engine === "webSpeech" && !isSupported()) return null;
     const mod = await import("@aituber-onair/voice");
     splitSentence = mod.splitSentence;
+    if (s.engine === "openaiCompatible") {
+      // backend 経由 (spec 36)。語り手の声は設定の話者そのもの (空なら toRouteConfig が none にする)。
+      narratorVoice = s.speaker.trim();
+      synth = new BackendSynth(s, minTimeoutSecs);
+      return synth;
+    }
     const speaker =
       s.speaker.trim() || (s.engine === "webSpeech" ? await pickJapaneseVoice() : "");
     narratorVoice = speaker;
-    currentVoice = speaker;
-    adapter = new mod.VoiceEngineAdapter({
+    const adapter = new mod.VoiceEngineAdapter({
       ...engineOptions(s),
       speaker,
     } as never);
-    return adapter;
+    synth = new LibrarySynth(adapter, speaker);
+    return synth;
   })();
   return booting;
 }
@@ -490,8 +745,8 @@ async function speakParts(parts: SpeechPart[], opts?: { queue?: boolean }): Prom
   }
   // 続けて足す時は現在の世代に相乗りする (互いを無効化しない)。
   const mine = generation;
-  if (!(await ensureAdapter())) return;
-  // アダプタ生成を待つ間に stop() / 次のターンが来ていたら、もう投入しない。
+  if (!(await ensureSynth())) return;
+  // 合成器の生成を待つ間に stop() / 次のターンが来ていたら、もう投入しない。
   if (mine !== generation) return;
   for (const part of parts) {
     const body = part.text.trim();
@@ -503,21 +758,19 @@ async function speakParts(parts: SpeechPart[], opts?: { queue?: boolean }): Prom
         // 鎖に積んだ後で打ち切られたら (stop / 次のターン) 残りは読まない。
         // スキップされた段の残りの文も読まない (次の段から続ける)。
         if (mine !== generation || seq <= skipThrough) return;
-        // アダプタは文ごとに取り直す — スキップで再生中のアダプタを捨てた (stop() の注記)
-        // 後も、同じ鎖の続きを新しいアダプタで読むため。
-        const a = await ensureAdapter();
-        if (!a || mine !== generation || seq <= skipThrough) return;
+        // 合成器は文ごとに取り直す — スキップで再生中のアダプタを捨てた (stop() の注記)
+        // 後も、同じ鎖の続きを新しい合成器で読むため。
+        const sy = await ensureSynth();
+        if (!sy || mine !== generation || seq <= skipThrough) return;
         lastStartedPart = seq;
-        // 声は鎖の中で切り替える — 鎖は 1 文ずつ合成と再生を待つので、前の文に混ざらない
-        // (ライブラリは合成のたびに options.speaker を読む)。変わるときだけ呼ぶ。
+        // 声は鎖の中で切り替える (合成器が「変わるときだけ」を担う)。
         const want = part.voice ?? narratorVoice;
-        if (want !== currentVoice) {
-          a.updateOptions({ speaker: want });
-          currentVoice = want;
-        }
         // stop() は待機中の Promise を reject する = 中断の正常系。読み上げ失敗もプレイを
-        // 止める理由にならないので握り潰す (TTS は装飾であって正本ではない)。
-        await a.speakText(sentence).catch(() => {});
+        // 止める理由にならないので鎖は止めないが、backend 経路の失敗 (404 / timeout / 接続) は
+        // **沈黙にしない** — 購読者 (store のトースト) へ渡す (spec 36 D6)。
+        await sy.speak(sentence, want).catch((e: unknown) => {
+          if (e instanceof RouteError) for (const cb of failureListeners) cb(e);
+        });
       });
     }
   }
@@ -530,15 +783,18 @@ async function speakParts(parts: SpeechPart[], opts?: { queue?: boolean }): Prom
  */
 export async function test(sample: string, voice?: string): Promise<void> {
   invalidate();
-  const a = await ensureAdapter();
-  if (!a) throw new Error("speechSynthesis unavailable");
+  // OpenAI 互換 (backend 経由) の試聴は**ウォームアップを兼ねる** (spec 36 D6): 初回はサーバーが
+  // モデルを読み込むので (実測 439 秒)、設定の待ち時間と 600 秒の大きい方で待つ。
+  const sy = await ensureSynth(WARMUP_TIMEOUT_SECS);
+  if (!sy) throw new Error("speechSynthesis unavailable");
   // キャラ別の声の試聴 (spec 35)。語り手と違う声なら切り替えてから読む。
-  if (voice && voice !== currentVoice) {
-    a.updateOptions({ speaker: voice });
-    currentVoice = voice;
-  }
-  await a.speakText(sample);
+  await sy.speak(sample, voice ?? narratorVoice);
+  // 試聴用の長い待ち時間を本番に持ち越さない。
+  invalidate();
 }
+
+/** 試聴の待ち時間の下限 (秒)。初回のモデル読み込み (実測 439 秒) を収める。 */
+export const WARMUP_TIMEOUT_SECS = 600;
 
 /**
  * 読み上げを即座に止める (スキップ / OFF / 新しいターン / ゲーム切り替え)。
@@ -576,13 +832,13 @@ export function skip(): void {
 
 /** 再生中の音を止める (世代は触らない)。stop() と skip() の共通部。 */
 function interrupt(): void {
-  const dying = adapter;
+  const dying = synth;
   const wasPlaying = dying?.isPlaying() ?? false; // stop() が畳む前に見る
   dying?.stop();
-  // アダプタ生成前に停止が来た場合の保険。
+  // 合成器の生成前に停止が来た場合の保険。
   globalThis.speechSynthesis?.cancel();
-  if (wasPlaying) {
-    adapter = null;
+  if (wasPlaying && dying?.discardOnStop) {
+    synth = null;
     booting = null;
     builtWith = "";
   }

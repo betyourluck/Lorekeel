@@ -1,6 +1,6 @@
 # spec 36 — 読み上げの OpenAI 互換経路を backend 経由に
 
-**Status**: Draft **rev2** (2026-10-19 起草 → 同日ユーザー査読〔矛盾 5 + 要修正 4〕を反映)。契約は Phase 0 で data_contract に `TtsBackendRoute` 節を凍結する (起草時点では未記載。**凍結する中身は本 rev2 の D2 / D6 / D7 で全部決めた** — Phase 0 は写すだけ)。
+**Status**: rev2 → **Phase 0〜C 実装済・D は backend の live まで** (2026-10-19 起草 → 同日ユーザー査読〔矛盾 5 + 要修正 4〕を反映 → 同日 Phase 0〜C 実装 → backend の live Green)。残 = Phase D の実機 (Tauri の試聴と 1 ターン = ユーザー)。契約は data_contract `TtsBackendRoute`。実装の記録は末尾。
 
 ---
 
@@ -182,20 +182,20 @@ Phase A は凍結済みの形を実装する。
 
 ## Phase
 
-- **0**: data_contract に `TtsBackendRoute` (D7 の中身) + 予約名 `TTS_API_KEY_OPENAI_COMPAT` (未使用) を凍結。
-- **A (backend)**: `tts.rs` の encode (body = `{model, input, voice, speed}`・`voice` は常に送る・clamp) / decode
+- **✅0**: data_contract に `TtsBackendRoute` (D7 の中身) + 予約名 `TTS_API_KEY_OPENAI_COMPAT` (未使用) を凍結。
+- **✅A (backend)**: `tts.rs` の encode (body = `{model, input, voice, speed}`・`voice` は常に送る・clamp) / decode
   (content-type → mime・`audio/*` でなければ Shape) を純関数で + command + 登録。
   PoC: 純関数 2〜3 本 + **ローカル HTTP サーバから WAV を流して command の入口を通す 1 本** (#109 の教訓 =
   純関数だけでは配線の穴が見えない。400 / 非 audio / タイムアウトの 3 失敗が 4 種のどれに写るかもここで) +
   live 1 本 (ignored、実 Irodori)。
-- **B (frontend seam)**: `Synth` 2 実装、`speakParts` / `test` / `interrupt` を seam 越しに。`LibrarySynth` は
+- **✅B (frontend seam)**: `Synth` 2 実装、`speakParts` / `test` / `interrupt` を seam 越しに。`LibrarySynth` は
   ライブラリ adapter への呼び出し列 (speakText / stop / updateOptions の順) を偽装ライブラリで固定している既存テスト
   (spec 35 Phase D) が回帰を見る。`BackendSynth` は `invoke` を偽装して「1 文 1 invoke・`voice` は空なら `none`・
   stop で reject・古い世代の結果は再生しない・URL は必ず revoke」を mount で固定。
-- **C (設定と表示)**: サウンドタブに待ち時間の select (60 / 120 / 180 / 300 / 600、0 = 既定) + 試聴は max(設定, 600) +
+- **✅C (設定と表示)**: サウンドタブに待ち時間の select (60 / 120 / 180 / 300 / 600、0 = 既定) + 試聴は max(設定, 600) +
   失敗文言 (Http / Timeout / Network / Shape を区別、Timeout は初回の読み込みの可能性を言う) + 話者 ID の説明 +
   読み上げの操作列に「合成中」。
-- **D (実測)**: Irodori-TTS-Server (CPU) で 1 ターンぶん読み切る / 試聴の初回 (モデル読み込み) が 600 秒の中で通る /
+- **🟡D (実測)**: backend の live は Green (下の記録)。残 = Irodori-TTS-Server (CPU) で 1 ターンぶん読み切る / 試聴の初回 (モデル読み込み) が 600 秒の中で通る /
   失敗 4 種が区別して出る / `stop()` 直後の次ターンの出だしの待ち (D4) / `none` のチャンク間の声の揺れ (D5)。
   GPU 機は未測定のまま申告。
 
@@ -231,3 +231,34 @@ Phase A は凍結済みの形を実装する。
   消えて 2 (CORS) だけが残る — どちらにせよ backend 経由で両方消える。
 - Irodori 以外の OpenAI 互換 TTS サーバーで CORS がどうか・`none` を受けるかは測っていない (openedai-speech 等)。
 - `none` のチャンク間の揺れは README の記述に依っており、耳で確かめていない (Phase D)。
+
+## 実装の記録 (2026-10-19、Phase 0〜C + backend live)
+
+- **backend** `app/src-tauri/src/tts.rs`: `TtsRouteConfig { endpoint, model, voice, speed, timeout_secs }` / `SpeechView { mime, data_b64 }` /
+  `TtsRouteError` (serde tag `kind`: http / timeout / network / shape)。`encode` (4 欄・`voice` 常送・speed clamp) と `decode`
+  (`audio/*` だけ・パラメータ落とし) は純関数、`validate` が空の model / voice / endpoint を HTTP の前に Shape で弾く
+  (空の `voice` は frontend の正規化の契約が破れた印 — 黙って送らない)。`timeout()` は None と **0** を既定 120 に・下限 5。
+  `synthesize` は reqwest 1 本 (`is_timeout` → Timeout {現在値}・それ以外は source 連鎖の底を Network)。command `synthesize_speech`
+  は `Result<SpeechView, TtsRouteError>` をそのまま返す (frontend が object の `kind` で分岐)。
+  PoC 4 本 (encode/validate/timeout 規則 / decode / **ローカル HTTP サーバで入口を通す** = 200 audio・400・200 非 audio・閉じたポート /
+  応答しないサーバーの Timeout) + live 1 本 (ignored)。**live Green**: 実 Irodori (CPU) で `audio/wav` 349,484 バイト・**47.6 秒** (温まった状態)。
+- **frontend** `app/src/tts.ts`: 継ぎ目 `Synth { speak(sentence, voice), stop, isPlaying, discardOnStop }`。`LibrarySynth` (従来のアダプタの包み・
+  声の切替を `updateOptions` で「変わるときだけ」) / `BackendSynth` (invoke → base64 → Blob URL → `HTMLAudioElement`・`ended`/`error`/`stop`
+  で revoke・stop は pause して自分で reject・invoke 中の stop は解決後に `stopped` を見て**再生しない**)。`interrupt()` は
+  `discardOnStop && wasPlaying` のときだけ捨てる。`toRouteConfig(s, voice, minTimeout)` が空の voice を `none` に、0 を null に。
+  `test()` は `ensureSynth(WARMUP_TIMEOUT_SECS=600)` で max(設定, 600)、終わったら `invalidate()` で本番に持ち越さない。
+  `onSynthesizing` / `onRouteFailure` の購読 (store が `ttsBusy` とトーストへ橋渡し = `initTtsBridge`、App.vue の onMounted から 1 回)。
+  **起草に無かった小さな追加**: `BackendSynth` は設定の音量を `audio.volume` に当てる (ライブラリ経路では効かなかった。高さは API に無いので不変)。
+  既存の 3 エンジンの mount テスト (spec 35 Phase D の呼び出し列) は**無改修で緑** = ライブラリ経路の挙動不変。
+  mount +4 (`tts.backend.mount.test.ts`: 1 文 1 invoke・none・voice 欄・アダプタ不生成・revoke / stop 中の結果を捨てる / 試聴 600・本番は設定 /
+  失敗 4 種と購読)。Red は `|| "none"` と `if (this.stopped) throw` を外して確認。
+- **設定・表示**: サウンドタブに待ち時間の select (0 = 既定 / 60 / 180 / 300 / 600・OpenAI 互換のときだけ)・話者 ID に placeholder `none` と注記
+  (参照なしは声が揺れうる)・`openaiNote` から「未検証」を外し backend 経由を明記・試聴の失敗は `describeError(e, t)` で 4 種の文面
+  (timeout は秒数と「初回はモデル読み込み中かも・試聴は 600 秒待つ」)。操作列に「合成中」(spinner、`ttsBusy`)。store のトースト
+  `store.ttsRouteFailed`。i18n は ja/en。mount +4 (`SettingsDialog.tts` 2 / `TtsControls` 2)。Red は `v-if` と `describeError` を外して確認。
+- **数**: app backend 80 → 84 (ignored 12 → 13)・frontend 214 → 222・workspace 491 不変・clippy clean・`npm run build` 成功。
+- **接地の限界**: Tauri の実機 (設定 → 試聴 → 1 ターン読み切る・「合成中」の表示・失敗トースト) は**未確認** — このセッションの
+  dev サーバは古い backend を抱えたユーザーの `tauri dev` が 1420 を使っており、新しい command を積んだ再起動が要る。
+  `none` のチャンク間の声の揺れ・stop 直後の次ターンの出だしの待ちも実機で。
+- **作業中の罠 (自分の)**: bash の二重引用符の中で python -c にドキュメントコメントを渡したら、コメント内のバッククォート
+  (`cargo test …`) をコマンド置換され tts.rs に `test result: ok…` が混入した。スクリプトはファイルに置いて `python -I` で走らせる。

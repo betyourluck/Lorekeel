@@ -143,7 +143,7 @@ async function loadVoiceList() {
     tts.saveVoiceList(voice.value, voiceList.value);
     voiceStatus.value = t("settings.voice.ok");
   } catch (e) {
-    voiceStatus.value = t("settings.voice.failed", { msg: String(e) });
+    voiceStatus.value = t("settings.voice.failed", { msg: tts.describeError(e, t) });
   } finally {
     voiceBusy.value = false;
   }
@@ -158,7 +158,7 @@ async function testVoice() {
     await tts.test(t("settings.voice.testSample"));
     voiceStatus.value = t("settings.voice.ok");
   } catch (e) {
-    voiceStatus.value = t("settings.voice.failed", { msg: String(e) });
+    voiceStatus.value = t("settings.voice.failed", { msg: tts.describeError(e, t) });
   } finally {
     voiceBusy.value = false;
   }
@@ -1208,6 +1208,22 @@ onMounted(async () => {
               />
               <span class="block mt-1 text-parchment/40 text-xs">{{ t("settings.voice.modelNote") }}</span>
             </label>
+            <!-- 1 文の待ち時間 (spec 36 D6)。0 = 既定 (backend の 120 秒)。初回のモデル読み込みは試聴が温める。 -->
+            <label v-if="voice.engine === 'openaiCompatible'" class="block text-sm text-parchment/70">
+              {{ t("settings.voice.timeout") }}
+              <select
+                v-model.number="voice.timeoutSecs"
+                class="mt-1 block w-64 rounded bg-ink border border-ash/60 px-2 py-1 text-parchment"
+                data-testid="voice-timeout"
+                @change="persistVoice"
+              >
+                <option :value="0">{{ t("settings.voice.timeoutDefault") }}</option>
+                <option v-for="sec in [60, 180, 300, 600]" :key="sec" :value="sec">
+                  {{ t("settings.voice.timeoutSecs", { secs: sec }) }}
+                </option>
+              </select>
+              <span class="block mt-1 text-parchment/40 text-xs">{{ t("settings.voice.timeoutNote") }}</span>
+            </label>
 
             <!-- 話者は**インラインのリストボックス** (size 付き)。ネイティブの select は
                  ポップアップを OS が描くので CSS で高さを縛れず、話者が多いと画面外へ
@@ -1220,9 +1236,11 @@ onMounted(async () => {
               <input
                 v-model="voice.speaker"
                 type="text"
+                placeholder="none"
                 class="mt-1 block w-full rounded bg-ink border border-ash/60 px-2 py-1 text-parchment"
                 @change="persistVoice"
               />
+              <span class="block mt-1 text-parchment/40 text-xs">{{ t("settings.voice.speakerFreeNote") }}</span>
             </label>
             <label v-else class="block text-sm text-parchment/70">
               {{ t("settings.voice.speaker") }}

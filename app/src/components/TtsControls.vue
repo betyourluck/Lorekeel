@@ -49,6 +49,17 @@ const label = computed(() =>
     >
       <Icon name="skip" :size="15" />
     </button>
+    <!-- 合成中 (spec 36)。backend の応答を待っている間だけ出る = 無音を「壊れた」と読ませない。 -->
+    <span
+      v-if="game.ttsBusy"
+      class="p-1.5 text-glow/60"
+      :title="t('tts.synthesizing')"
+      :aria-label="t('tts.synthesizing')"
+      role="status"
+      data-testid="tts-busy"
+    >
+      <Icon name="spinner" :size="15" class="animate-spin" />
+    </span>
     <!-- キャラクターの声 (spec 35)。押し直しで閉じる・画像側のパネルとは排他 (store の floatingPanel)。 -->
     <button
       type="button"

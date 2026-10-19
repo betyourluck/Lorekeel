@@ -201,6 +201,7 @@ onMounted(() => {
   game.refreshPackages();
   game.announceRename(); // 改名の一度きりの告知 (旧インストールが在るときだけ)
   game.refreshLlmModel(); // TitleBar のモデル名バッジ + OS ウィンドウタイトル
+  game.initTtsBridge(); // spec 36: 読み上げの「合成中」と失敗トースト
   game.checkAppUpdate(); // 配布サイトに新しいアプリがあれば TitleBar に「最新版があります」
   // spec 34: localStorage に残っている登録モデルの鍵を資格情報ストアへ移す (設定を開くまで待たない —
   // 開かないユーザーの settings.json に平文が残り続けるため)。
