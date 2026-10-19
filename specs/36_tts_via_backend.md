@@ -257,8 +257,12 @@ Phase A は凍結済みの形を実装する。
   (timeout は秒数と「初回はモデル読み込み中かも・試聴は 600 秒待つ」)。操作列に「合成中」(spinner、`ttsBusy`)。store のトースト
   `store.ttsRouteFailed`。i18n は ja/en。mount +4 (`SettingsDialog.tts` 2 / `TtsControls` 2)。Red は `v-if` と `describeError` を外して確認。
 - **数**: app backend 80 → 84 (ignored 12 → 13)・frontend 214 → 222・workspace 491 不変・clippy clean・`npm run build` 成功。
-- **接地の限界**: Tauri の実機 (設定 → 試聴 → 1 ターン読み切る・「合成中」の表示・失敗トースト) は**未確認** — このセッションの
-  dev サーバは古い backend を抱えたユーザーの `tauri dev` が 1420 を使っており、新しい command を積んだ再起動が要る。
-  `none` のチャンク間の声の揺れ・stop 直後の次ターンの出だしの待ちも実機で。
+- **✅Tauri 実機 (2026-10-19 ユーザー実測、n=1)**: backend 経由で Irodori の声が鳴った = #114 の 2 つの壁 (CORS・30 秒) は消えた。
+  **`none` では声が変わる** (ユーザー「声は変わるね」) — README の予告どおりで、Kataribe は 1 文 1 リクエストなので
+  チャンク間だけでなく**文の間でも**独立に合成される。D5 の判断 (v1 は手を入れない) のとおり、処方はコードではなく
+  **参照音声**: サーバーの `voices/` に wav (flac / mp3 / ogg 等も可) を置くと**ファイル名の stem がそのまま voice ID**になり
+  (`voices/alice.wav` → 話者 ID `alice`)、参照つきなら声が保たれる。キャラ別の声も同じ (登場人物ごとに別の stem)。
+  `irodori.seed` (固定乱数) は vendor 欄のうえ、文が違えば結果も違うので声の固定にはならない。
+- **未確認のまま**: stop 直後の次ターンの出だしの待ち・参照音声を入れた後の安定 (ユーザーが voices/ に置いてから)。
 - **作業中の罠 (自分の)**: bash の二重引用符の中で python -c にドキュメントコメントを渡したら、コメント内のバッククォート
   (`cargo test …`) をコマンド置換され tts.rs に `test result: ok…` が混入した。スクリプトはファイルに置いて `python -I` で走らせる。
