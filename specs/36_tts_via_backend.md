@@ -1,6 +1,6 @@
 # spec 36 — 読み上げの OpenAI 互換経路を backend 経由に
 
-**Status**: rev2 → **Phase 0〜C 実装済・D は backend の live まで** (2026-10-19 起草 → 同日ユーザー査読〔矛盾 5 + 要修正 4〕を反映 → 同日 Phase 0〜C 実装 → backend の live Green)。残 = Phase D の実機 (Tauri の試聴と 1 ターン = ユーザー)。契約は data_contract `TtsBackendRoute`。実装の記録は末尾。
+**Status**: **Done** (2026-10-19 起草 → 同日ユーザー査読〔矛盾 5 + 要修正 4〕を反映 = rev2 → 同日 Phase 0〜C 実装 → backend の live Green → Tauri 実機 Green〔`none` の揺れは参照音声で解消〕)。残 = D4 の次ターンの出だしの待ちの実測だけ (未決 2・4 は実害が出るまで据え置き)。契約は data_contract `TtsBackendRoute`。実装の記録は末尾。
 
 ---
 
@@ -195,7 +195,7 @@ Phase A は凍結済みの形を実装する。
 - **✅C (設定と表示)**: サウンドタブに待ち時間の select (60 / 120 / 180 / 300 / 600、0 = 既定) + 試聴は max(設定, 600) +
   失敗文言 (Http / Timeout / Network / Shape を区別、Timeout は初回の読み込みの可能性を言う) + 話者 ID の説明 +
   読み上げの操作列に「合成中」。
-- **🟡D (実測)**: backend の live は Green (下の記録)。残 = Irodori-TTS-Server (CPU) で 1 ターンぶん読み切る / 試聴の初回 (モデル読み込み) が 600 秒の中で通る /
+- **✅D (実測)**: backend の live と Tauri 実機 (鳴る・`none` で揺れる・参照音声で安定) が Green (下の記録)。未測 = stop 直後の次ターンの出だしの待ち。当初の計画 = Irodori-TTS-Server (CPU) で 1 ターンぶん読み切る / 試聴の初回 (モデル読み込み) が 600 秒の中で通る /
   失敗 4 種が区別して出る / `stop()` 直後の次ターンの出だしの待ち (D4) / `none` のチャンク間の声の揺れ (D5)。
   GPU 機は未測定のまま申告。
 
@@ -263,6 +263,8 @@ Phase A は凍結済みの形を実装する。
   **参照音声**: サーバーの `voices/` に wav (flac / mp3 / ogg 等も可) を置くと**ファイル名の stem がそのまま voice ID**になり
   (`voices/alice.wav` → 話者 ID `alice`)、参照つきなら声が保たれる。キャラ別の声も同じ (登場人物ごとに別の stem)。
   `irodori.seed` (固定乱数) は vendor 欄のうえ、文が違えば結果も違うので声の固定にはならない。
-- **未確認のまま**: stop 直後の次ターンの出だしの待ち・参照音声を入れた後の安定 (ユーザーが voices/ に置いてから)。
+- **✅参照音声で安定 (2026-10-19 ユーザー実測、n=1、「うまくいきました」)**: `voices/` に参照を置き stem を話者 ID に入れる
+  手順で声が保たれた。`none` の揺れは Irodori の性質で、処方はサーバー側の参照音声 = v1 の判断 (D5) どおり。
+- **未確認のまま**: stop 直後の次ターンの出だしの待ち (D4)。
 - **作業中の罠 (自分の)**: bash の二重引用符の中で python -c にドキュメントコメントを渡したら、コメント内のバッククォート
   (`cargo test …`) をコマンド置換され tts.rs に `test result: ok…` が混入した。スクリプトはファイルに置いて `python -I` で走らせる。
