@@ -66,6 +66,26 @@ pub fn ref_index(name: &str) -> Option<usize> {
     }
 }
 
+/// ディスク上の画像ファイルを参照の素材として読む (spec 37 追補、2026-11-01 — 「生成済みフォルダから」)。
+/// 中身を読む前に大きさを見る (選ばれたのが数百 MB の別物でも丸ごと読まない) → 先頭バイトで mime を
+/// 嗅ぎ分け、拡張子の申告は信じない (`put_reference_bytes` と同じ規律)。返りは `put_slot` へそのまま渡せる形。
+pub fn read_image_file(path: &Path) -> Result<(&'static str, Vec<u8>), String> {
+    let meta = std::fs::metadata(path).map_err(|e| format!("画像を読めません: {e}"))?;
+    if !meta.is_file() {
+        return Err("ファイルではありません".into());
+    }
+    if meta.len() > PLAYER_SHEET_MAX_BYTES {
+        return Err(format!(
+            "画像が大きすぎます ({:.1}MB > {}MB)",
+            meta.len() as f64 / (1024.0 * 1024.0),
+            PLAYER_SHEET_MAX_BYTES / (1024 * 1024)
+        ));
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("画像を読めません: {e}"))?;
+    let mime = sniff_mime(&bytes).ok_or("参照にできない形式です (png/jpg/webp のみ)")?;
+    Ok((mime, bytes))
+}
+
 /// 前詰め不変条件の検査 (純関数・PoC 用)。`ref1..k` が過不足なく在り、参照以外が混ざらないこと。
 /// 本番は構成によって不変条件を保つ ([`put_slot`] / [`delete_slot`]) ので、検査はテストだけが使う。
 #[cfg(test)]
@@ -257,6 +277,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         d
     }
+    /// spec 37 追補: パスから読む経路は中身で判定し、拡張子と大きさの嘘を信じない。
+    #[test]
+    fn read_image_file_sniffs_content_and_rejects_non_images() {
+        let dir = tmp("readfile");
+        std::fs::create_dir_all(&dir).unwrap();
+        // 拡張子が .txt でも中身が WebP なら通る (生成済みフォルダの名前は信じない)。
+        let webp = dir.join("picked.txt");
+        let mut body = b"RIFF\x10\x00\x00\x00WEBPVP8 ".to_vec();
+        body.extend_from_slice(&[0u8; 16]);
+        std::fs::write(&webp, &body).unwrap();
+        let (mime, bytes) = read_image_file(&webp).unwrap();
+        assert_eq!(mime, "image/webp");
+        assert_eq!(bytes, body);
+        // 拡張子が .png でも中身が文字なら弾く。
+        let fake = dir.join("fake.png");
+        std::fs::write(&fake, b"not an image at all").unwrap();
+        let e = read_image_file(&fake).unwrap_err();
+        assert!(e.contains("参照にできない形式"), "{e}");
+        // 無いファイル・フォルダは理由つきで弾く。
+        assert!(read_image_file(&dir.join("missing.png")).is_err());
+        assert!(read_image_file(&dir).unwrap_err().contains("ファイルではありません"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     fn names(dir: &Path) -> Vec<String> {
         let mut v: Vec<String> = std::fs::read_dir(dir)
             .unwrap()

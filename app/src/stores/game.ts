@@ -1140,6 +1140,35 @@ export const useGameStore = defineStore("game", {
         this.refStockBusy = false;
       }
     },
+    /**
+     * 生成済みの挿絵 (spec 37 の履歴フォルダ) から 1 枚選んで枠へ (spec 37 追補、2026-11-01)。
+     * OS のファイル選択ダイアログを `generated_images/` で開き、選ばれたパスだけを backend へ渡す
+     * (bytes は backend が読む = `putRefFromAsset` と同じ流儀)。キャンセルは何もしない。
+     */
+    async putRefFromGenerated(slot: number): Promise<void> {
+      if (this.refStockBusy) return;
+      let path: string | null;
+      try {
+        path = await invoke<string | null>("pick_generated_image", { folder: this.logDir });
+      } catch (e) {
+        this.logToast = t("refStock.fileFailed", { error: String(e) });
+        return;
+      }
+      if (!path) return;
+      this.refStockBusy = true;
+      try {
+        this.refStock = await invoke("put_reference_from_path", {
+          provider: this.imageGen.provider,
+          slot,
+          path,
+        });
+        this.refStockRev++;
+      } catch (e) {
+        this.logToast = t("refStock.fileFailed", { error: String(e) });
+      } finally {
+        this.refStockBusy = false;
+      }
+    },
     async reseedRefStock(): Promise<void> {
       await this.refStockCommand("reseed_reference_stock", {});
     },

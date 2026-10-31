@@ -185,8 +185,9 @@ function onDrop(slot: number, e: DragEvent) {
             </button>
           </div>
         </div>
-        <!-- 空きの末尾にだけ「いまの挿絵を」の小さな導線 (ファイルはカードのクリック)。 -->
-        <div v-if="!s.name && accepts(s)" class="mt-1.5 flex justify-center">
+        <!-- 空きの末尾にだけ「いまの挿絵を」と「生成済みフォルダから」の小さな導線
+             (ファイルはカードのクリック)。後者は spec 37 の履歴フォルダを OS のダイアログで開く。 -->
+        <div v-if="!s.name && accepts(s)" class="mt-1.5 flex flex-col items-center gap-0.5">
           <button
             class="rounded-full px-2 py-0.5 text-[10px] text-parchment/50 hover:text-ember hover:bg-parchment/5 disabled:opacity-30"
             :disabled="!canPut"
@@ -194,6 +195,15 @@ function onDrop(slot: number, e: DragEvent) {
             @click="game.putRefSlot(s.slot)"
           >
             {{ t("refStock.fromImage") }}
+          </button>
+          <button
+            class="rounded-full px-2 py-0.5 text-[10px] text-parchment/50 hover:text-ember hover:bg-parchment/5 disabled:opacity-30"
+            :disabled="game.refStockBusy"
+            :title="t('refStock.fromGeneratedHint')"
+            data-testid="ref-from-generated"
+            @click="game.putRefFromGenerated(s.slot)"
+          >
+            {{ t("refStock.fromGenerated") }}
           </button>
         </div>
         <p v-else-if="s.name" class="mt-1.5 truncate text-center text-[10px] text-parchment/30" :title="s.name">

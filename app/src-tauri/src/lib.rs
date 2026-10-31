@@ -1816,6 +1816,46 @@ async fn put_reference_from_asset(
     Ok(sheets_view(&dir, max))
 }
 
+/// 生成済みの挿絵 (spec 37 の履歴フォルダ) から参照に入れる画像を OS のファイル選択ダイアログで
+/// 選ばせる (spec 37 追補、2026-11-01 ユーザー要望「生成済みフォルダから」)。`pick_package_folder` と
+/// 同じく rfd の custom command (= 同期・メインスレッド)。初期フォルダは `<ログフォルダ>/generated_images`
+/// で、まだ無ければ作ってから開く (無いフォルダは初期位置に使えず OS の既定位置に落ちる)。
+/// ダイアログの中で別のフォルダへ移って選んでもよい — 中身の検査は読む側 (`put_reference_from_path`)
+/// が先頭バイトで行う。返りは選ばれた絶対パス、キャンセルなら None。
+#[tauri::command]
+fn pick_generated_image(app: tauri::AppHandle, folder: Option<String>) -> Result<Option<String>, String> {
+    let log_dir = resolve_log_dir(&app, folder.as_deref().unwrap_or_default())?;
+    let dir = image_history::dir_under(&log_dir);
+    let _ = std::fs::create_dir_all(&dir);
+    let mut dialog = rfd::FileDialog::new()
+        .set_title("参照に入れる画像を選択")
+        .add_filter("画像 (png / jpg / webp)", &["png", "jpg", "jpeg", "webp"]);
+    if dir.is_dir() {
+        dialog = dialog.set_directory(&dir);
+    }
+    Ok(dialog.pick_file().map(|p| p.to_string_lossy().into_owned()))
+}
+
+/// ディスク上の画像 (= `pick_generated_image` で選んだパス) を参照の枠へ入れる (spec 37 追補)。
+/// bytes は backend が読むので IPC にはパスしか乗らない (`put_reference_from_asset` と同じ流儀)。
+/// 大きさと mime は `ref_stock::read_image_file` が中身で判定する (拡張子の申告を信じない)。
+#[tauri::command]
+async fn put_reference_from_path(
+    app: tauri::AppHandle,
+    provider: image_gen::Provider,
+    slot: usize,
+    path: String,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<SettingsSheetsView, String> {
+    let (mime, bytes) = ref_stock::read_image_file(Path::new(&path))?;
+    let guard = session.lock().await;
+    let sess = guard.as_ref().ok_or("ゲームが開始されていません")?;
+    let max = image_gen::max_refs(provider);
+    let dir = session_refs_dir(&app, sess, max)?;
+    ref_stock::put_slot(&dir, slot, mime, &bytes, max)?;
+    Ok(sheets_view(&dir, max))
+}
+
 /// 参照の枠を消して後続を前へ詰める (spec 27 A-4「削除」/ 前詰め不変条件)。0 枚まで消せる
 /// = 参照なし生成に戻る (spec 25 の byte 一致経路がそのまま受ける)。
 #[tauri::command]
@@ -5864,6 +5904,8 @@ pub fn run() {
             set_reference_slot,
             put_reference_bytes,
             put_reference_from_asset,
+            pick_generated_image,
+            put_reference_from_path,
             delete_reference_slot,
             reseed_reference_stock,
             open_package_folder,
