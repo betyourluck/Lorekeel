@@ -2,7 +2,7 @@
 // UI chrome のモノカラー線アイコン (Feather/Lucide 風)。stroke=currentColor ゆえ
 // 親のテキスト色に追従する = テーマ一貫のモノクロ。パッケージ同梱画像とは別物 (UI 装飾)。
 defineProps<{
-  name: "location" | "bag" | "flag" | "turn" | "gauge" | "sparkle" | "target" | "load" | "new" | "plus" | "trash" | "folder" | "book" | "save" | "floppy" | "scissors" | "code" | "chevron" | "play" | "map" | "pencil" | "speaker" | "speaker-off" | "skip" | "image" | "eye" | "eye-off" | "text" | "spinner" | "voices";
+  name: "location" | "bag" | "flag" | "turn" | "gauge" | "sparkle" | "target" | "load" | "new" | "plus" | "trash" | "folder" | "book" | "save" | "floppy" | "scissors" | "code" | "chevron" | "play" | "map" | "pencil" | "speaker" | "speaker-off" | "skip" | "image" | "eye" | "eye-off" | "text" | "spinner" | "voices" | "grid";
   size?: number;
 }>();
 </script>
@@ -181,6 +181,13 @@ defineProps<{
     <!-- 処理中 (弧) -->
     <template v-else-if="name === 'spinner'">
       <path d="M21 12a9 9 0 1 1-6.2-8.56" />
+    </template>
+    <!-- 履歴 (spec 37): □ が 4 つ (2×2) -->
+    <template v-else-if="name === 'grid'">
+      <rect x="3" y="3" width="7" height="7" rx="1" />
+      <rect x="14" y="3" width="7" height="7" rx="1" />
+      <rect x="3" y="14" width="7" height="7" rx="1" />
+      <rect x="14" y="14" width="7" height="7" rx="1" />
     </template>
     <!-- 削除: ゴミ箱 -->
     <template v-else-if="name === 'trash'">

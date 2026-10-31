@@ -84,6 +84,19 @@ const textToggleLabel = computed(() => (game.showText ? t("image.hideText") : t(
     >
       <Icon name="pencil" :size="15" />
     </button>
+    <!-- 履歴 (spec 37): 生成した絵の一覧ページ (タイトルバーの下の本体を差し替える)。画像が無くても開ける。 -->
+    <button
+      type="button"
+      class="p-1.5 rounded-full text-glow/60 hover:text-ember hover:bg-glow/10 transition-colors
+             disabled:opacity-50"
+      :disabled="!game.started"
+      :title="t('image.history')"
+      :aria-label="t('image.history')"
+      data-testid="image-history-open"
+      @click="game.openImageHistory()"
+    >
+      <Icon name="grid" :size="15" />
+    </button>
     <!-- 保存。画像が在るときだけ出る。 -->
     <button
       v-if="game.generatedImage"

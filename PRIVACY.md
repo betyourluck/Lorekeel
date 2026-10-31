@@ -105,6 +105,7 @@ Inside the application data folder:
 - `saves/` — autosaves and save slots, including the full narration of your games
 - `packages/` — packages downloaded from the archive or received at a multiplayer table
 - `refs/`, `images/` — reference images and saved illustrations (the image folder can be changed in Settings)
+- `logs/generated_images/` — the history of generated illustrations (every generated image is kept here automatically; you can delete them from the history view in the story pane; if you change the log folder in Settings, the history moves under it)
 - `logs/usage.jsonl` — token counts per request, for the usage meter. **No narration or prompt text.**
 - `logs/consistency.jsonl` — Jev check scores (developer mode only). **No narration text.**
 - `.env` — non-secret settings (endpoints, model names, options)

@@ -14,6 +14,7 @@ mod editor;
 mod editor_lint;
 mod editor_vocab;
 mod image_gen;
+mod image_history;
 mod tts;
 mod ref_stock;
 mod rename;
@@ -1479,6 +1480,9 @@ struct GeneratedImageView {
     /// 生成時にしか決まらないので、ここで返して frontend がトーストへ (黙ると「参照が効かない」
     /// としか見えない = #83 と同じ症状。failures #98 の棚卸し)。
     dropped_refs: Vec<String>,
+    /// 履歴 (spec 37) への書き込みに失敗したときの理由。生成そのものは成功しているので Err にせず、
+    /// frontend がトーストで告げる (沈黙にしない = failures #98 の線)。
+    history_warning: Option<String>,
 }
 
 /// 挿絵を 1 枚生成する (契約 commands.generate_image)。
@@ -1506,10 +1510,13 @@ async fn generate_image(
     // verbatim で送る** — ダイアログに見えているものがそのまま送られる。
     direction: Option<String>,
     prompt_override: Option<String>,
+    // 履歴 (spec 37) の置き場 = 設定「ログ」のフォルダ (空なら既定 app_data/logs)。
+    // `generated_images/` はその下に切る。
+    history_folder: Option<String>,
     session: tauri::State<'_, SharedSession>,
 ) -> Result<GeneratedImageView, String> {
     // ① 素材を写す (参照ストック spec 27 もここで読む — パッケージのフォルダは session が知る)。
-    let (messages, llm_config, seq, refs, dropped_refs) = {
+    let (messages, llm_config, seq, refs, dropped_refs, stem) = {
         let guard = session.lock().await;
         let sess = guard
             .as_ref()
@@ -1543,7 +1550,15 @@ async fn generate_image(
             style,
             refs.len(),
         );
-        (harness::image_prompt_messages(&req), sess.client.config().clone(), sess.scene_seq, refs, dropped)
+        (
+            harness::image_prompt_messages(&req),
+            sess.client.config().clone(),
+            sess.scene_seq,
+            refs,
+            dropped,
+            // 履歴の鍵 (spec 37 D2)。世代が合わず表示を捨てる絵も書くので、ロックの外で使えるよう写す。
+            package_save_stem(&sess.package_root),
+        )
     };
     // 手書き (prompt_override) があるならプロンプト書きは**呼ばない** — 手書きが最終形なので、
     // LLM を通す意味が無いうえ、待ち時間と課金だけ増える (spec 27 B-3)。
@@ -1587,15 +1602,77 @@ async fn generate_image(
         .map_err(|e| e.to_string())?;
     // 利用量 (spec 30 Phase B)。世代不一致で捨てる場合でも課金は起きているので先に記録する。
     app.state::<UsageState>().record_image(config.provider.as_str(), &generated.usage);
+    // 履歴 (spec 37 D3/D4): 成功した絵は世代を問わず書く。失敗は警告に畳んで生成は通す。
+    let history_warning = match resolve_log_dir(&app, history_folder.as_deref().unwrap_or_default()) {
+        Ok(log_dir) => {
+            let dir = image_history::dir_under(&log_dir);
+            image_history::save(&dir, &stem, unix_ms_now(), &generated.mime, &generated.bytes)
+                .err()
+                .map(|e| format!("履歴への保存に失敗しました ({}): {e}", dir.display()))
+        }
+        Err(e) => Some(format!("履歴の置き場を解決できません: {e}")),
+    };
     // ② 世代が一致するときだけ置く。
     let mut guard = session.lock().await;
     let sess = guard.as_mut().ok_or("ゲームが終了しています")?;
     if sess.scene_seq != seq {
-        return Err("場面が変わったため生成した挿絵を破棄しました".into());
+        return Err("場面が変わったため生成した挿絵を破棄しました (履歴には残っています)".into());
     }
     let data_url = image_gen::data_url(&generated.mime, &generated.bytes);
     sess.last_image = Some((generated.mime.clone(), generated.bytes));
-    Ok(GeneratedImageView { data_url, prompt, mime: generated.mime, dropped_refs })
+    Ok(GeneratedImageView { data_url, prompt, mime: generated.mime, dropped_refs, history_warning })
+}
+
+/// 現在時刻の unix ミリ秒 (履歴のファイル名)。時計が 1970 より前なら 0。
+fn unix_ms_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 履歴フォルダを解決し asset:// のスコープへ許す (サムネイルとプレビューはこの経路で描く)。
+fn history_dir_allowed(app: &tauri::AppHandle, folder: &str) -> Result<PathBuf, String> {
+    let dir = image_history::dir_under(&resolve_log_dir(app, folder)?);
+    if dir.is_dir() {
+        let _ = app.asset_protocol_scope().allow_directory(&dir, false);
+    }
+    Ok(dir)
+}
+
+/// 挿絵の履歴 (spec 37): 現在のセッションのパッケージの絵だけを新しい順で返す。
+/// 一覧はフォルダを読んで組む (索引は持たない)。フォルダ不在は空。
+#[tauri::command]
+async fn list_generated_images(
+    app: tauri::AppHandle,
+    folder: Option<String>,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<Vec<image_history::Entry>, String> {
+    let stem = {
+        let guard = session.lock().await;
+        let sess = guard.as_ref().ok_or("ゲームが開始されていません")?;
+        package_save_stem(&sess.package_root)
+    };
+    let dir = history_dir_allowed(&app, folder.as_deref().unwrap_or_default())?;
+    Ok(image_history::list(&dir, &stem))
+}
+
+/// 履歴から 1 枚消す (spec 37 D6)。この盤面の履歴ファイルの名前でなければ拒む。返りは更新後の一覧。
+#[tauri::command]
+async fn delete_generated_image(
+    app: tauri::AppHandle,
+    folder: Option<String>,
+    file_name: String,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<Vec<image_history::Entry>, String> {
+    let stem = {
+        let guard = session.lock().await;
+        let sess = guard.as_ref().ok_or("ゲームが開始されていません")?;
+        package_save_stem(&sess.package_root)
+    };
+    let dir = history_dir_allowed(&app, folder.as_deref().unwrap_or_default())?;
+    image_history::delete(&dir, &stem, &file_name)?;
+    Ok(image_history::list(&dir, &stem))
 }
 
 /// セッションの参照フォルダを返す (無ければ**初回だけ**パッケージの種を写す、spec 27 決定 3)。
@@ -5781,6 +5858,8 @@ pub fn run() {
             generate_image,
             synthesize_speech,
             save_generated_image,
+            list_generated_images,
+            delete_generated_image,
             list_settings_sheets,
             set_reference_slot,
             put_reference_bytes,
@@ -6813,9 +6892,13 @@ mod tests {
             prompt: "p".into(),
             mime: "image/png".into(),
             dropped_refs: vec!["ref3.webp".into()],
+            history_warning: None,
         })
         .unwrap();
         assert_eq!(v["dropped_refs"], serde_json::json!(["ref3.webp"]));
+        // spec 37: 履歴への書き込み失敗も欄として常に載る (null = 失敗なし)。
+        assert!(v.as_object().unwrap().contains_key("history_warning"));
+        assert!(v["history_warning"].is_null());
     }
 }
 

@@ -16,6 +16,14 @@ import {
   type ImageGenSettings,
   type ProviderSlot,
 } from "../imageGen";
+
+/** 挿絵の履歴の 1 枚 (spec 37、backend `image_history::Entry` の写し)。 */
+export interface ImageHistoryEntry {
+  file_name: string;
+  path: string;
+  created_ms: number;
+  bytes: number;
+}
 import type {
   GameView,
   TurnView,
@@ -658,6 +666,16 @@ interface GameState {
   // **1 つの値で持つ = 排他** — 3 枚とも同じ位置に出るので、2 枚を開けると 1 枚しか見えない
   // のにボタンは両方「開いている」と映り、状態表示が嘘になる。揮発 (localStorage に持たない)。
   floatingPanel: "refStock" | "prompt" | "voices" | null;
+  /**
+   * 挿絵の履歴 (spec 37)。`open` = タイトルバーの下の本体を一覧ページに差し替えている。
+   * 一覧はフォルダが正本で、開くたびに backend から読み直す (索引を持たない)。揮発。
+   */
+  imageHistory: {
+    open: boolean;
+    loading: boolean;
+    error: string;
+    entries: ImageHistoryEntry[];
+  };
   // 読み上げ機能を使うか (設定サウンドタブのチェックボックス、localStorage 永続・既定 OFF)。
   // 旧 use_tts (作者宣言ゲート) は 2026-08-31 に撤去 — imageGen.enabled と同型の
   // プレイヤー側スイッチ一本になった。false なら操作を一切出さない。
@@ -772,6 +790,7 @@ export const useGameStore = defineStore("game", {
       showGeneratedImage: true,
       showText: true,
       floatingPanel: null,
+      imageHistory: { open: false, loading: false, error: "", entries: [] },
       compacting: false,
       writingEpilogue: false,
       map: { nodes: [], edges: [] },
@@ -948,10 +967,13 @@ export const useGameStore = defineStore("game", {
           prompt: string;
           mime: string;
           dropped_refs: string[];
+          history_warning: string | null;
         }>("generate_image", {
           config: toBackendConfig(this.imageGen),
           direction: this.imageDirection.trim() || null,
           promptOverride: promptOverride?.trim() || null,
+          // 履歴 (spec 37) の置き場 = ログフォルダ (空なら既定)。
+          historyFolder: this.logDir,
         });
         if (reqId !== this.imageRequestId) return; // 場面が変わった (新規/ロード/遷移)
         this.generatedImage = { dataUrl: view.data_url, prompt: view.prompt };
@@ -964,6 +986,10 @@ export const useGameStore = defineStore("game", {
             names: view.dropped_refs.join(", "),
           });
         }
+        // 履歴への書き込み失敗は生成の成功と別に告げる (黙ると「履歴に無い」としか見えない)。
+        if (view.history_warning) this.logToast = t("store.imageHistoryWarn", { msg: view.history_warning });
+        // 一覧を開いたまま生成したなら、新しい 1 枚を即座に足す。
+        if (this.imageHistory.open) void this.refreshImageHistory();
       } catch (e) {
         if (reqId === this.imageRequestId) this.logToast = t("store.imageFailed", { error: String(e) });
       } finally {
@@ -993,6 +1019,43 @@ export const useGameStore = defineStore("game", {
     toggleFloatingPanel(panel: "refStock" | "prompt" | "voices"): void {
       this.floatingPanel = this.floatingPanel === panel ? null : panel;
     },
+
+    // --- 挿絵の履歴 (spec 37) ------------------------------------------------------------
+    /** 一覧ページを開く (本体を差し替える)。浮遊パネルは畳む (同じ場所には出ないが、戻ったときに
+     *  開きっぱなしの板が残るのを避ける)。 */
+    openImageHistory(): void {
+      if (!this.started) return;
+      this.floatingPanel = null;
+      this.imageHistory.open = true;
+    },
+    closeImageHistory(): void {
+      this.imageHistory.open = false;
+    },
+    /** フォルダを読み直す。失敗は一覧の中に出す (トーストは一覧ページでは見えにくい)。 */
+    async refreshImageHistory(): Promise<void> {
+      this.imageHistory.loading = true;
+      this.imageHistory.error = "";
+      try {
+        this.imageHistory.entries = await invoke<ImageHistoryEntry[]>("list_generated_images", {
+          folder: this.logDir,
+        });
+      } catch (e) {
+        this.imageHistory.error = t("store.imageHistoryFailed", { error: String(e) });
+      } finally {
+        this.imageHistory.loading = false;
+      }
+    },
+    /** 1 枚消す (確認は呼び出し側)。backend が更新後の一覧を返す。 */
+    async deleteImageHistoryEntry(fileName: string): Promise<void> {
+      try {
+        this.imageHistory.entries = await invoke<ImageHistoryEntry[]>("delete_generated_image", {
+          folder: this.logDir,
+          fileName,
+        });
+      } catch (e) {
+        this.logToast = t("store.imageHistoryDeleteFailed", { error: String(e) });
+      }
+    },
     /**
      * 挿絵まわりの**揮発物**を一括で捨てる (spec 24 の挿絵 + spec 27 の「この一枚への指示」)。
      *
@@ -1005,6 +1068,8 @@ export const useGameStore = defineStore("game", {
       this.generatedImage = null;
       this.imageDirection = "";
       this.imageRequestId++; // 進行中の生成の結果を捨てる (古い完了は reqId で無視される)
+      // 履歴の一覧ページ (spec 37) も畳む — 新規/ロードでパッケージが替わると中身が別の盤面のものになる。
+      this.imageHistory.open = false;
     },
 
     // --- 参照ストック (spec 27 A) -------------------------------------------------------

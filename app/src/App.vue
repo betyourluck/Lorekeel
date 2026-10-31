@@ -35,6 +35,8 @@ import { migrateLegacyProfileKeys } from "./profileSecrets";
 const EditorPane = defineAsyncComponent(() => import("./components/EditorPane.vue"));
 // 初回起動のナビゲーション (2026-09-07)。初回にしか読まれないので動的 import (chunk 境界)。
 const FirstRunTour = defineAsyncComponent(() => import("./components/FirstRunTour.vue"));
+// 挿絵の履歴 (spec 37)。開いたときだけ読む。
+const ImageHistoryPage = defineAsyncComponent(() => import("./components/ImageHistoryPage.vue"));
 
 const game = useGameStore();
 const showSettings = ref(false);
@@ -359,8 +361,13 @@ onUnmounted(() => {
       </div>
     </header>
 
+    <!-- 挿絵の履歴 (spec 37): タイトルバーの下の本体全体を 1 ページに差し替える。
+         表示の差し替えだけで、プレイ状態は捨てない (戻るで元の画面へ)。 -->
+    <div v-if="game.imageHistory.open" class="flex flex-1 overflow-hidden">
+      <ImageHistoryPage />
+    </div>
     <!-- 本体 -->
-    <div class="flex flex-1 overflow-hidden">
+    <div v-else class="flex flex-1 overflow-hidden">
       <main
         class="flex-1 flex flex-col min-w-0 bg-cover bg-center transition-[background-image] duration-700"
         :style="game.backgroundStyle"
