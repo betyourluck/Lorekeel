@@ -1700,8 +1700,19 @@ ${body}`, t("rename.ok"), true);
 
     // 「最新版があります」クリック: 配布サイトを既定ブラウザで開く (アプリ更新は手動)。
     async openUpdateSite() {
+      await this.openSiteHome();
+    },
+
+    /**
+     * 書庫のトップを既定ブラウザで開く (パッケージ一覧の配布サイトタブ「ブラウザで開く」、2026-11-01)。
+     * `url` を渡せばそれを開く — タブの入力欄に打ったまま「接続」していない URL でも先にブラウザで
+     * 確かめられるように。空なら `setSiteUrl` と同じく既定へ倒す。http(s) 以外は backend が断り、
+     * 理由はトーストに出る。
+     */
+    async openSiteHome(url?: string) {
+      const target = url?.trim() || this.siteUrl || DEFAULT_SITE_URL;
       try {
-        await invoke("open_external_url", { url: this.siteUrl });
+        await invoke("open_external_url", { url: target });
       } catch (e) {
         this.logToast = t("store.openSiteFailed", { error: String(e) });
       }

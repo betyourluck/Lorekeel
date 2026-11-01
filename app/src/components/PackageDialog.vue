@@ -304,6 +304,14 @@ function totalPages(): number {
             >
               {{ t("packages.connect") }}
             </button>
+            <button
+              class="rounded bg-ash/60 hover:bg-ash px-2 py-1 text-xs text-parchment"
+              :title="t('packages.openInBrowserTitle')"
+              data-testid="site-open-browser"
+              @click="game.openSiteHome(siteUrlInput)"
+            >
+              {{ t("packages.openInBrowser") }}
+            </button>
           </div>
           <div class="flex items-center gap-2">
             <input
