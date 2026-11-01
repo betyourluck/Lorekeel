@@ -29,6 +29,10 @@ function togglePrompt() {
   game.toggleFloatingPanel("prompt");
 }
 
+// GM (LLM) の応答待ちの間は、挿絵まわりの入口 (生成・参照・プロンプト・履歴) を押せなくする
+// (ユーザー要望 2026-11-02)。`loading` は単騎の play_turn・卓の締切 (play_party_turn)・
+// 新規/再開/ロードで立つ。開いているパネルは閉じない (それぞれの ✕ で閉じられる)。
+const gmBusy = computed(() => game.loading);
 const genLabel = computed(() => (game.imageBusy ? t("image.generating") : t("image.generate")));
 const imageToggleLabel = computed(() =>
   game.showGeneratedImage ? t("image.hideImage") : t("image.showImage"),
@@ -43,12 +47,12 @@ const textToggleLabel = computed(() => (game.showText ? t("image.hideText") : t(
            opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity duration-200"
     :class="game.ttsFeature ? 'right-36' : 'right-4'"
   >
-    <!-- 生成。処理中は押せない (スピナー)。気に入らなければ何度でも押せる (差し替え)。 -->
+    <!-- 生成。処理中と GM の応答待ちは押せない (スピナーは生成中だけ)。気に入らなければ何度でも押せる (差し替え)。 -->
     <button
       type="button"
       class="p-1.5 rounded-full text-glow/60 hover:text-ember hover:bg-glow/10 transition-colors
              disabled:opacity-50 disabled:hover:text-glow/60 disabled:hover:bg-transparent"
-      :disabled="game.imageBusy || !game.started"
+      :disabled="game.imageBusy || gmBusy || !game.started"
       :title="genLabel"
       :aria-label="genLabel"
       @click="game.generateImage()"
@@ -61,7 +65,7 @@ const textToggleLabel = computed(() => (game.showText ? t("image.hideText") : t(
       type="button"
       class="p-1.5 rounded-full text-glow/60 hover:text-ember hover:bg-glow/10 transition-colors
              disabled:opacity-50"
-      :disabled="!game.started"
+      :disabled="gmBusy || !game.started"
       :class="{ 'text-ember bg-glow/10': showRefStock }"
       :title="t('refStock.heading')"
       :aria-label="t('refStock.heading')"
@@ -75,7 +79,7 @@ const textToggleLabel = computed(() => (game.showText ? t("image.hideText") : t(
       type="button"
       class="p-1.5 rounded-full text-glow/60 hover:text-ember hover:bg-glow/10 transition-colors
              disabled:opacity-50"
-      :disabled="!game.started"
+      :disabled="gmBusy || !game.started"
       :class="{ 'text-ember bg-glow/10': showPrompt }"
       :title="t('promptWorkshop.heading')"
       :aria-label="t('promptWorkshop.heading')"
@@ -89,7 +93,7 @@ const textToggleLabel = computed(() => (game.showText ? t("image.hideText") : t(
       type="button"
       class="p-1.5 rounded-full text-glow/60 hover:text-ember hover:bg-glow/10 transition-colors
              disabled:opacity-50"
-      :disabled="!game.started"
+      :disabled="gmBusy || !game.started"
       :title="t('image.history')"
       :aria-label="t('image.history')"
       data-testid="image-history-open"
