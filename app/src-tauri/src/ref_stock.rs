@@ -36,13 +36,21 @@ pub fn ext_for_mime(mime: &str) -> Option<&'static str> {
     }
 }
 
+/// PNG の先頭 8 バイト (PNG 仕様の signature = 89 50 4E 47 0D 0A 1A 0A)。
+///
+/// **数値の配列で書き、エスケープつきのバイト文字列にしない。** 2026-08-24 (2a6fa83) から
+/// 2026-11-17 まで、ここは 11 バイトの壊れた列 (C2 89 "PNG" 0D 0D 0A 1A 0D 0A) だった —
+/// 0x89 が UTF-8 の 2 バイトに、改行が CR LF に化けた形で、本物の PNG は 1 枚も通らなかった。
+/// 数値なら、文字コードや改行の変換を通っても値が変わらない。
+const PNG_SIGNATURE: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+
 /// 先頭バイトから mime を読む (純関数)。**frontend の申告を信じない** — ローカルファイルの取り込み
 /// (spec 27 追補) は WebView が WebP へ変換してから送る建前だが、変換が失敗して元の bytes が
 /// そのまま来ても、ここで実体に合った拡張子が付く (拡張子と中身のずれは後で全経路を騙す)。
 pub fn sniff_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
         Some("image/webp")
-    } else if bytes.starts_with(b"\xc2\x89PNG\x0d\x0d\x0a\x1a\x0d\x0a") {
+    } else if bytes.starts_with(&PNG_SIGNATURE) {
         Some("image/png")
     } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
         Some("image/jpeg")
@@ -343,11 +351,37 @@ mod tests {
     #[test]
     fn sniff_mime_reads_magic_bytes() {
         assert_eq!(sniff_mime(b"RIFF\x10\x00\x00\x00WEBPVP8 "), Some("image/webp"));
-        assert_eq!(sniff_mime(b"\xc2\x89PNG\x0d\x0d\x0a\x1a\x0d\x0a...."), Some("image/png"));
+        assert_eq!(
+            sniff_mime(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00]),
+            Some("image/png")
+        );
+        // 以前この判定が見ていた壊れた列 (0x89 が UTF-8 に、改行が CR LF に化けた形) は PNG ではない。
+        assert_eq!(
+            sniff_mime(&[0xC2, 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0D, 0x0A, 0x1A, 0x0D, 0x0A, 0x00]),
+            None
+        );
         assert_eq!(sniff_mime(&[0xFF, 0xD8, 0xFF, 0xE0, 0x00]), Some("image/jpeg"));
         assert_eq!(sniff_mime(b"GIF89a"), None, "gif は参照にしない (sheet_mime と同じ閉集合)");
         assert_eq!(sniff_mime(b"RIFF\x10\x00\x00\x00WAVE"), None, "RIFF でも WEBP でなければ弾く");
         assert_eq!(sniff_mime(b""), None);
+    }
+
+    /// 【本物の PNG】判定の相手は手書きの字面でなく、外部の道具 (`tauri icon`) が書いた実ファイル。
+    /// コードとテストが同じ字面を写していると、字面が壊れても両方が同じ向きに壊れて通ってしまう
+    /// (2026-08-24 の 2a6fa83 から 2026-11-17 まで、判定もテストも壊れた 11 バイトを見ていた)。
+    #[test]
+    fn sniff_mime_accepts_a_real_png_file() {
+        let real: &[u8] = include_bytes!("../icons/32x32.png");
+        assert_eq!(sniff_mime(real), Some("image/png"), "同梱アイコンは本物の PNG");
+        // パスから読む経路 (生成済みフォルダから) も同じ判定を通る。
+        let dir = tmp("realpng");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("picked.png");
+        std::fs::write(&path, real).unwrap();
+        let (mime, bytes) = read_image_file(&path).unwrap();
+        assert_eq!(mime, "image/png");
+        assert_eq!(bytes, real);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// 【合計上限】後ろ (ref3 → ref2) から落とし、落とした名前を返す。
