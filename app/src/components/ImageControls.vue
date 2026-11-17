@@ -38,14 +38,22 @@ const imageToggleLabel = computed(() =>
   game.showGeneratedImage ? t("image.hideImage") : t("image.showImage"),
 );
 const textToggleLabel = computed(() => (game.showText ? t("image.hideText") : t("image.showText")));
+
+// 右端からの位置。2 つの事情で左へ寄る: ①読み上げの操作列と同居する (その幅ぶん = 9rem)
+// ②最新へ飛ぶボタンが右下角に出ている (幅 2rem + すき間 0.5rem = 2.5rem、TtsControls と同じ量)。
+const rightClass = computed(() => {
+  if (game.ttsFeature) return game.jumpToLatestVisible ? "right-[11.5rem]" : "right-36";
+  return game.jumpToLatestVisible ? "right-14" : "right-4";
+});
 </script>
 
 <template>
   <div
     class="absolute bottom-3 z-20 flex items-center gap-1 rounded-full bg-ink/70 backdrop-blur-sm
            px-1.5 py-1 shadow-lg ring-1 ring-glow/10
-           opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity duration-200"
-    :class="game.ttsFeature ? 'right-36' : 'right-4'"
+           opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-[opacity,right] duration-200"
+    :class="rightClass"
+    data-testid="image-controls"
   >
     <!-- 生成。処理中と GM の応答待ちは押せない (スピナーは生成中だけ)。気に入らなければ何度でも押せる (差し替え)。 -->
     <button

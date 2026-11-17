@@ -1,7 +1,10 @@
 <script setup lang="ts">
+import { onBeforeUnmount, onMounted, ref } from "vue";
+
 import { useGameStore, degreeLabel, statRollLine } from "../stores/game";
 import type { StatRollView } from "../types/api";
 import { t } from "../i18n";
+import { isNearBottom } from "../logScroll";
 import { PLAYER_SPEAKER } from "../tts";
 import DiceReveal from "./DiceReveal.vue";
 import DecisionPanel from "./DecisionPanel.vue";
@@ -9,6 +12,60 @@ import ContestPanel from "./ContestPanel.vue";
 import Icon from "./Icon.vue";
 
 const game = useGameStore();
+
+/**
+ * 最新へ飛ぶボタン (2026-11-17、ユーザー要望)。末尾が見えていないときだけ出て、押すと末尾へ送る。
+ *
+ * 会話ログは新しい行に追従しない (語りはターンごとに丸ごと届くので、末尾へ送ると書き出しが
+ * 画面の外へ出る)。ゆえに過去を読み返した後や、長い語りが届いた後に、末尾へ戻る手段がホイール
+ * しか無かった。追従は足していない — 足すのはこのボタンだけ。
+ *
+ * **置き場は会話ペインの右下角** (同日のユーザー決定「もっと一番下に。音声や画像生成のバーの右で
+ * 良い」)。当初は Fuseforks と同じ下端中央だったが、読み上げ・挿絵の操作列と重なるので帯の上へ
+ * 持ち上げており、位置が高かった。右下角は操作列の定位置なので、ボタンが出ている間は操作列が
+ * その左へ寄る — 「出ているか」は store の `jumpToLatestVisible` 1 本を両方が読む。
+ *
+ * 取り直す契機は 3 つ: ①スクロール ②中身の出入り (行の追加・開帳・畳みの開閉・決断や対決の
+ * パネル = 子部品の描き直しも含むので、Vue の更新フックでなく DOM の変化を見る) ③窓の大きさ
+ * (ウィンドウ・右ペインの幅)。②③はスクロールが起きないまま末尾との距離だけが変わる。
+ */
+const scroller = ref<HTMLElement | null>(null);
+
+function syncAtBottom(): void {
+  const el = scroller.value;
+  if (el) game.logAtBottom = isNearBottom(el);
+}
+function jumpToLatest(): void {
+  const el = scroller.value;
+  if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+}
+
+let mutations: MutationObserver | null = null;
+let resizes: ResizeObserver | null = null;
+onMounted(() => {
+  const el = scroller.value;
+  if (!el) return;
+  mutations = new MutationObserver(syncAtBottom);
+  // style / class は本文の文字サイズ (container の style) や畳みの開閉など、高さを変えうる属性。
+  mutations.observe(el, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+    attributes: true,
+    attributeFilter: ["style", "class"],
+  });
+  if (typeof ResizeObserver !== "undefined") {
+    resizes = new ResizeObserver(syncAtBottom);
+    resizes.observe(el);
+  }
+  syncAtBottom();
+});
+onBeforeUnmount(() => {
+  mutations?.disconnect();
+  resizes?.disconnect();
+  // 部品が外れる (編集モード・挿絵の履歴ページ・ゲーム未開始) ときは、操作列を定位置へ戻す。
+  game.logAtBottom = true;
+});
 
 /** 加算式判定のダイス表記: 既定 1d20(5)、複数/乗数なら 3d6(合計11)×5 (2026-07-20)。 */
 function diceLabel(c: { count: number; sides: number; roll: number; times: number }): string {
@@ -36,9 +93,15 @@ function statRollFinal(sr: StatRollView): number {
        色+影は語り系要素にだけ当てる。 -->
   <!-- `selectable`: 語りは読んで写すためのテキストなので選択を許す (UI ラベルは main.css で
        一律 select-none)。 -->
+  <!-- 外側は流れない枠。最新へ飛ぶボタンを右下角に固定するために要る (流れる側の中に absolute で
+       置くと中身と一緒に流れる)。親 (App.vue) が渡す class はこの枠に付く。 -->
+  <div class="relative flex-1 min-h-0 flex flex-col">
   <div
+    ref="scroller"
     class="selectable flex-1 overflow-y-auto px-6 py-5 space-y-4"
     :style="game.messageAreaStyle"
+    data-testid="log-scroller"
+    @scroll.passive="syncAtBottom"
   >
     <template v-for="(entry, i) in game.log" :key="i">
       <!-- 開幕描写 -->
@@ -261,4 +324,69 @@ function statRollFinal(sr: StatRollView): number {
       }}
     </p>
   </div>
+
+  <!-- 最新へ飛ぶボタン。会話ペインの右下角 = 読み上げ・挿絵の操作列の定位置で、出ている間は
+       操作列が左へ寄る (TtsControls / ImageControls が同じ `jumpToLatestVisible` を読む)。
+       高さは操作列の帯の中心に揃える (`bottom-[1.125rem]` = 帯の中心 2.125rem − 半径 1rem)。
+       操作列と違いホバーを待たずに出す — 「下にまだ続きがある」の合図でもあるため。
+       GM の応答を待っている間は ↓ の代わりに三点が波打つ (末尾の「GM が思案している……」が
+       見えていない位置でも、動いていることが分かる)。 -->
+  <button
+    v-if="game.jumpToLatestVisible"
+    type="button"
+    class="absolute right-4 bottom-[1.125rem] flex h-8 w-8 items-center justify-center
+           rounded-full border border-parchment/30 bg-ink/90 text-parchment/70 shadow-md backdrop-blur-sm
+           transition-colors hover:border-ember hover:text-ember"
+    :title="game.loading ? t('log.jumpToLatestBusy') : t('log.jumpToLatest')"
+    :aria-label="game.loading ? t('log.jumpToLatestBusy') : t('log.jumpToLatest')"
+    data-testid="jump-latest"
+    @click="jumpToLatest"
+  >
+    <span v-if="game.loading" class="jump-dots" aria-hidden="true" data-testid="jump-latest-dots">
+      <span class="jump-dot" /><span class="jump-dot" /><span class="jump-dot" />
+    </span>
+    <Icon v-else name="arrow-down" :size="16" />
+  </button>
+  </div>
 </template>
+
+<style scoped>
+/* 最新へ飛ぶボタンの三点 (GM の応答待ち)。色は currentColor = ボタンの文字色に従う
+   (文字色を utility で決めているので、ライトの減光カーブもそのまま通る)。 */
+.jump-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.jump-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 9999px;
+  background-color: currentColor;
+  animation: jump-wave 1.2s ease-in-out infinite;
+}
+.jump-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.jump-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes jump-wave {
+  0%,
+  60%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .jump-dot {
+    animation: none;
+    opacity: 0.8;
+  }
+}
+</style>

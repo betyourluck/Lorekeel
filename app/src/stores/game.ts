@@ -667,6 +667,12 @@ interface GameState {
   // のにボタンは両方「開いている」と映り、状態表示が嘘になる。揮発 (localStorage に持たない)。
   floatingPanel: "refStock" | "prompt" | "voices" | null;
   /**
+   * 会話ログの末尾が見えているか (2026-11-17、最新へ飛ぶボタン)。測るのは `ConversationLog` で、
+   * ここは結果を置くだけ — ボタンは会話ペインの右下角に出るので、同じ角に居る操作列
+   * (読み上げ・挿絵) が左へ避けるために読む。揮発。部品が外れるときは true へ戻す。
+   */
+  logAtBottom: boolean;
+  /**
    * 挿絵の履歴 (spec 37)。`open` = タイトルバーの下の本体を一覧ページに差し替えている。
    * 一覧はフォルダが正本で、開くたびに backend から読み直す (索引を持たない)。揮発。
    */
@@ -790,6 +796,7 @@ export const useGameStore = defineStore("game", {
       showGeneratedImage: true,
       showText: true,
       floatingPanel: null,
+      logAtBottom: true,
       imageHistory: { open: false, loading: false, error: "", entries: [] },
       compacting: false,
       writingEpilogue: false,
@@ -801,6 +808,12 @@ export const useGameStore = defineStore("game", {
   getters: {
     // ゴール到達済みか (入力を締める判断に使う)。
     cleared: (s): boolean => s.state?.goal_reached ?? false,
+    /**
+     * 最新へ飛ぶボタンが出ているか。**ボタン自身と、左へ避ける操作列が同じこの 1 本を読む** —
+     * 別々に判定すると「ボタンは無いのに操作列だけ左へ寄っている」帯が生まれる。
+     * 文字を隠している間 (挿絵の鑑賞) は会話ログごと見えないので、ボタンも出さない。
+     */
+    jumpToLatestVisible: (s): boolean => !s.logAtBottom && s.showText,
     // 編集モードで未保存の変更があるか (● マーカー / 4 契機の確認の判定)。
     /** 開いているファイル宛て (+ パッケージ全体宛て) の層 2 指摘の数 — 「AI に直させる」ボタンの有効条件。 */
     editorIssuesForCurrent: (s): number =>

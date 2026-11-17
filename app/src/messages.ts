@@ -646,6 +646,8 @@ export const messages = {
       thinking: "GM が思案している……",
       compacting: "あらすじをまとめています……",
       writingEpilogue: "エピローグを紡いでいます……",
+      jumpToLatest: "最新へ",
+      jumpToLatestBusy: "GM が思案中 — 最新へ",
     },
     state: {
       playedBy: "プレイヤー: {name}",
@@ -1646,6 +1648,8 @@ export const messages = {
       thinking: "The GM is thinking…",
       compacting: "Summarizing the synopsis…",
       writingEpilogue: "Writing the epilogue…",
+      jumpToLatest: "Jump to latest",
+      jumpToLatestBusy: "The GM is thinking — jump to latest",
     },
     state: {
       playedBy: "Player: {name}",
