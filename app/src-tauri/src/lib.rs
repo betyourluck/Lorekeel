@@ -9,6 +9,7 @@
 //! - `new_game(scenario_path?)`: シナリオ + characters + 伏線をロードし初期 state を作って session に格納
 //! - `play_turn(action)`: session を lock し run_turn → 発火 recall を pending_lore に持ち越し → view を返す
 
+mod build_job;
 mod edit_assist;
 mod editor;
 mod editor_lint;
@@ -1110,14 +1111,7 @@ async fn edit_assist_run(
         instruction,
         initial_text: initial_text.clone(),
     };
-    // モデル: EDITOR_LLM_* があればそれ、無ければ GM の設定 (spec 29 決定 10)。
-    let base = LlmConfig::from_env().map_err(|e| e.to_string())?;
-    let config = LlmConfig::editor_from_env(&base).map_err(|e| e.to_string())?.unwrap_or(base);
-    let model = config.model.clone();
-    let client = LlmClient::new(config)
-        .map_err(|e| e.to_string())?
-        .with_role("editor")
-        .with_usage_sink(app.state::<UsageState>().sink());
+    let (client, model) = editor_client(&app)?;
     cancel.0.store(false, std::sync::atomic::Ordering::Relaxed);
     let mut session = edit_assist::EditSession::new(&root, &target_rel, &kind, files, &initial_text);
     let messages = ea::build_messages(&req);
@@ -1145,6 +1139,201 @@ async fn edit_assist_run(
 /// 実行中の AI 編集を取り消す (次の周回境界で止まる)。
 #[tauri::command]
 async fn edit_assist_cancel(cancel: tauri::State<'_, EditAssistCancel>) -> Result<(), String> {
+    cancel.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+/// AI 編集と AI 組み立てのモデル: `EDITOR_LLM_*` があればそれ、無ければ GM の設定
+/// (spec 29 決定 10 / spec 38 決定 14)。呼び出しのたびに env を読む = 設定の変更は次の実行から効く。
+/// 利用量は spec 30 の `editor` 役に載る。返りの 2 つ目は使うモデル名 (画面に出す)。
+fn editor_client(app: &tauri::AppHandle) -> Result<(LlmClient, String), String> {
+    let base = LlmConfig::from_env().map_err(|e| e.to_string())?;
+    let config = LlmConfig::editor_from_env(&base).map_err(|e| e.to_string())?.unwrap_or(base);
+    let model = config.model.clone();
+    let client = LlmClient::new(config)
+        .map_err(|e| e.to_string())?
+        .with_role("editor")
+        .with_usage_sink(app.state::<UsageState>().sink());
+    Ok((client, model))
+}
+
+// =============================================================================
+// AI でパッケージを組む (spec 38 Phase C) — 計画 / 組み立て / 適用
+// =============================================================================
+
+/// 組み立て (計画と実行) の取り消しフラグ。AI 編集のフラグとは別 (片方を止めて他方を止めない)。
+/// newtype なのは EditorRoot と同じ理由 (#89)。
+struct BuildCancel(std::sync::atomic::AtomicBool);
+
+/// 実行から適用までの変更セット (一度に 1 つ)。
+struct BuildJobState(Mutex<Option<build_job::BuildJob>>);
+
+/// 計画と組み立ては一度に 1 つ (どちらも LLM を回し、組み立ては一時フォルダを作る)。
+static BUILDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 組み立て中フラグの RAII ガード (どの return でも必ず降りる — UpdateGuard と同型)。
+struct BuildGuard;
+impl BuildGuard {
+    fn acquire() -> Result<Self, String> {
+        BUILDING
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .map(|_| BuildGuard)
+            .map_err(|_| "別の組み立てが進行中です".to_string())
+    }
+}
+impl Drop for BuildGuard {
+    fn drop(&mut self) {
+        BUILDING.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// 組み立ての共通の入口検査: 卓の最中でない・依頼が空でない・編集モードである。返りは編集ルート。
+async fn build_preflight(
+    session: &SharedSession,
+    editor_root: &EditorRoot,
+    request: &str,
+) -> Result<PathBuf, String> {
+    if table_is_active(session).await {
+        return Err("卓の最中は組み立てられません".into());
+    }
+    if request.trim().is_empty() {
+        return Err("依頼が空です".into());
+    }
+    editor_root.0.lock().await.clone().ok_or_else(|| "編集モードではありません".to_string())
+}
+
+/// `build_plan` の返り。`rejected` は最初の計画が受け付けられなかった理由 (立て直して通った
+/// ときだけ中身がある — 画面で「立て直しました」を言う材料)。
+#[derive(Serialize)]
+struct BuildPlanView {
+    items: Vec<harness::package_build::PlanItem>,
+    rejected: Vec<String>,
+    model: String,
+}
+
+/// 計画を立てる (spec 38 決定 2・3)。ディスクには触れない — 計画は作者が画面で直してから
+/// `build_run` に渡す。一覧と id 表は今の編集ルートから。
+#[tauri::command]
+async fn build_plan(
+    app: tauri::AppHandle,
+    request: String,
+    session: tauri::State<'_, SharedSession>,
+    editor_root: tauri::State<'_, EditorRoot>,
+) -> Result<BuildPlanView, String> {
+    let root = build_preflight(&session, &editor_root, &request).await?;
+    let _guard = BuildGuard::acquire()?;
+    let existing: Vec<String> = editor::list_files(&root).into_iter().map(|e| e.rel_path).collect();
+    let ids = edit_assist::ids_table(&editor_vocab::build_vocabulary(&root));
+    let (client, model) = editor_client(&app)?;
+    let planned = harness::package_build::make_plan(&client, &request, &existing, &ids)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(BuildPlanView { items: planned.items, rejected: planned.rejected, model })
+}
+
+/// 組み立てる (spec 38 決定 4〜8・12)。計画 (作者が直したもの) は harness が検め直す。
+/// 一時フォルダは `app_data/build_staging/run_*` に作り、結果は変更セットとして持つ — **ディスク
+/// には書かない** (書くのは `build_apply`)。進行は `edit-build-progress` イベント (1 行ずつ、
+/// ファイルの切り替わりは `▶ path (新規|変更)`)。前の変更セットはここで捨てる (一度に 1 つ)。
+#[tauri::command]
+async fn build_run(
+    app: tauri::AppHandle,
+    request: String,
+    plan: Vec<harness::package_build::PlanItem>,
+    session: tauri::State<'_, SharedSession>,
+    editor_root: tauri::State<'_, EditorRoot>,
+    job: tauri::State<'_, BuildJobState>,
+    cancel: tauri::State<'_, BuildCancel>,
+) -> Result<build_job::BuildView, String> {
+    use tauri::Emitter;
+    let root = build_preflight(&session, &editor_root, &request).await?;
+    let _guard = BuildGuard::acquire()?;
+    if let Some(prev) = job.0.lock().await.take() {
+        prev.discard();
+    }
+    let (client, model) = editor_client(&app)?;
+    let app_data = app.path().app_data_dir().map_err(|e| format!("アプリのデータフォルダが見つかりません: {e}"))?;
+    let base = build_job::staging_base(&app_data);
+    build_job::clean_leftovers(&base, &root);
+    let staging = harness::package_build::Staging::prepare(&root, &build_job::new_staging_dir(&base))?;
+    cancel.0.store(false, std::sync::atomic::Ordering::Relaxed);
+    let mut progress = |line: String| {
+        let _ = app.emit("edit-build-progress", line);
+    };
+    let outcome =
+        match harness::package_build::run_build(&client, &request, &plan, &staging, &cancel.0, &mut progress).await {
+            Ok(o) => o,
+            Err(errs) => {
+                staging.discard();
+                return Err(format!("計画を受け付けられませんでした:\n{}", errs.join("\n")));
+            }
+        };
+    // 実行中に編集モードを出た・別のパッケージへ移った: 結果の行き先が無いので捨てる
+    // (frontend は実行中に編集モードを出させない — これは二層目)。
+    if editor_root.0.lock().await.as_deref() != Some(root.as_path()) {
+        staging.discard();
+        return Err("組み立ての途中で編集モードを出たので、結果は捨てました".into());
+    }
+    let view = build_job::view_of(&outcome, &model);
+    *job.0.lock().await = Some(build_job::BuildJob::new(root, staging, outcome.files));
+    Ok(view)
+}
+
+/// `build_apply` の返り。`files` は書いた後のファイル一覧 (新規が増える — 1 往復で UI が揃う)。
+#[derive(Serialize)]
+struct BuildApplyView {
+    #[serde(flatten)]
+    report: harness::package_build::ApplyReport,
+    files: Vec<editor::EditorFileEntry>,
+}
+
+/// 変更セットのうち `paths` をディスクへ書く (spec 38 決定 9・10)。実行中にディスクの本文が
+/// 変わったファイルは書かない (`conflicts`)。書庫版なら `fork` で出所メタを消す (確認は frontend)。
+/// 変更セットはここで終わる (一時フォルダも消える)。組み立てた時と別のパッケージを編集中なら
+/// 書かず、変更セットは残す。
+#[tauri::command]
+async fn build_apply(
+    paths: Vec<String>,
+    fork: bool,
+    session: tauri::State<'_, SharedSession>,
+    editor_root: tauri::State<'_, EditorRoot>,
+    job: tauri::State<'_, BuildJobState>,
+) -> Result<BuildApplyView, String> {
+    if table_is_active(&session).await {
+        return Err("卓の最中は適用できません".into());
+    }
+    // 編集ルートの lock を書き終えるまで持つ (保存と同じ — 書いている間に編集ルートが替わらない)。
+    let root_guard = editor_root.0.lock().await;
+    let mut slot = job.0.lock().await;
+    let Some(j) = slot.as_ref() else {
+        return Err("適用できる変更セットがありません".into());
+    };
+    j.check_root(root_guard.as_deref())?;
+    let j = slot.take().expect("直前に在ることを確かめた");
+    drop(slot);
+    let root = j.root().to_path_buf();
+    let report = j.apply(&paths, fork, update::SOURCE_META_FILES);
+    Ok(BuildApplyView { report, files: editor::list_files(&root) })
+}
+
+/// 変更セットを適用せずに捨てる (一時フォルダも消す)。無ければ何もしない。
+#[tauri::command]
+async fn build_discard(job: tauri::State<'_, BuildJobState>) -> Result<(), String> {
+    if let Some(j) = job.0.lock().await.take() {
+        j.discard();
+    }
+    Ok(())
+}
+
+/// 組み立ての取り消し (ファイル境界と周回境界で効く。飛行中の 1 呼び出しは完走)。
+/// 止めても書き終えたファイルは変更セットに残る。計画 (1 往復) は取り消せない。
+#[tauri::command]
+async fn build_cancel(cancel: tauri::State<'_, BuildCancel>) -> Result<(), String> {
     cancel.0.store(true, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
@@ -1998,9 +2187,14 @@ async fn open_editor(
     path: String,
     session: tauri::State<'_, SharedSession>,
     editor_root: tauri::State<'_, EditorRoot>,
+    job: tauri::State<'_, BuildJobState>,
 ) -> Result<EditorOpenView, String> {
     if table_is_active(&session).await {
         return Err("卓の最中は編集モードに入れません".into());
+    }
+    // 編集モードを出入りしたら組み立ての変更セットは捨てる (spec 38 C — 行き先が変わりうる)。
+    if let Some(j) = job.0.lock().await.take() {
+        j.discard();
     }
     let dir = resolve_pkg_dir(&path);
     if !dir.join("package.yaml").is_file() {
@@ -2020,8 +2214,14 @@ async fn open_editor(
 
 /// 編集モードを出る (登録解除)。
 #[tauri::command]
-async fn close_editor(editor_root: tauri::State<'_, EditorRoot>) -> Result<(), String> {
+async fn close_editor(
+    editor_root: tauri::State<'_, EditorRoot>,
+    job: tauri::State<'_, BuildJobState>,
+) -> Result<(), String> {
     *editor_root.0.lock().await = None;
+    if let Some(j) = job.0.lock().await.take() {
+        j.discard();
+    }
     Ok(())
 }
 
@@ -5787,6 +5987,8 @@ pub fn run() {
         .manage(GuestAssetRoot::new(None))
         .manage(EditorRoot(Mutex::new(None)))
         .manage(EditAssistCancel(std::sync::atomic::AtomicBool::new(false)))
+        .manage(BuildCancel(std::sync::atomic::AtomicBool::new(false)))
+        .manage(BuildJobState(Mutex::new(None)))
         .setup(|app| {
             // 前回 set_llm_config が保存した app_data_dir/.env を読み込む (無ければ何もしない)。
             // **override で読む**: dev では main.rs の dotenvy が repo .env を先に読んでおり、
@@ -5897,6 +6099,11 @@ pub fn run() {
             editor_vocabulary,
             edit_assist_run,
             edit_assist_cancel,
+            build_plan,
+            build_run,
+            build_apply,
+            build_discard,
+            build_cancel,
             create_editor_file,
             create_local_package,
             delete_editor_file,

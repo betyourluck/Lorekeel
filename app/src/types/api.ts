@@ -542,3 +542,70 @@ export interface EditAssistView {
   stopped: "limit" | "repeat" | "cancel" | "error" | null;
   model: string;
 }
+
+/** spec 38: 計画 1 行 (ファイル 1 つ)。backend `harness::package_build::PlanItem` と同じ形。 */
+export interface BuildPlanItem {
+  path: string;
+  action: "create" | "edit";
+  instruction: string;
+}
+
+/** spec 38 `build_plan` の返り。`rejected` は最初の計画が受け付けられなかった理由 (一発で通れば空)。 */
+export interface BuildPlanView {
+  items: BuildPlanItem[];
+  rejected: string[];
+  model: string;
+}
+
+/** パッケージ全体の検査 (層 2) の指摘 1 件。file が null ならパッケージ全体宛て。 */
+export interface EditorIssueView {
+  file: string | null;
+  severity: string;
+  message: string;
+}
+
+/** spec 38 変更セットの 1 行。本文は LF。`diff` は開始時の本文 (新規は空) との unified diff。 */
+export interface BuiltFileView {
+  path: string;
+  action: "create" | "edit";
+  changed: boolean;
+  /** 新規なのに雛形のまま終わった (モデルが埋められなかった)。 */
+  template_only: boolean;
+  /** 層 2 の指摘で修復の周を回した。 */
+  repaired: boolean;
+  iterations: number;
+  summary: string;
+  diagnostics: EditAssistView["diagnostics"];
+  stopped?: "limit" | "repeat" | "cancel" | "error";
+  diff: string;
+  after: string;
+}
+
+/** spec 38 `build_run` の返り。 */
+export interface BuildView {
+  files: BuiltFileView[];
+  failed: { path: string; message: string }[];
+  /** 止めたので書かなかったファイル。 */
+  not_run: string[];
+  /** この組み立てが生み、修復しても残った層 2 の指摘。 */
+  package_issues: EditorIssueView[];
+  /** 開始時から在った層 2 の指摘の件数 (作者の持ち込み分。触れていない)。 */
+  preexisting_issues: number;
+  iterations: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cache_read: number;
+  stopped?: "limit" | "repeat" | "cancel" | "error";
+  model: string;
+}
+
+/** spec 38 `build_apply` の返り。`files` は書いた後のファイル一覧。 */
+export interface BuildApplyView {
+  written: string[];
+  /** 実行中にディスクの本文が変わった (新規なら同名ができた) ので書かなかったファイル。 */
+  conflicts: string[];
+  errors: { path: string; message: string }[];
+  forked: boolean;
+  fork_warning?: string;
+  files: { rel_path: string; category: string }[];
+}

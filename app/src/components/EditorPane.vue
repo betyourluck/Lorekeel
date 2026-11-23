@@ -5,7 +5,7 @@
  * エディタと保存操作だけを持つ。
  */
 import { invoke } from "@tauri-apps/api/core";
-import { defineAsyncComponent, onBeforeUnmount, onMounted } from "vue";
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted } from "vue";
 
 import { makeCompletionSource } from "../editorCompletion";
 import { t } from "../i18n";
@@ -17,6 +17,8 @@ import Icon from "./Icon.vue";
 const EditAssistPanel = defineAsyncComponent(() => import("./EditAssistPanel.vue"));
 
 const game = useGameStore();
+/** AI が書いている最中 (1 ファイルの AI 編集 / パッケージの組み立て)。エディタは読み取り専用。 */
+const assistBusy = computed(() => game.editor.assist.running || game.editorBuildBusy);
 
 // 層 1 診断 (spec 28 Phase B): 開いているファイルの kind で backend の既存 lint を呼ぶ。
 // 失敗は空 (診断が出ないだけ — 保存やエディタ本体を止めない)。
@@ -104,19 +106,20 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         />
         <span class="text-sm leading-none">A</span>
       </label>
-      <!-- AI に直させる (spec 29 Phase D): 浮遊パネルのトグル。ファイルを開いているときだけ。
-           実行中はエディタが読み取り専用になる (ヘッダの ✨ は熾火で灯る)。 -->
+      <!-- AI に直させる (spec 29 Phase D) / AI でパッケージを組む (spec 38 Phase D): 浮遊パネルの
+           トグル。パッケージ全体はファイルを開いていなくても使える (骨格を作った直後の入口) ので、
+           編集モードなら常に押せる。実行中はエディタが読み取り専用になる (ヘッダの ✨ が回る)。 -->
       <button
         class="grid h-6 w-6 place-items-center rounded hover:bg-ash/60 disabled:opacity-30"
         :class="game.editor.assist.open ? 'text-ember' : 'text-parchment/60 hover:text-parchment'"
-        :disabled="!game.editor.current"
         :title="t('editAssist.toggleTitle')"
         :aria-label="t('editAssist.heading')"
+        data-testid="assist-toggle"
         @click="game.toggleEditAssist()"
       >
         <!-- Icon の spinner は静的な弧 — 回転は使う側が animate-spin を付ける約束 (ImageControls と同じ)。
              付け忘れると「止まっている」ように見える (ユーザー報告 2026-09-06)。 -->
-        <Icon :name="game.editor.assist.running ? 'spinner' : 'sparkle'" :size="15" :class="{ 'animate-spin': game.editor.assist.running }" />
+        <Icon :name="assistBusy ? 'spinner' : 'sparkle'" :size="15" :class="{ 'animate-spin': assistBusy }" />
       </button>
       <!-- 保存: フロッピー (ユーザーFB 2026-08-28 — 文字ボタンからアイコンへ)。
            処理中は spinner に差し替えて、押せない理由を形で見せる。 -->
@@ -145,7 +148,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         :lint-provider="lintProvider"
         :completion-source="completionSource"
         :font-size="EDITOR_FONT_SIZES[game.editorFontStep]"
-        :readonly="game.editor.assist.running"
+        :readonly="assistBusy"
         status
       />
     </div>

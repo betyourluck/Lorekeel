@@ -15,14 +15,21 @@ import { t } from "../i18n";
 import { useGameStore } from "../stores/game";
 import FloatingPanel from "./FloatingPanel.vue";
 import Icon from "./Icon.vue";
+import PackageBuildBody from "./PackageBuildBody.vue";
 
 const game = useGameStore();
 const emit = defineEmits<{ (e: "close"): void }>();
 const box = ref<HTMLTextAreaElement | null>(null);
 
 const assist = computed(() => game.editor.assist);
+/** どちらかが動いている間は対象を切り替えない (進行を見失わない)。 */
+const modeLocked = computed(() => assist.value.running || game.editorBuildBusy);
 const canRun = computed(
-  () => !!game.editor.current && !assist.value.running && assist.value.instruction.trim().length > 0,
+  () =>
+    !!game.editor.current &&
+    !assist.value.running &&
+    !game.editorBuildBusy &&
+    assist.value.instruction.trim().length > 0,
 );
 const stoppedText = computed(() => {
   const s = assist.value.result?.stopped;
@@ -41,12 +48,30 @@ function onKey(e: KeyboardEvent) {
 
 <template>
   <FloatingPanel :title="t('editAssist.heading')" width="40rem" @close="emit('close')">
-    <div class="space-y-3">
+    <!-- 対象の切り替え: このファイル (spec 29) / パッケージ全体 (spec 38)。 -->
+    <div class="mb-3 inline-flex rounded-lg bg-ink/70 p-0.5 text-xs ring-1 ring-parchment/10" role="tablist">
+      <button
+        v-for="m in (['file', 'package'] as const)"
+        :key="m"
+        role="tab"
+        :aria-selected="assist.mode === m"
+        :data-testid="`assist-mode-${m}`"
+        class="rounded-md px-3 py-1 transition-colors disabled:cursor-not-allowed"
+        :class="assist.mode === m ? 'bg-ember/80 text-ink' : 'text-parchment/60 hover:text-parchment'"
+        :disabled="modeLocked && assist.mode !== m"
+        @click="game.setAssistMode(m)"
+      >
+        {{ m === "file" ? t("editAssist.modeFile") : t("editAssist.modePackage") }}
+      </button>
+    </div>
+    <PackageBuildBody v-if="assist.mode === 'package'" />
+    <div v-else class="space-y-3">
       <p class="text-[11px] leading-relaxed text-parchment/45">{{ t("editAssist.hint") }}</p>
+      <p v-if="!game.editor.current" class="text-xs text-glow/80">{{ t("editAssist.noFile") }}</p>
       <textarea
         ref="box"
         v-model="assist.instruction"
-        class="w-full h-24 rounded-lg bg-black/30 p-2 text-sm text-parchment outline-none ring-1 ring-parchment/10 focus:ring-ember/50 disabled:opacity-50"
+        class="w-full h-24 rounded-lg bg-ink/70 p-2 text-sm text-parchment outline-none ring-1 ring-parchment/10 focus:ring-ember/50 disabled:opacity-50"
         :placeholder="t('editAssist.placeholder')"
         :disabled="assist.running"
         @keydown="onKey"
@@ -74,7 +99,7 @@ function onKey(e: KeyboardEvent) {
       <!-- 進行ログ: 1 呼び出し 1 行。実行中は最後の行が生きている合図。 -->
       <div
         v-if="assist.log.length || assist.running"
-        class="max-h-40 overflow-y-auto rounded-lg bg-black/30 p-2 font-mono text-[11px] leading-relaxed text-parchment/70"
+        class="max-h-40 overflow-y-auto rounded-lg bg-ink/70 p-2 font-mono text-[11px] leading-relaxed text-parchment/70"
       >
         <div v-for="(line, i) in assist.log" :key="i" class="whitespace-pre-wrap break-all">{{ line }}</div>
         <!-- 道具の呼び出しの合間 (モデルが考えている 5〜20 秒) にも動きを出す — 進行ログは
@@ -84,7 +109,7 @@ function onKey(e: KeyboardEvent) {
 
       <p v-if="assist.error" class="text-xs text-warn whitespace-pre-wrap">{{ assist.error }}</p>
 
-      <div v-if="assist.result" class="space-y-2 rounded-lg bg-black/20 p-3 text-xs">
+      <div v-if="assist.result" class="space-y-2 rounded-lg bg-parchment/5 p-3 text-xs">
         <p class="whitespace-pre-wrap text-parchment/85">{{ assist.result.summary }}</p>
         <p class="text-ember/90" v-if="assist.result.changed">{{ t("editAssist.replaced") }}</p>
         <p class="text-parchment/50" v-else>{{ t("editAssist.unchanged") }}</p>

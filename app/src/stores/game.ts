@@ -44,7 +44,7 @@ import type {
   SlotView,
   MapView,
   FactView,
-  FactsOpView, EditAssistView } from "../types/api";
+  FactsOpView, EditAssistView, BuildPlanItem, BuildPlanView, BuildView, BuildApplyView } from "../types/api";
 
 // d100 ロールアンダーの成功度 (spec 16) の表示ラベル。内部 id は英語 (ログ検索・セーブ安定)、
 // 表示はこの言語表で差し替え可能。未知 id は素通し (前方互換)。
@@ -266,11 +266,55 @@ export interface EditorState {
    *  読み取り専用 (作業バッファと作者の編集が競合しない = 同時に書く者を一人にする)。 */
   assist: {
     open: boolean;
+    /** パネルの対象: 開いているこのファイル (spec 29) / パッケージ全体 (spec 38)。 */
+    mode: "file" | "package";
     running: boolean;
     instruction: string;
     log: string[];
     result: EditAssistView | null;
     error: string;
+  };
+  /** AI でパッケージを組む (spec 38 Phase D)。依頼は**揮発**。変更セットは backend が持ち、
+   *  ここは画面の写し。planning / running / applying の間は編集モード全体が読み取り専用
+   *  (決定 10 = 同時に書く者を一人にする)。 */
+  build: BuildState;
+}
+
+/** spec 38 の進み具合。`done` = 変更セットが backend にある (適用か破棄を待つ)。 */
+export type BuildPhase = "idle" | "planning" | "planned" | "running" | "done" | "applying" | "applied";
+
+export interface BuildState {
+  request: string;
+  phase: BuildPhase;
+  /** 計画 (作者が指示を直し、行を外せる)。 */
+  plan: BuildPlanItem[];
+  /** 最初の計画が受け付けられなかった理由 (立て直して通ったときだけ中身がある)。 */
+  rejected: string[];
+  model: string;
+  /** 進行ログ (`edit-build-progress` を 1 行ずつ)。 */
+  log: string[];
+  result: BuildView | null;
+  /** 適用するファイル (変更セットのうち作者が選んだもの)。 */
+  selected: string[];
+  /** 差分を開いているファイル ("" = どれも開いていない)。 */
+  expanded: string;
+  applied: BuildApplyView | null;
+  error: string;
+}
+
+export function freshBuildState(request = ""): BuildState {
+  return {
+    request,
+    phase: "idle",
+    plan: [],
+    rejected: [],
+    model: "",
+    log: [],
+    result: null,
+    selected: [],
+    expanded: "",
+    applied: null,
+    error: "",
   };
 }
 
@@ -291,7 +335,8 @@ export function freshEditorState(): EditorState {
     view: "text",
     mediaRev: 0,
     eol: "\n",
-    assist: { open: false, running: false, instruction: "", log: [], result: null, error: "" },
+    assist: { open: false, mode: "file", running: false, instruction: "", log: [], result: null, error: "" },
+    build: freshBuildState(),
   };
 }
 
@@ -822,6 +867,10 @@ export const useGameStore = defineStore("game", {
         : 0,
     editorDirty: (s): boolean =>
       s.editor.on && s.editor.current !== "" && s.editor.text !== s.editor.savedText,
+    /** AI でパッケージを組んでいる最中 (spec 38 決定 10)。この間は編集モード全体が読み取り専用で、
+     *  編集モードも出られない (出ると backend が結果を捨てる)。 */
+    editorBuildBusy: (s): boolean =>
+      s.editor.build.phase === "planning" || s.editor.build.phase === "running" || s.editor.build.phase === "applying",
     // 開帳待ちのダイスが残っているか (spec 18 Phase A: 全部開くまで入力欄を締める)。
     hasUnrevealedDice: (s): boolean =>
       s.log.some(
@@ -1315,7 +1364,7 @@ ${body}`, t("rename.ok"), true);
     /** 新規ファイル作成 (spec 28 Phase D、4 カテゴリ)。作成 → 一覧差し替え → そのまま開く。 */
     async createEditorFile(category: string, stem: string) {
       const ed = this.editor;
-      if (!ed.on) return;
+      if (!ed.on || this.buildLocked()) return;
       // 未保存の確認は作成の**前** (作ってから切替をキャンセルされると、
       // 開かれないファイルだけが残って紛らわしい)。
       if (this.editorDirty) {
@@ -1360,7 +1409,7 @@ ${body}`, t("rename.ok"), true);
      */
     async renameEditorFile(relPath: string, newName: string) {
       const ed = this.editor;
-      if (!ed.on || !newName.trim()) return;
+      if (!ed.on || !newName.trim() || this.buildLocked()) return;
       const isMedia = relPath.startsWith("images/") || relPath.startsWith("audios/");
       if (isMedia && this.editorDirty) {
         this.logToast = t("editor.assetRenameNeedsSave");
@@ -1405,7 +1454,7 @@ ${body}`, t("rename.ok"), true);
     /** ファイル削除 (2026-08-27 に v1 昇格)。不可逆の確認 → (書庫由来なら) フォーク確認。 */
     async deleteEditorFile(relPath: string) {
       const ed = this.editor;
-      if (!ed.on) return;
+      if (!ed.on || this.buildLocked()) return;
       if (!(await this.askConfirm(t("editor.deleteConfirm", { file: relPath }), t("editor.deleteOk")))) return;
       const fork = ed.fromSite;
       if (fork && !(await this.askConfirm(t("editor.forkConfirm"), t("editor.forkOk")))) return;
@@ -1444,7 +1493,7 @@ ${body}`, t("rename.ok"), true);
      * 行き先は backend が中身で振り分けるので、ここでは種別を申告しない。
      */
     async putEditorMedia(files: File[]) {
-      if (!this.editor.on || !files.length) return;
+      if (!this.editor.on || !files.length || this.buildLocked()) return;
       let added = 0;
       let last = "";
       for (const file of files) {
@@ -1477,7 +1526,7 @@ ${body}`, t("rename.ok"), true);
     /** クロップの書き戻し (spec 28 追補)。**同じ ID を上書き** — 参照している YAML を
      *  書き直さずに済ませるため。不可逆なので確認を挟む。 */
     async replaceEditorMedia(relPath: string, bytes: Uint8Array) {
-      if (!this.editor.on) return false;
+      if (!this.editor.on || this.buildLocked()) return false;
       try {
         const res = await invoke<{ media: { rel_path: string; category: string }[] }>(
           "replace_editor_media",
@@ -1515,6 +1564,19 @@ ${body}`, t("rename.ok"), true);
      *  戻り値 false = ユーザーがキャンセルして留まった。 */
     async exitEditor(force = false): Promise<boolean> {
       if (!this.editor.on) return true;
+      // 組み立ての最中は出られない (出ると backend が結果を捨てる)。確認済みの経路 (force =
+      // パッケージ切替) だけは取り消しを投げてから出る — backend は出たのを見て結果を捨てる。
+      if (this.editorBuildBusy) {
+        if (!force) {
+          this.logToast = t("build.busyExit");
+          return false;
+        }
+        try {
+          await invoke("build_cancel");
+        } catch {
+          /* 取り消せなくても出る (backend の二層目が結果を捨てる) */
+        }
+      }
       if (!force && this.editorDirty) {
         if (!(await this.askConfirm(t("editor.discardConfirm"), t("editor.discardOk")))) return false;
       }
@@ -1549,7 +1611,7 @@ ${body}`, t("rename.ok"), true);
     /** 保存 (Ctrl+S / 保存ボタン)。書庫由来なら初回にフォーク確認 (spec 28 B)。 */
     async saveEditorFile() {
       const ed = this.editor;
-      if (!ed.on || !ed.current || ed.saving) return;
+      if (!ed.on || !ed.current || ed.saving || this.buildLocked()) return;
       const fork = ed.fromSite;
       if (fork && !(await this.askConfirm(t("editor.forkConfirm"), t("editor.forkOk")))) return;
       ed.saving = true;
@@ -1585,7 +1647,7 @@ ${body}`, t("rename.ok"), true);
     // --- AI 編集 (spec 29 Phase D) ---
     toggleEditAssist() {
       const a = this.editor.assist;
-      if (a.running) {
+      if (a.running || this.editorBuildBusy) {
         a.open = true; // 実行中は閉じない (進行を見失わない)
         return;
       }
@@ -1597,7 +1659,7 @@ ${body}`, t("rename.ok"), true);
     async runEditAssist() {
       const ed = this.editor;
       const a = ed.assist;
-      if (!ed.on || !ed.current || a.running || !a.instruction.trim()) return;
+      if (!ed.on || !ed.current || a.running || this.editorBuildBusy || !a.instruction.trim()) return;
       const target = ed.current;
       a.running = true;
       a.open = true;
@@ -1640,6 +1702,7 @@ ${body}`, t("rename.ok"), true);
       );
       const text = `${t("editAssist.fromIssues", { file: ed.current })}\n${lines.join("\n")}`;
       const a = ed.assist;
+      if (!this.editorBuildBusy) a.mode = "file"; // 指摘はこのファイルの AI 編集へ流す
       a.instruction = a.instruction.trim() ? `${a.instruction.trimEnd()}\n\n${text}` : text;
       a.open = true;
     },
@@ -1650,6 +1713,152 @@ ${body}`, t("rename.ok"), true);
       } catch (e) {
         this.logToast = String(e);
       }
+    },
+
+    // --- AI でパッケージを組む (spec 38 Phase D) ---
+    /** 組み立ての最中なら理由をトーストして true (編集の操作はここで止める = 決定 10)。 */
+    buildLocked(): boolean {
+      if (!this.editorBuildBusy) return false;
+      this.logToast = t("build.busyLocked");
+      return true;
+    },
+    /** パネルの対象を切り替える (どちらかが動いている間は切り替えない)。 */
+    setAssistMode(mode: "file" | "package") {
+      if (this.editor.assist.running || this.editorBuildBusy) return;
+      this.editor.assist.mode = mode;
+    },
+    /** 始める前に未保存を片付ける (決定 11)。組み立てはディスクの本文から始めるので、未保存の
+     *  変更は保存してから。保存しないなら進めない (false)。 */
+    async settleUnsavedForBuild(): Promise<boolean> {
+      if (!this.editorDirty) return true;
+      if (!(await this.askConfirm(t("build.unsavedConfirm"), t("build.unsavedSave")))) return false;
+      await this.saveEditorFile();
+      return !this.editorDirty;
+    },
+    /** 計画を立てる (決定 2・3)。適用していない変更セットがあれば、捨ててよいか先に聞く。 */
+    async planBuild() {
+      const ed = this.editor;
+      const b = ed.build;
+      if (!ed.on || this.editorBuildBusy || ed.assist.running || !b.request.trim()) return;
+      if (b.phase === "done") {
+        if (!(await this.askConfirm(t("build.replanConfirm"), t("build.replanOk")))) return;
+      }
+      if (!(await this.settleUnsavedForBuild())) return;
+      if (b.phase === "done") {
+        try {
+          await invoke("build_discard");
+        } catch {
+          /* 次の組み立てが捨てる */
+        }
+      }
+      ed.build = { ...freshBuildState(b.request), phase: "planning" };
+      const nb = ed.build;
+      try {
+        const v = await invoke<BuildPlanView>("build_plan", { request: nb.request });
+        nb.plan = v.items;
+        nb.rejected = v.rejected;
+        nb.model = v.model;
+        nb.phase = "planned";
+      } catch (e) {
+        nb.error = String(e);
+        nb.phase = "idle";
+      }
+    },
+    /** 計画から 1 行外す (計画を見ている間だけ)。 */
+    removePlanItem(index: number) {
+      const b = this.editor.build;
+      if (b.phase !== "planned") return;
+      b.plan.splice(index, 1);
+    },
+    /** 組み立てる (決定 4〜8)。計画は画面で直したものをそのまま渡す (backend が検め直す)。
+     *  既定で選ぶのは、変わったファイルのうち雛形のまま終わっていないもの。 */
+    async runBuild() {
+      const ed = this.editor;
+      const b = ed.build;
+      if (!ed.on || this.editorBuildBusy || ed.assist.running || b.phase !== "planned" || !b.plan.length) return;
+      if (!(await this.settleUnsavedForBuild())) return;
+      b.phase = "running";
+      b.log = [];
+      b.error = "";
+      b.result = null;
+      try {
+        const v = await invoke<BuildView>("build_run", { request: b.request, plan: b.plan });
+        b.result = v;
+        b.selected = v.files.filter((f) => f.changed && !f.template_only).map((f) => f.path);
+        b.expanded = "";
+        b.phase = "done";
+      } catch (e) {
+        b.error = String(e);
+        b.phase = "planned"; // 計画は残す (直して実行し直せる)
+        this.logToast = t("build.failed", { error: String(e) });
+      }
+    },
+    async cancelBuild() {
+      try {
+        await invoke("build_cancel");
+        this.editor.build.log.push(t("build.cancelling"));
+      } catch (e) {
+        this.logToast = String(e);
+      }
+    },
+    toggleBuildSelected(path: string) {
+      const b = this.editor.build;
+      if (b.phase !== "done") return;
+      const i = b.selected.indexOf(path);
+      if (i >= 0) b.selected.splice(i, 1);
+      else b.selected.push(path);
+    },
+    /** 変更セットをディスクへ書く (決定 9・10)。`all` = 変わったファイル全部。書庫版なら
+     *  フォーク確認 (保存と同じ)。書いた後はファイル一覧・層 2・語彙を取り直し、開いている
+     *  ファイルが書き換わったら読み直す (未保存の変更があれば読み直さずに知らせる)。 */
+    async applyBuild(all = false) {
+      const ed = this.editor;
+      const b = ed.build;
+      if (!ed.on || b.phase !== "done" || !b.result) return;
+      const paths = all ? b.result.files.filter((f) => f.changed).map((f) => f.path) : [...b.selected];
+      if (!paths.length) return;
+      const fork = ed.fromSite;
+      if (fork && !(await this.askConfirm(t("editor.forkConfirm"), t("editor.forkOk")))) return;
+      b.phase = "applying";
+      b.error = "";
+      try {
+        const v = await invoke<BuildApplyView>("build_apply", { paths, fork });
+        ed.files = v.files.map((f) => ({ relPath: f.rel_path, category: f.category }));
+        if (v.forked) ed.fromSite = false;
+        b.applied = v;
+        b.phase = "applied";
+        if (v.fork_warning) this.logToast = v.fork_warning;
+        else this.logToast = t("build.applied", { n: v.written.length });
+        if (ed.current && v.written.includes(ed.current)) {
+          if (this.editorDirty) {
+            this.logToast = t("build.currentDirty", { file: ed.current });
+          } else {
+            const raw = await invoke<string>("read_editor_file", { relPath: ed.current });
+            ed.eol = raw.includes("\r\n") ? "\r\n" : "\n";
+            ed.text = raw.replace(/\r\n/g, "\n");
+            ed.savedText = ed.text;
+          }
+        }
+        void this.refreshEditorIssues();
+        void this.refreshEditorVocab();
+      } catch (e) {
+        b.error = String(e);
+        b.phase = "done"; // 変更セットは backend に残っている (別のパッケージを編集中など)
+      }
+    },
+    /** 変更セットを適用せずに捨てる (確認つき — 費やした組み立ては戻らない)。 */
+    async discardBuild() {
+      const b = this.editor.build;
+      if (this.editorBuildBusy) return;
+      if (b.phase === "done") {
+        if (!(await this.askConfirm(t("build.discardConfirm"), t("build.discardOk")))) return;
+        try {
+          await invoke("build_discard");
+        } catch {
+          /* 次の組み立てか編集モードの出入りで捨てる */
+        }
+      }
+      this.editor.build = freshBuildState(b.request);
     },
 
     // 開発者モードの現在値を backend (プロセス env) から取り直す (起動時)。

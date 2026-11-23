@@ -229,6 +229,8 @@ onMounted(() => {
       game.logToast = t("store.epilogueFailed", { error: String(payload) });
     } else if (name === "edit-assist-progress") {
       game.editor.assist.log.push(String(payload)); // spec 29: 1 呼び出し 1 行
+    } else if (name === "edit-build-progress") {
+      game.editor.build.log.push(String(payload)); // spec 38: ▶ ファイルの切り替わり + 呼び出し 1 行ずつ
     } else if (name === "autosave-failed") {
       // failures #98 の棚卸し: オートセーブの失敗は eprintln だけだった。黙ると「進めたつもりの
       // 進行が次回起動で消える」= spec 07 が守るはずのものを静かに失う。
@@ -341,12 +343,14 @@ onUnmounted(() => {
              ON は ember で灯る。卓中・パッケージ未選択は disable + 理由 (backend の
              卓ガードと二層)。 -->
         <button
-          :disabled="!game.packagePath || game.multi.role !== 'solo'"
+          :disabled="!game.packagePath || game.multi.role !== 'solo' || game.editorBuildBusy"
           class="grid h-8 w-8 place-items-center rounded hover:bg-ash/60 disabled:opacity-40"
           :class="game.editor.on ? 'text-ember bg-ember/12' : 'text-parchment/60 hover:text-parchment'"
           :title="
             game.multi.role !== 'solo'
               ? t('editor.toggleBlockedTable')
+              : game.editorBuildBusy
+                ? t('build.busyExit')
               : !game.packagePath
                 ? t('editor.toggleBlockedNoPkg')
                 : game.editor.on
