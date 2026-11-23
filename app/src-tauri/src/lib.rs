@@ -2085,30 +2085,8 @@ async fn inspect_editor_package(
         let guard = editor_root.0.lock().await;
         guard.clone().ok_or_else(|| "編集モードではありません".to_string())?
     };
-    // 帰属の素材 (entry の相対パス / campaign の modules 地図)。読めなくても続行 —
-    // 同じ失敗は inspect が errors として報告するので、ここで二重にエラーを作らない。
-    let entry = harness::read_manifest(&root).map(|m| m.entry).unwrap_or_default();
-    let mut modules = std::collections::BTreeMap::new();
-    if harness::is_campaign_entry(&entry) {
-        if let Ok(text) = std::fs::read_to_string(root.join(&entry)) {
-            if let Ok(c) = harness::Campaign::from_yaml(&text) {
-                modules = c.modules;
-            }
-        }
-    }
-    let report = harness::inspect_package(&root);
-    let to_issues = |severity: &str, msgs: Vec<String>| {
-        msgs.into_iter()
-            .map(|message| editor_lint::EditorIssue {
-                file: editor_lint::attribute_file(&message, &entry, &modules),
-                severity: severity.to_string(),
-                message,
-            })
-            .collect::<Vec<_>>()
-    };
-    let mut out = to_issues("error", report.errors);
-    out.extend(to_issues("warning", report.warnings));
-    Ok(out)
+    // 帰属は harness (spec 38 のステージングと同じ関数)。
+    Ok(editor_lint::inspect_issues(&root))
 }
 
 /// 新規キャラクター作成の返り (spec 28 Phase D)。files は更新後の一覧

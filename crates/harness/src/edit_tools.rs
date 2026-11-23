@@ -334,7 +334,24 @@ impl EditSession {
             // モデルは同じ手がかりしか得られないので**同じパターンを再試行する**しかなかった
             // (実測: 同一 preview が 3 回並んで反復検知で打ち切り)。却下は「何がダメか」でなく
             // 「何をすれば通るか」を語る (#42 の規律を道具の返りへ適用)。
-            let hint = self.near_miss_hint(pattern);
+            // `^` / `$` の取り違え (2026-11-23、spec 38 Phase B の実測): `grep` は 1 行ずつ当てるので
+            // `^name: genzo$` が当たるのに、`sd` は本文全体に当てるので `(?m)` が無いと当たらない。
+            // 字面は合っているので「この字面をそのままアンカーに」は誤診で、モデルは同じ pattern を
+            // 繰り返して諦めた (「隠れた文字があるのかも」)。行ごとに当てれば当たるなら、そう言う。
+            let multiline = regex::RegexBuilder::new(pattern)
+                .case_insensitive(ci)
+                .multi_line(true)
+                .size_limit(1 << 20)
+                .build()
+                .map(|r| r.find_iter(&self.buffer).count())
+                .unwrap_or(0);
+            let hint = if multiline > 0 {
+                format!(
+                    " ただし `^` / `$` は `(?m)` を付けないと本文全体の先頭・末尾にしか当たりません (`grep` は 1 行ずつ当てるので当たります)。`(?m){pattern}` なら {multiline} 件一致します — pattern をこの形にして preview し直してください。"
+                )
+            } else {
+                self.near_miss_hint(pattern)
+            };
             return ToolReply {
                 body: format!(
                     "`{}` に一致はありません。書き込みは行っていません。{hint}",
@@ -546,6 +563,34 @@ mod tests {
         // 手がかりが効いていることの対照 — 見せた字面をそのままアンカーにすれば通る。
         let hit = s.call("sd", &json!({"pattern": "(?m)^    - ういが帰宅する$", "replacement": "    - ういが出勤する"}));
         assert!(hit.ok && hit.body.contains("1 件"), "実際の字面なら一致する: {}", hit.body);
+    }
+
+    /// 【`^` / `$` に `(?m)` が無い】spec 38 Phase B の実測 (2026-11-23、grok-4.3): モデルが
+    /// `^name: genzo$` で preview し、字面は本文と一致しているのに 0 件。従来の手がかりは
+    /// 「この字面をそのままアンカーに」= **既にそうしている**ので誤診で、同じ pattern を
+    /// 繰り返して諦め、新しいキャラのファイルが雛形のまま残った。`grep` は 1 行ずつ当てるので
+    /// 同じ pattern が当たる (= 道具どうしで意味が食い違う) ことも言う。
+    #[test]
+    fn a_zero_match_with_line_anchors_names_the_missing_multiline_flag() {
+        let dir = scratch("nearmiss_m");
+        let mut s = EditSession::new(
+            &dir,
+            "characters/genzo.yaml",
+            "character",
+            vec!["characters/genzo.yaml".into()],
+            "name: genzo\nprofile: \"\"\n",
+        );
+        let miss = s.call("sd", &json!({"pattern": "^name: genzo$", "replacement": "name: 源三"}));
+        assert!(!miss.ok);
+        assert!(
+            miss.body.contains("`(?m)^name: genzo$` なら 1 件一致します"),
+            "足りないのが (?m) だと名指しし、そのまま使える pattern を返す: {}",
+            miss.body
+        );
+        assert!(!miss.body.contains("この字面をそのまま"), "字面は合っているので誤診しない: {}", miss.body);
+        // 言われたとおりにすれば通る。
+        let hit = s.call("sd", &json!({"pattern": "(?m)^name: genzo$", "replacement": "name: 源三"}));
+        assert!(hit.ok && hit.body.contains("1 件"), "{}", hit.body);
     }
 
     /// 【手がかりが無いときは捏造しない】語そのものが本文に無ければ、その旨だけを言う。

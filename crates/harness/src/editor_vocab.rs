@@ -403,13 +403,20 @@ fn collect_ids(root: &Path) -> BTreeMap<String, Vec<VocabItem>> {
 
 /// 語彙一式を組む (command の実体)。
 pub fn build_vocabulary(root: &Path) -> EditorVocabulary {
+    build_vocabulary_with_media(root, root)
+}
+
+/// YAML の置き場とメディアの置き場を分けて語彙を組む (spec 38 のステージング — YAML だけを
+/// 一時フォルダへ写し、アセット名は元のパッケージから取る。メディアを写すと重いうえ、
+/// AI 編集はメディアを扱わない)。
+pub fn build_vocabulary_with_media(root: &Path, media_root: &Path) -> EditorVocabulary {
     let mut v = build_key_tables();
     v.ids = collect_ids(root);
     // アセット ID (spec 01) は scenario でなく**ディスクの実ファイル**が正
     // — engine は不透明 ID を運ぶだけで宣言を持たないので、宣言集合から導けない。
     // 実在しない名前を書いても engine は黙って None に落とす (resolve_asset は寛容) =
     // **死んだ参照 lint の射程外**。ゆえに補完で実名を出すのが唯一の予防になる。
-    let media = crate::editor::list_media(root);
+    let media = crate::editor::list_media(media_root);
     for (cat, want) in [("images", "image"), ("audios", "audio")] {
         let names: Vec<VocabItem> = media
             .iter()

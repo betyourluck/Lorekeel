@@ -16,6 +16,7 @@ pub mod edit_tools;
 pub mod editor;
 pub mod editor_lint;
 pub mod editor_vocab;
+pub mod package_build;
 pub mod package_spec;
 mod epilogue;
 mod error;

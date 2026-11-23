@@ -878,6 +878,24 @@ pub enum ScenarioError {
     /// [`Scenario::present_at`] は cast 注入されていない entity を落とすので、この Gate は
     /// 永久に偽 (`present: false` なら永久に真) — どちらも死んだ条件。**lint**。
     UnknownEntityInGate { origin: String, entity: EntityId },
+    /// 場所の `present` が**このモジュールが知らないキャラ**を挙げている (2026-11-23、spec 38
+    /// Phase B の実測)。[`Scenario::present_at`] は characters に無い entity を落とすので、その
+    /// キャラは**その場所に一度も現れない** — しかもエラーも警告も出なかった。実例: AI が組んだ
+    /// シナリオが `present: [genzo]` を書き、`cast: [genzo]` を書き忘れた (キャラのファイルは在る)。
+    /// `"*"` (全員) は対象外。**lint** — 壊れた盤面でもプレイは続くので load は拒否しない。
+    UnknownEntityInPresent { location: LocationId, entity: EntityId },
+    /// 出口の行き先 (`exits[].to`) が**宣言されていない場所** (2026-11-23、spec 38 Phase B の実測)。
+    /// LLM の move は出口に在れば受理されるので、主人公は宣言されていない場所に立ち、出口も
+    /// 説明文も無いソフトロックになる (効果の move = [`Self::UnknownLocationInEffects`] と同じ
+    /// 壊れ方)。実例: AI が温室を別ファイルに作り、main.yaml には出口だけを足した。**lint**。
+    UnknownLocationInExit { from: LocationId, to: LocationId },
+    /// `start` が宣言されていない場所 — 開幕から出口も説明文も無い場所に立つ。**lint**
+    /// (同じ一族の扱いにそろえる。開幕の ⚠ と AI 編集の層 2 に出る)。
+    UnknownStartLocation { start: LocationId },
+    /// **行けない場所** — start から出口をたどっても、効果の move の行き先からたどっても届かない
+    /// (gate は見ない)。主人公はその場所に一度も立てない。実例 (2026-11-23、spec 38 Phase B):
+    /// AI が組んだ 3 部屋の盤面に出口が 1 つも無かった。**lint**。
+    UnreachableLocation { location: LocationId },
     /// `flag_titles` のキーが `allowed_flags` に宣言されていない (幻フラグへの表示名)。
     FlagTitleUndeclared { flag: FlagKey },
     /// `hidden_flags` のキーが `allowed_flags` に宣言されていない (幻フラグの秘匿)。
@@ -1511,16 +1529,42 @@ impl Scenario {
         for (key, gate) in &self.flag_rules {
             scan_gate(gate, &format!("flag_rules:{key}"), &known, &cast, &mut warns);
         }
+        if !known.contains(&self.start) {
+            warns.push(ScenarioError::UnknownStartLocation { start: self.start.clone() });
+        }
         for (from, loc) in &self.locations {
             for ex in &loc.exits {
                 scan_gate(&ex.gate, &format!("exit:{from}->{}", ex.to), &known, &cast, &mut warns);
+                if !known.contains(&ex.to) {
+                    warns.push(ScenarioError::UnknownLocationInExit { from: from.clone(), to: ex.to.clone() });
+                }
+            }
+        }
+        // 場所の present に、このモジュールが知らないキャラ (present_at が落とす = 一度も現れない)。
+        // `cast` に挙げた人物は注入される前提で数えない — パッケージの読み込みは注入してから lint
+        // するので characters に居るし、注入に失敗すれば読み込みエラーが先に出る。シナリオ単体の
+        // 検分 (注入しない) で「cast に加えて」と誤って案内しないため。
+        let declared = |e: &EntityId| self.cast.contains(e) || self.cast.contains(crate::WILDCARD);
+        for (lid, loc) in &self.locations {
+            for e in &loc.present {
+                if e != crate::WILDCARD && !cast.contains(e) && !declared(e) {
+                    warns.push(ScenarioError::UnknownEntityInPresent {
+                        location: lid.clone(),
+                        entity: e.clone(),
+                    });
+                }
             }
         }
         // authored effects の中の「死んだ参照」— attempt_challenge / attempt_contest / move が
         // 存在しない id を指していないか。**トリガー効果は検証を通らない** (信頼済ゆえ
         // apply_ops 直行) ので、typo が沈黙する唯一の経路がここに開いていた。
+        // 効果の move の行き先 (出口を通らずに立てる場所 = 下の「行けない場所」の根に足す)。
+        let mut jumps: BTreeSet<LocationId> = BTreeSet::new();
         let mut scan_refs = |effects: &[StateOp], origin: String| {
             for op in effects {
+                if let StateOp::Move { to } = op {
+                    jumps.insert(to.clone());
+                }
                 match op {
                     // move は出口も gate も見ずに location を書き換えるので、幻の行き先は
                     // 「宣言されていない場所に立つ」= 出口も説明文も無いソフトロックになる。
@@ -1574,6 +1618,26 @@ impl Scenario {
         for (cid, def) in &self.contests {
             for outcome in [&def.on_win, &def.on_lose, &def.on_tie].into_iter().flatten() {
                 scan_refs(&outcome.effects, format!("contest:{cid}"));
+            }
+        }
+        // 行けない場所 (2026-11-23、spec 38 Phase B の実測: AI が組んだ 3 部屋の盤面に出口が 1 つも
+        // 無く、層 2 を素通りした)。主人公の位置が変わるのは出口の move と効果の move だけなので、
+        // start と効果の行き先を根に出口をたどる (gate は見ない = 条件しだいで通れる道も道とみなす)。
+        // 届かない場所には主人公が一度も立てない。start が幻なら UnknownStartLocation が先に言う。
+        if known.contains(&self.start) {
+            let mut seen: BTreeSet<&LocationId> = BTreeSet::new();
+            let mut stack: Vec<&LocationId> = vec![&self.start];
+            stack.extend(jumps.iter().filter(|t| known.contains(*t)));
+            while let Some(l) = stack.pop() {
+                if !seen.insert(l) {
+                    continue;
+                }
+                if let Some(loc) = self.locations.get(l) {
+                    stack.extend(loc.exits.iter().map(|ex| &ex.to).filter(|t| known.contains(*t)));
+                }
+            }
+            for l in self.locations.keys().filter(|l| !seen.contains(l)) {
+                warns.push(ScenarioError::UnreachableLocation { location: l.clone() });
             }
         }
         warns

@@ -21,6 +21,9 @@
 //! # 検分 (API キー不要・LLM 呼び出しゼロ)。生成 → 検める のループ用。
 //! cargo run -p harness --bin play -- lint packages/xxx
 //! cargo run -p harness --bin play -- lint packages/*        # 複数まとめて
+//!
+//! # AI でパッケージを組む (spec 38)。既定はディスクに書かない。
+//! cargo run -p harness --bin play -- build packages/xxx "キャラを 2 人と場面を 1 つ足して" [--plan-only] [--write] [--report r.json]
 //! ```
 //!
 //! キャンペーンモードでは goal 到達ごとに [`advance_campaign_with`](harness::advance_campaign_with)
@@ -40,6 +43,7 @@ use harness::{
 };
 use llm_client::{LlmClient, LlmConfig};
 
+mod build_cmd;
 mod observe;
 
 /// 既定シナリオ (cwd 非依存: crate からの相対で解決)。houkago は fixtures 移設済。
@@ -303,6 +307,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // サイト版 package_spec.md の連結 (`spec-assemble`) を stdout へ。どちらも LLM 呼び出しゼロ。
     if raw.first().map(String::as_str) == Some("edit") {
         return run_edit(&raw[1..]).await;
+    }
+    // spec 38 Phase B: 複数ファイルを計画して 1 つずつ書く (既定はディスクに書かない)。
+    if raw.first().map(String::as_str) == Some("build") {
+        return build_cmd::run(&raw[1..]).await;
     }
     match raw.first().map(String::as_str) {
         Some("spec-vocab") => {

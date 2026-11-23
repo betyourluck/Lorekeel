@@ -408,7 +408,24 @@ pub fn create_file(
     // **拡張子つきで打っても通す** (2026-08-28: VS Code の流儀に寄せた — あちらは
     // フルネームを打つので、`chapter2.yaml` と打った人を弾かない)。内部は stem で扱う。
     let stem = stem.strip_suffix(".yaml").or_else(|| stem.strip_suffix(".yml")).unwrap_or(stem);
-    let (rel, template) = match category {
+    let (rel, template) = new_file_template(category, stem)?;
+    let path = root.join(&rel);
+    if path.exists() {
+        return Err(format!("{rel} は既にあります"));
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("フォルダを作れません: {e}"))?;
+    }
+    atomic_write(&path, &template)?;
+    let (forked, warning) = fork_meta(root, fork, meta_files);
+    Ok((rel, forked, warning))
+}
+
+/// 新規ファイルの (編集ルート相対のパス, 雛形) — `create_file` と spec 38 の計画の検査が
+/// **同じ規則**を使う (stem の文字集合・予約 id・カテゴリ・campaign の固定名)。
+/// 雛形は全カテゴリそのまま parse できる形 (scenario は validate も通る最小盤面)。
+pub fn new_file_template(category: &str, stem: &str) -> Result<(String, String), String> {
+    Ok(match category {
         "character" => {
             validate_new_stem(stem, "ファイル名がそのままキャラクターの id になります")?;
             if stem == gm_core::PLAYER || stem == gm_core::PARTY || stem == gm_core::WILDCARD {
@@ -436,17 +453,7 @@ pub fn create_file(
             .to_string(),
         ),
         other => return Err(format!("このカテゴリには作成できません: {other}")),
-    };
-    let path = root.join(&rel);
-    if path.exists() {
-        return Err(format!("{rel} は既にあります"));
-    }
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("フォルダを作れません: {e}"))?;
-    }
-    atomic_write(&path, &template)?;
-    let (forked, warning) = fork_meta(root, fork, meta_files);
-    Ok((rel, forked, warning))
+    })
 }
 
 /// ファイル名の変更 (spec 28 追補、2026-08-28 ユーザー要望)。**同じフォルダの中だけ** —

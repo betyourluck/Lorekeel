@@ -36,6 +36,35 @@ pub struct EditorIssue {
     pub message: String,
 }
 
+/// パッケージ全体の検査 (`inspect_package`) を、ファイルへ帰属させた一覧にする。
+/// 帰属の素材 (entry の相対パス / campaign の modules 地図) は読めなくても続行 — 同じ失敗は
+/// inspect が errors として報告するので、ここで二重にエラーを作らない。
+/// エディタの層 2 (app の `inspect_editor_package`) と spec 38 のステージングが同じ関数を使う。
+pub fn inspect_issues(root: &std::path::Path) -> Vec<EditorIssue> {
+    let entry = crate::read_manifest(root).map(|m| m.entry).unwrap_or_default();
+    let mut modules = BTreeMap::new();
+    if crate::is_campaign_entry(&entry) {
+        if let Ok(text) = std::fs::read_to_string(root.join(&entry)) {
+            if let Ok(c) = crate::Campaign::from_yaml(&text) {
+                modules = c.modules;
+            }
+        }
+    }
+    let report = crate::inspect_package(root);
+    let to_issues = |severity: &str, msgs: Vec<String>| {
+        msgs.into_iter()
+            .map(|message| EditorIssue {
+                file: attribute_file(&message, &entry, &modules),
+                severity: severity.to_string(),
+                message,
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut out = to_issues("error", report.errors);
+    out.extend(to_issues("warning", report.warnings));
+    out
+}
+
 /// kind 別の parse を試み、エラーなら (行, 文言)。
 fn parse_error(kind: &str, text: &str) -> Result<Option<(Option<u32>, String)>, String> {
     fn err_of<T: serde::de::DeserializeOwned>(text: &str) -> Option<(Option<u32>, String)> {
@@ -111,7 +140,35 @@ pub fn attribute_file(
     if let Some(id) = prefix.strip_prefix("modules.") {
         return modules.get(id).cloned();
     }
-    None
+    // 読み込みエラー (`HarnessError` の `{label} ({path}): {detail}` 形) は接頭辞を持たないので、
+    // 括弧の中のパスの末尾で帰属させる (2026-11-23、spec 38: 層 2 の修復がどのファイルを直すか
+    // 決められるように。エディタの層 2 一覧でもクリックで飛べるようになる)。
+    let path = load_error_path(message)?.replace('\\', "/");
+    let ends = |rel: &str| !rel.is_empty() && (path == rel || path.ends_with(&format!("/{rel}")));
+    // cast の定義不在は、cast を宣言したシナリオの話 (パスは見つからない定義ファイルを指す)。
+    // campaign のモジュールなら `modules.{id}:` 接頭辞で上の規則が先に拾っている。
+    if message.contains("cast '") && !entry.is_empty() && !crate::is_campaign_entry(entry) {
+        return Some(entry.to_string());
+    }
+    if ends(entry) {
+        return Some(entry.to_string());
+    }
+    if let Some(rel) = modules.values().find(|r| ends(r)) {
+        return Some(rel.clone());
+    }
+    if ends("package.yaml") {
+        return Some("package.yaml".to_string());
+    }
+    let i = path.rfind("/characters/")?;
+    let rel = &path[i + 1..];
+    (rel.ends_with(".yaml") || rel.ends_with(".yml")).then(|| rel.to_string())
+}
+
+/// `{label} ({path}): {detail}` の `{path}`。
+fn load_error_path(message: &str) -> Option<&str> {
+    let start = message.find(" (")? + 2;
+    let len = message[start..].find("): ")?;
+    Some(&message[start..start + len])
 }
 
 #[cfg(test)]
@@ -235,5 +292,25 @@ stats: { HP: { initial: 1, mox: 2 } }
         );
         assert_eq!(attribute_file("modules.ghost: …", entry, &modules), None);
         assert_eq!(attribute_file("package の読み込み失敗 (…)", entry, &modules), None);
+        // 読み込みエラーは括弧の中のパスで帰属 (2026-11-23、spec 38)。区切りは \ でも / でも。
+        assert_eq!(
+            attribute_file(r"package の読み込み失敗 (C:\tmp\pkg\scenarios/main.yaml): scenario 整合性エラー", entry, &modules).as_deref(),
+            Some("scenarios/main.yaml")
+        );
+        // cast の定義不在は cast を宣言したシナリオへ (パスが指す定義ファイルは存在しない)。
+        assert_eq!(
+            attribute_file(r"キャラ定義の読み込み失敗 (C:\tmp\pkg\characters\ghost.yaml): cast 'ghost' の定義ファイルが見つからない", entry, &modules).as_deref(),
+            Some("scenarios/main.yaml")
+        );
+        // キャラ定義そのものが壊れていればそのファイルへ。
+        assert_eq!(
+            attribute_file("キャラ定義の読み込み失敗 (/tmp/pkg/characters/alice.yaml): invalid type", entry, &modules).as_deref(),
+            Some("characters/alice.yaml")
+        );
+        assert_eq!(
+            attribute_file("package の読み込み失敗 (/tmp/pkg/package.yaml): missing field `entry`", entry, &modules).as_deref(),
+            Some("package.yaml")
+        );
+        assert_eq!(attribute_file("package の読み込み失敗 (/tmp/pkg/notes.txt): x", entry, &modules), None);
     }
 }

@@ -18,7 +18,9 @@ pub fn scenario_lint_messages(scenario: &Scenario) -> Vec<String> {
                  GM に立てさせるならトリガー/challenge 側の set_flag を外し、筋書きで立てるならヒントを外してください"
             ),
             gm_core::ScenarioError::ChallengeMaxPerTurnZero { challenge } => format!(
-                "挑戦「{challenge}」の max_per_turn が 0 です。一覧には出るのに選ぶと必ず却下されます                 （作者からは「たまに判定が出ない」ようにしか見えません）。                 挑めなくしたいなら requires を、回数を制限したいなら 1 以上を書いてください"
+                "挑戦「{challenge}」の max_per_turn が 0 です。一覧には出るのに選ぶと必ず却下されます\
+                 （作者からは「たまに判定が出ない」ようにしか見えません）。\
+                 挑めなくしたいなら requires を、回数を制限したいなら 1 以上を書いてください"
             ),
             // spec 21 同梱: 幻の場所を指す location_is は永久に false = その Gate は死んでいる。
             gm_core::ScenarioError::UnknownLocationInGate { origin, at } => format!(
@@ -32,6 +34,29 @@ pub fn scenario_lint_messages(scenario: &Scenario) -> Vec<String> {
                 "{origin} の presence_is が、このシナリオが知らないキャラ「{entity}」を指しています。\
                  この条件は永久に成立しません（present: false なら逆に常に成立します）。\
                  characters に定義されているか、cast に含まれているかを確認してください"
+            ),
+            // present に挙げたのに characters / cast に居ないキャラは、present_at が落とすので
+            // その場所に一度も現れない (2026-11-23、spec 38 Phase B の実測)。
+            gm_core::ScenarioError::UnknownEntityInPresent { location, entity } => format!(
+                "場所「{location}」の present に挙がっている「{entity}」は、このシナリオの登場人物にいません。\
+                 この場所には現れません（エラーも出ません）。characters/{entity}.yaml があるなら、\
+                 シナリオの cast に {entity} を加えてください"
+            ),
+            // 出口の行き先 / start が宣言されていない場所 (2026-11-23、spec 38 Phase B の実測)。
+            // move は受理されるので、出口も説明文も無い場所に立って先へ進めなくなる。
+            gm_core::ScenarioError::UnknownLocationInExit { from, to } => format!(
+                "場所「{from}」の出口が、宣言されていない場所「{to}」を指しています。\
+                 そこへ移動すると出口も説明文も無いため先へ進めなくなります（エラーも出ません）。\
+                 locations に「{to}」を足すか、出口の行き先を locations にある id にしてください"
+            ),
+            gm_core::ScenarioError::UnreachableLocation { location } => format!(
+                "場所「{location}」へは、start から出口をたどっても、トリガーなどの move からも行けません。\
+                 主人公はこの場所に一度も立てません。\
+                 どこかの場所の exits に「- to: {location}」を足すか、要らない場所なら消してください"
+            ),
+            gm_core::ScenarioError::UnknownStartLocation { start } => format!(
+                "start の「{start}」が locations にありません。開幕から出口も説明文も無い場所に立ちます。\
+                 locations にある id にしてください"
             ),
             // authored effects の死んだ参照。トリガー効果は検証を通らない (信頼済で apply_ops
             // 直行) ので、typo は「エラーも警告もなく判定が起きない」形で沈黙していた。

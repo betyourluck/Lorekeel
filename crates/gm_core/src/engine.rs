@@ -4961,6 +4961,120 @@ triggers:
         );
     }
 
+    /// 【present の死んだ参照 (2026-11-23、spec 38 Phase B の実測)】場所の `present` に
+    /// characters / cast に無いキャラを書くと、`present_at` が黙って落とし、そのキャラは
+    /// **一度も現れない**。AI が組んだ盤面で `present: [genzo]` + `cast` の書き忘れとして出た
+    /// (層 2 の検査を素通りした)。lint が場所とキャラを名指しする。`"*"` は対象外。
+    #[test]
+    fn present_naming_an_unknown_character_is_a_lint() {
+        let yaml = r#"
+title: t
+start: hall
+allowed_flags: []
+goal: { kind: always }
+characters:
+  alice: { name: アリス }
+locations:
+  hall: { description: 広間, present: [alice, genzo], exits: [] }
+  yard: { description: 庭, present: ["*"], exits: [] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "lint は load を拒否しない: {:?}", sc.validate());
+        let s = sc.initial_state(1);
+        assert_eq!(sc.present_at(&s).len(), 1, "genzo は落ちて alice だけが居る");
+        let lints = sc.lints();
+        let hits: Vec<_> = lints
+            .iter()
+            .filter(|l| matches!(l, crate::ScenarioError::UnknownEntityInPresent { .. }))
+            .collect();
+        assert_eq!(hits.len(), 1, "宣言済みの alice と \"*\" は名指ししない: {lints:?}");
+        assert!(matches!(hits[0],
+            crate::ScenarioError::UnknownEntityInPresent { location, entity }
+                if location == "hall" && entity == "genzo"));
+
+        // cast に挙げた人物は注入される前提 (シナリオ単体の検分で「cast に加えて」と誤案内しない)。
+        let cast = Scenario::from_yaml(&yaml.replace("characters:", "cast: [genzo]\ncharacters:")).unwrap();
+        assert!(
+            !cast.lints().iter().any(|l| matches!(l, crate::ScenarioError::UnknownEntityInPresent { .. })),
+            "{:?}",
+            cast.lints()
+        );
+    }
+
+    /// 【出口と start の死んだ参照 (2026-11-23、spec 38 Phase B の実測)】AI が温室を別ファイルに
+    /// 作り、main.yaml には `- to: greenhouse` の出口だけを足した。validate も lint も通り、
+    /// 遊べば move が受理されて**宣言されていない場所に立つ** (出口も説明文も無いソフトロック)。
+    /// `start` も同じく検査されていなかった。どちらも lint で名指しする。
+    #[test]
+    fn exits_and_start_naming_undeclared_locations_are_lints() {
+        let yaml = r#"
+title: t
+start: hall
+allowed_flags: []
+goal: { kind: always }
+locations:
+  hall: { description: 広間, exits: [{ to: yard }, { to: greenhouse }] }
+  yard: { description: 庭, exits: [{ to: hall }] }
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "lint は load を拒否しない: {:?}", sc.validate());
+        let lints = sc.lints();
+        let exits: Vec<_> = lints
+            .iter()
+            .filter(|l| matches!(l, crate::ScenarioError::UnknownLocationInExit { .. }))
+            .collect();
+        assert_eq!(exits.len(), 1, "宣言済みの yard は名指ししない: {lints:?}");
+        assert!(matches!(exits[0],
+            crate::ScenarioError::UnknownLocationInExit { from, to } if from == "hall" && to == "greenhouse"));
+        assert!(!lints.iter().any(|l| matches!(l, crate::ScenarioError::UnknownStartLocation { .. })));
+
+        // move は出口に在れば受理される = 宣言されていない場所に立つ (lint が要る理由)。
+        let mut s = sc.initial_state(1);
+        apply(&mut s, &sc, &d(vec![StateOp::Move { to: "greenhouse".into() }])).unwrap();
+        assert_eq!(s.location, "greenhouse");
+
+        let bad_start = Scenario::from_yaml(&yaml.replace("start: hall", "start: lobby")).unwrap();
+        assert!(bad_start.lints().iter().any(|l| matches!(l,
+            crate::ScenarioError::UnknownStartLocation { start } if start == "lobby")));
+        assert!(!lints.iter().any(|l| matches!(l, crate::ScenarioError::UnreachableLocation { .. })), "{lints:?}");
+    }
+
+    /// 【行けない場所 (2026-11-23、spec 38 Phase B の実測)】AI が組んだ 3 部屋の盤面に出口が
+    /// 1 つも無く、入口から先へ行けなかった (層 2 は指摘 0 件)。start と効果の move の行き先を
+    /// 根に出口をたどり、届かない場所を名指しする。gate は見ない (条件しだいの道も道)。
+    #[test]
+    fn locations_no_route_reaches_are_lints() {
+        let yaml = r#"
+title: t
+start: entrance
+allowed_flags: [落ちた, 鍵]
+goal: { kind: always }
+locations:
+  entrance: { description: 入口, exits: [{ to: stair, gate: { kind: flag_is, key: 鍵, value: true } }] }
+  stair: { description: 階段, exits: [{ to: entrance }] }
+  pit: { description: 穴の底, exits: [{ to: cave }] }
+  cave: { description: 洞窟, exits: [] }
+  lamp_room: { description: 灯室, exits: [{ to: stair }] }
+triggers:
+  - id: fall
+    when: { kind: flag_is, key: 落ちた, value: true }
+    effects: [{ op: move, to: pit }]
+"#;
+        let sc = Scenario::from_yaml(yaml).unwrap();
+        assert!(sc.validate().is_empty(), "{:?}", sc.validate());
+        let unreachable: Vec<String> = sc
+            .lints()
+            .into_iter()
+            .filter_map(|l| match l {
+                crate::ScenarioError::UnreachableLocation { location } => Some(location),
+                _ => None,
+            })
+            .collect();
+        // gate つきの道 (stair) も、効果の move の行き先 (pit) とその先 (cave) も行ける。
+        // lamp_room は出口が外へ向いているだけで、どこからも入れない。
+        assert_eq!(unreachable, vec!["lamp_room".to_string()]);
+    }
+
     /// 【揮発 presence = 来訪者 (2026-07-25)】従来 override は**場所を持たなかった**ので、
     /// 一度登場させるとモジュール中どこへ行っても付いてきた (「その瞬間だけ居させたい」が
     /// 書けず、退場トリガーを別途書く運用負担になっていた)。`volatile: true` は適用時の
@@ -5153,7 +5267,7 @@ triggers:
       - { op: move_character, entity: player, to: tavern }
       - { op: move_character, entity: alice, to: tavern }
 locations:
-  square: { description: d }
+  square: { description: d, exits: [{ to: tavern }] }
   tavern: { description: d }
 "#;
         let sc = Scenario::from_yaml(yaml).unwrap();
