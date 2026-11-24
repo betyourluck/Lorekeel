@@ -15,7 +15,10 @@ use std::path::{Path, PathBuf};
 use harness::edit_assist::{Diag, Stopped};
 use harness::edit_tools;
 use harness::editor_lint::EditorIssue;
-use harness::package_build::{self as pb, ApplyReport, BuildOutcome, BuiltFile, FailedFile, PlanAction};
+use harness::package_build::{
+    self as pb, ApplyReport, BuildOutcome, BuiltFile, FailedFile, LoopUsage, PlanAction, PlanItem,
+};
+use llm_client::LlmLedger;
 use serde::Serialize;
 
 /// 一時フォルダを置く場所 (`app_data` の直下)。
@@ -162,11 +165,169 @@ pub fn view_of(o: &BuildOutcome, model: &str) -> BuildView {
     }
 }
 
+// =============================================================================
+// 組み立ての記録 (`app_data/logs/build.jsonl`、2026-11-24)
+// =============================================================================
+
+/// 組み立ての記録 1 行。後から「計画は strict で送ったか」「どのファイルのどの回に何トークン
+/// 使ったか」を確かめるためのもの — 利用量ログ (`usage.jsonl`) は 1 リクエスト 1 行で、役割
+/// `editor` としか分からない (実機 1 回目で入力の約 7 割が 1 本の長いループに集まったのに、
+/// どのファイルの回だったか分からなかった)。
+///
+/// **ファイルの本文 (before / after) と差分は載せない** — 載るのは作者の依頼・計画の指示・
+/// モデルの報告・パス・周回とトークンだけ。置き場は `usage.jsonl` と同じ `app_data/logs/`
+/// 固定 (会話ログの保存先設定には従わせない = 機械が読む物)。
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BuildLog {
+    /// `build_plan` 1 回。
+    Plan {
+        root: String,
+        model_id: String,
+        request: String,
+        items: Vec<PlanItem>,
+        /// 最初の計画が受け付けられなかった理由 (立て直したときだけ)。
+        rejected: Vec<String>,
+        /// 計画を strict で送ったか (= Anthropic で名指しの強制を断られて降格した状態、
+        /// [`llm_client::LlmClient::strict_active`])。強制の 400 は利用量ログに残らない。
+        strict: bool,
+        /// 計画係の client の累計 (立て直しの呼び出しも含む)。
+        usage: LlmLedger,
+        elapsed_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// `build_run` 1 回。
+    Run {
+        root: String,
+        model_id: String,
+        request: String,
+        plan: Vec<PlanItem>,
+        files: Vec<FileLog>,
+        failed: Vec<FailedFile>,
+        not_run: Vec<String>,
+        /// この組み立てが生んで、修復しても残った層 2 の指摘の件数。
+        new_issues: usize,
+        preexisting_issues: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        stopped: Option<Stopped>,
+        /// ループの返りの合計 (= `files[].loops` の合計)。
+        iterations: u32,
+        prompt_tokens: u64,
+        completion_tokens: u64,
+        cache_read: u64,
+        /// client の累計 (`LlmClient` の記録点 = 全リクエスト)。ループの合計より多ければ、
+        /// 失敗して結果に残らなかった回がある。
+        usage: LlmLedger,
+        elapsed_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// `build_apply` 1 回。
+    Apply {
+        root: String,
+        written: Vec<String>,
+        conflicts: Vec<String>,
+        errors: Vec<FailedFile>,
+        forked: bool,
+    },
+}
+
+/// 記録の 1 ファイル (本文は持たない)。
+#[derive(Debug, Serialize)]
+pub struct FileLog {
+    pub path: String,
+    pub action: PlanAction,
+    pub changed: bool,
+    pub template_only: bool,
+    pub repaired: bool,
+    /// 層 1 の診断の件数。
+    pub diagnostics: usize,
+    pub summary: String,
+    /// 回したループの周回とトークン (最初の回・やり直し・修復)。
+    pub loops: Vec<LoopUsage>,
+}
+
+/// 記録の共通部 (どの組み立てか)。
+pub struct LogHead {
+    pub root: String,
+    pub model_id: String,
+    pub request: String,
+}
+
+/// `build_run` の記録を組む (純関数)。`outcome` が無いのは計画の検め直しで落ちたとき。
+pub fn run_log(
+    head: LogHead,
+    plan: &[PlanItem],
+    outcome: Option<&BuildOutcome>,
+    usage: LlmLedger,
+    elapsed_ms: u64,
+    error: Option<String>,
+) -> BuildLog {
+    let empty = BuildOutcome::default();
+    let o = outcome.unwrap_or(&empty);
+    BuildLog::Run {
+        root: head.root,
+        model_id: head.model_id,
+        request: head.request,
+        plan: plan.to_vec(),
+        files: o
+            .files
+            .iter()
+            .map(|f| FileLog {
+                path: f.path.clone(),
+                action: f.action,
+                changed: f.changed,
+                template_only: f.template_only,
+                repaired: f.repaired,
+                diagnostics: f.diagnostics.len(),
+                summary: f.summary.clone(),
+                loops: f.loops.clone(),
+            })
+            .collect(),
+        failed: o.failed.clone(),
+        not_run: o.not_run.clone(),
+        new_issues: o.package_issues.len(),
+        preexisting_issues: o.preexisting_issues,
+        stopped: o.stopped,
+        iterations: o.iterations,
+        prompt_tokens: o.prompt_tokens,
+        completion_tokens: o.completion_tokens,
+        cache_read: o.cache_read,
+        usage,
+        elapsed_ms,
+        error,
+    }
+}
+
+/// jsonl の 1 行 (`t_ms` と `kind` が同じ段に並ぶ — `usage.jsonl` と同じ形)。
+#[derive(Serialize)]
+struct LoggedBuild<'a> {
+    t_ms: u64,
+    #[serde(flatten)]
+    entry: &'a BuildLog,
+}
+
+/// 記録を 1 行追記する。失敗は呼び出し側が stderr に出して握り潰す (記録の失敗で組み立てを止めない)。
+pub fn append_build_log(path: &Path, entry: &BuildLog) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let t_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let mut line = serde_json::to_string(&LoggedBuild { t_ms, entry }).map_err(std::io::Error::other)?;
+    line.push('\n');
+    std::fs::OpenOptions::new().create(true).append(true).open(path)?.write_all(line.as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use harness::edit_assist::ToolChat;
-    use harness::package_build::{PlanItem, Staging};
+    use harness::package_build::Staging;
     use llm_client::{ChatMessage, ChatTurn, Finish, LlmError, ToolCall, ToolSpec, Usage};
     use serde_json::json;
     use std::sync::atomic::AtomicBool;
@@ -209,7 +370,7 @@ mod tests {
         }
     }
     fn text(t: &str) -> ChatTurn {
-        ChatTurn { text: Some(t.into()), tool_calls: vec![], finish: Finish::Stop, usage: Usage::default() }
+        ChatTurn { text: Some(t.into()), tool_calls: vec![], finish: Finish::Stop, usage: usage() }
     }
     fn sd(pattern: &str, replacement: &str, apply: bool) -> ChatTurn {
         let mut args = json!({ "pattern": pattern, "replacement": replacement });
@@ -220,8 +381,11 @@ mod tests {
             text: None,
             tool_calls: vec![ToolCall { id: "c0".into(), name: "sd".into(), args, thought_signature: None }],
             finish: Finish::ToolUse,
-            usage: Usage::default(),
+            usage: usage(),
         }
+    }
+    fn usage() -> Usage {
+        Usage { prompt: 100, completion: 7, cache_read: 40, cost_usd: None }
     }
 
     /// 【spec 38 C】実行 → 変更セット → 適用までのジョブの一生。
@@ -291,6 +455,69 @@ mod tests {
         for d in [&app_data, &pkg, &other] {
             let _ = std::fs::remove_dir_all(d);
         }
+    }
+
+    /// 【組み立ての記録 (2026-11-24)】実機 1 回目で入力の約 7 割が 1 本の長いループに集まったのに、
+    /// 利用量ログ (`usage.jsonl`) は役割 `editor` としか言わず、どのファイルの回だったか分からなかった。
+    /// - 記録の 1 ファイルにループごとの周回とトークンが載り、合計が組み立ての合計と一致する
+    /// - **本文 (before / after) と差分は載らない**
+    /// - 追記は 1 行 1 事象で、`t_ms` と `kind` が同じ段に並ぶ
+    #[test]
+    fn the_build_log_records_tokens_per_file_without_bodies() {
+        let pkg = scratch("log_pkg");
+        package(&pkg);
+        let staging = Staging::prepare(&pkg, &scratch("log_st").join("run")).unwrap();
+        let plan = vec![PlanItem {
+            path: "scenarios/main.yaml".into(),
+            action: PlanAction::Edit,
+            instruction: "部屋の説明を書き足す".into(),
+        }];
+        let chat = Scripted(Mutex::new(vec![
+            sd("小さな部屋", "小さな部屋。窓がひとつある", false),
+            sd("小さな部屋", "小さな部屋。窓がひとつある", true),
+            text("書き足しました"),
+        ]));
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let outcome = rt
+            .block_on(pb::run_build(&chat, "窓を足して", &plan, &staging, &AtomicBool::new(false), &mut |_| {}))
+            .expect("計画は通る");
+        assert!(outcome.files[0].after.contains("窓がひとつある"), "前提: 本文は変わった");
+
+        let head = LogHead { root: "pkg".into(), model_id: "fake-model".into(), request: "窓を足して".into() };
+        let entry = run_log(head, &plan, Some(&outcome), LlmLedger::default(), 1234, None);
+        let v = serde_json::to_value(&entry).unwrap();
+        assert_eq!(v["kind"], "run");
+        let f = &v["files"][0];
+        assert_eq!(f["path"], "scenarios/main.yaml");
+        assert_eq!(f["loops"][0]["kind"], "main");
+        // 台本の 1 往復は入力 100 / キャッシュ読み 40 (台本切れの往復も同じ値)。
+        let n = f["loops"][0]["iterations"].as_u64().unwrap();
+        assert!(n >= 3, "台本の 3 往復以上: {f}");
+        assert_eq!(f["loops"][0]["prompt_tokens"], n * 100, "往復の数 × 100: {f}");
+        assert_eq!(f["loops"][0]["cache_read"], n * 40);
+        let loops_total: u64 = f["loops"].as_array().unwrap().iter().map(|l| l["prompt_tokens"].as_u64().unwrap()).sum();
+        assert_eq!(v["prompt_tokens"], loops_total, "ループの合計と組み立ての合計が一致する");
+        let s = serde_json::to_string(&entry).unwrap();
+        assert!(!s.contains("窓がひとつある"), "本文と差分は載らない: {s}");
+        assert!(f.get("after").is_none() && f.get("before").is_none() && f.get("diff").is_none());
+
+        let log = scratch("log_dir").join("logs").join("build.jsonl");
+        append_build_log(&log, &entry).unwrap();
+        append_build_log(&log, &BuildLog::Apply {
+            root: "pkg".into(),
+            written: vec!["scenarios/main.yaml".into()],
+            conflicts: vec![],
+            errors: vec![],
+            forked: false,
+        })
+        .unwrap();
+        let text = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<serde_json::Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(lines.len(), 2, "1 行 1 事象");
+        assert!(lines[0]["t_ms"].as_u64().unwrap() > 0);
+        assert_eq!((lines[0]["kind"].as_str(), lines[1]["kind"].as_str()), (Some("run"), Some("apply")));
+        staging.discard();
+        let _ = std::fs::remove_dir_all(&pkg);
     }
 
     /// 【spec 38 C】強制終了で残った一時フォルダは片付けるが、`run_*` 以外には触れず、

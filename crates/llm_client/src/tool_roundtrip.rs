@@ -18,11 +18,13 @@ mod tests {
                 name: "read".into(),
                 description: "ファイルを読む".into(),
                 parameters: json!({"type":"object","properties":{"path":{"type":"string"}}}),
+                strict: false,
             },
             ToolSpec {
                 name: "sd".into(),
                 description: "置換".into(),
                 parameters: json!({"type":"object","properties":{"pattern":{"type":"string"}}}),
+                strict: false,
             },
         ]
     }

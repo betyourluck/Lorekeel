@@ -108,6 +108,7 @@ Inside the application data folder:
 - `logs/generated_images/` — the history of generated illustrations (every generated image is kept here automatically; you can delete them from the history view in the story pane; if you change the log folder in Settings, the history moves under it)
 - `logs/usage.jsonl` — token counts per request, for the usage meter. **No narration or prompt text.**
 - `logs/consistency.jsonl` — Jev check scores (developer mode only). **No narration text.**
+- `logs/build.jsonl` — a record of each AI package build (the plan, rounds and token counts per file, which files were applied), for checking costs later. It contains your request and the plan's instructions, but **no file contents**.
 - `.env` — non-secret settings (endpoints, model names, options)
 - `settings.json` — a backup copy of your interface settings
 

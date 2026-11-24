@@ -814,6 +814,7 @@ mod tests {
                 name: EMIT_DELTA_TOOL.into(),
                 description: "d".into(),
                 parameters: state_delta_schema(),
+                strict: false,
             }],
             tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
             temperature: None,
@@ -934,6 +935,7 @@ mod tests {
                 name: EMIT_DELTA_TOOL.into(),
                 description: "d".into(),
                 parameters: state_delta_schema(),
+                strict: false,
             }],
             tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
             temperature: None,
@@ -968,6 +970,7 @@ mod tests {
                 name: EMIT_DELTA_TOOL.into(),
                 description: "d".into(),
                 parameters: state_delta_schema(),
+                strict: false,
             }],
             tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
             temperature: None,
@@ -1081,6 +1084,7 @@ mod tests {
                 name: EMIT_DELTA_TOOL.into(),
                 description: "d".into(),
                 parameters: state_delta_schema(),
+                strict: false,
             }],
             tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
             temperature: None,
@@ -1112,6 +1116,7 @@ mod tests {
                 name: EMIT_DELTA_TOOL.into(),
                 description: "d".into(),
                 parameters: state_delta_schema(),
+                strict: false,
             }],
             tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
             temperature: None,
@@ -1345,6 +1350,7 @@ mod tests {
                 name: EMIT_DELTA_TOOL.into(),
                 description: "d".into(),
                 parameters: state_delta_schema(),
+                strict: false,
             }],
             tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
             temperature: None,
@@ -1456,11 +1462,27 @@ mod tests {
     fn serve_scripted_with(
         responses: Vec<(u16, &'static str)>,
     ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let (base, seen, _bodies) = serve_scripted_full(responses);
+        (base, seen)
+    }
+
+    /// [`serve_scripted_with`] に加えて、受けたリクエストの**本文**も到着順に返す —
+    /// 「何を送ったか」(tool 定義の欄など) を配線ごと確かめる PoC 用。
+    #[allow(clippy::type_complexity)]
+    fn serve_scripted_full(
+        responses: Vec<(u16, &'static str)>,
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let seen_w = seen.clone();
+        let bodies = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let bodies_w = bodies.clone();
         std::thread::spawn(move || {
             for (status, body) in responses {
                 let (mut s, _) = listener.accept().unwrap();
@@ -1486,6 +1508,7 @@ mod tests {
                     let n = s.read(&mut chunk).unwrap();
                     buf.extend_from_slice(&chunk[..n]);
                 }
+                bodies_w.lock().unwrap().push(String::from_utf8_lossy(&buf[head_end..head_end + len]).into_owned());
                 let resp = format!(
                     "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()
@@ -1493,7 +1516,54 @@ mod tests {
                 s.write_all(resp.as_bytes()).unwrap();
             }
         });
-        (format!("http://{addr}"), seen)
+        (format!("http://{addr}"), seen, bodies)
+    }
+
+    /// 【Anthropic: 降格した周の計画の道具は strict で縛る (2026-11-24 ユーザー実機、Opus 5.5)】
+    /// Opus 5.5 は名指しの強制を 400 で断るので auto へ降格する (#108)。auto では入力の形が縛られず、
+    /// 計画の道具 `emit_plan` の `files` (object の配列) に、ツール呼び出しの書式
+    /// `<invoke name=…><parameter name=…>` を**文字列として**書いた (パース失敗で計画が立たない)。
+    /// Anthropic の推奨は auto + `strict: true`。付けるのは **(a) 道具が strict を名乗り (b) 降格した周の
+    /// (c) 名指しされた道具** だけ — 強制が通る周は従来と同一バイト (strict 非対応のモデルがありうる)、
+    /// strict を名乗らない道具 (型から機械生成する emit_delta) は降格しても付けない (制約を満たさず 400)。
+    /// 配線ごと確かめるため `complete()` を通す。
+    #[tokio::test]
+    async fn anthropic_strict_rides_only_on_the_downgraded_named_tool() {
+        use crate::config::Provider;
+        const REJECT: &str = r#"{"type":"error","error":{"type":"invalid_request_error","message":"tool_choice: type \"tool\" and \"any\" are not supported for this model."}}"#;
+        const PLAN: &str = r#"{"content":[{"type":"tool_use","id":"toolu_1","name":"emit_plan","input":{"files":[{"path":"package.yaml","action":"edit","instruction":"世界観を厚くする"}]}}],"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":20}}"#;
+        let (base, _lines, bodies) = serve_scripted_full(vec![(400, REJECT), (200, PLAN), (200, PLAN)]);
+        let mut cfg = LlmConfig::new(base, "sk-test", "claude-opus-5-5");
+        cfg.provider = Provider::Anthropic;
+        cfg.max_retries = 1;
+        let c = LlmClient::new(cfg).unwrap();
+        assert!(!c.strict_active(), "降格する前は strict を付けない状態");
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "files": { "type": "array", "items": { "type": "object",
+                "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false } } },
+            "required": ["files"],
+            "additionalProperties": false
+        });
+        #[derive(serde::Deserialize)]
+        struct Out {
+            files: Vec<serde_json::Value>,
+        }
+        let out: Out = c.generate_structured_strict(user_msgs(), "emit_plan", "d", schema.clone()).await.unwrap();
+        assert_eq!(out.files.len(), 1);
+        assert!(c.strict_active(), "降格した後は、組み立ての記録がこれで strict を送ったと分かる");
+        // strict を名乗らない道具は、降格した後でも縛らない。
+        let _: Out = c.generate_structured(user_msgs(), "emit_plan", "d", schema).await.unwrap();
+
+        let bodies = bodies.lock().unwrap();
+        let sent: Vec<serde_json::Value> = bodies.iter().map(|b| serde_json::from_str(b).unwrap()).collect();
+        assert_eq!(sent.len(), 3, "強制 (400) → 降格して再送 → strict でない呼び出し");
+        assert_eq!(sent[0]["tool_choice"]["type"], "tool");
+        assert!(sent[0]["tools"][0].get("strict").is_none(), "強制が通る周は従来と同一 (strict を付けない)");
+        assert_eq!(sent[1]["tool_choice"]["type"], "auto");
+        assert_eq!(sent[1]["tools"][0]["strict"], true, "降格した周の名指しの道具は strict で縛る");
+        assert_eq!(sent[2]["tool_choice"]["type"], "auto");
+        assert!(sent[2]["tools"][0].get("strict").is_none(), "strict を名乗らない道具には付けない");
     }
 
     /// 【明示キャッシュの latch (2026-10-19、ユーザー実機 gemini-4-argon)】`cachedContents` の作成が
@@ -1685,6 +1755,7 @@ mod tests {
                 name: EMIT_DELTA_TOOL.into(),
                 description: "d".into(),
                 parameters: state_delta_schema(),
+                strict: false,
             }],
             tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
             temperature: None,
@@ -1736,6 +1807,7 @@ mod tests {
                 name: EMIT_DELTA_TOOL.into(),
                 description: "d".into(),
                 parameters: state_delta_schema(),
+                strict: false,
             }],
             tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
             temperature: None,
@@ -1785,6 +1857,7 @@ mod tests {
                 name: EMIT_DELTA_TOOL.into(),
                 description: tool_desc.into(),
                 parameters: state_delta_schema(),
+                strict: false,
             }],
             tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
             temperature: None,
@@ -1828,6 +1901,7 @@ mod tests {
                 name: EMIT_DELTA_TOOL.into(),
                 description: "d".into(),
                 parameters: state_delta_schema(),
+                strict: false,
             }],
             tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
             temperature: None,
@@ -1873,6 +1947,7 @@ mod tests {
                 name: EMIT_DELTA_TOOL.into(),
                 description: "d".into(),
                 parameters: state_delta_schema(),
+                strict: false,
             }],
             tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
             temperature: None,
@@ -1964,6 +2039,7 @@ mod tests {
                 name: EMIT_DELTA_TOOL.into(),
                 description: "d".into(),
                 parameters: state_delta_schema(),
+                strict: false,
             }],
             tool_choice: canonical::ToolChoice::Specific(EMIT_DELTA_TOOL.into()),
             temperature: None,

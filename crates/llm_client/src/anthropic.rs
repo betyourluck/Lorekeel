@@ -117,6 +117,9 @@ pub(crate) struct ToolDef {
     pub name: String,
     pub description: String,
     pub input_schema: Value,
+    /// strict tool use (入力を schema どおりに縛る)。false なら欄ごと出さない = 従来と同一バイト。
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub strict: bool,
 }
 
 /// ツール選択。`{"type":"tool","name":...}` (特定ツールの強制 = emit_delta) か
@@ -211,6 +214,13 @@ pub(crate) fn encode_with(req: &canonical::ChatRequest, forced_ok: bool) -> Mess
         block.cache_control = Some(CacheControl::ephemeral());
     }
 
+    // strict は「名指しの強制を断られて auto へ降格した周」の、名指しされた道具にだけ付ける
+    // (2026-11-24 実機: Opus 5.5 が計画の道具 emit_plan の配列の欄に、ツール呼び出しの書式
+    // `<invoke name=…><parameter name=…>` を文字列として書いた = 強制が無い auto では入力の形が
+    // 縛られない)。Anthropic の推奨はこの組み合わせ (auto + strict)。強制が通るモデルでは付けない —
+    // strict 対応の一覧に無いモデル (Opus 4.6 / Sonnet 4.6 等) がありうるので、降格した (= 新しい)
+    // モデルに限る。道具の側でも opt-in (`ToolSpec.strict`)。
+    let downgraded = matches!(&req.tool_choice, canonical::ToolChoice::Specific(_)) && !forced_ok;
     let tools: Vec<ToolDef> = req
         .tools
         .iter()
@@ -218,6 +228,9 @@ pub(crate) fn encode_with(req: &canonical::ChatRequest, forced_ok: bool) -> Mess
             name: t.name.clone(),
             description: t.description.clone(),
             input_schema: t.parameters.clone(),
+            strict: t.strict
+                && downgraded
+                && matches!(&req.tool_choice, canonical::ToolChoice::Specific(n) if *n == t.name),
         })
         .collect();
     // Specific = 名指しの強制 (従来と同一バイト) / Auto・Required = モデルが選ぶ (spec 29) /

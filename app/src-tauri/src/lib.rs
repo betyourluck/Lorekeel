@@ -1207,6 +1207,17 @@ async fn build_preflight(
     editor_root.0.lock().await.clone().ok_or_else(|| "編集モードではありません".to_string())
 }
 
+/// 組み立ての記録を `app_data/logs/build.jsonl` へ 1 行追記する (2026-11-24)。置き場は `usage.jsonl`
+/// と同じく固定 (会話ログの保存先設定には従わせない)。失敗は組み立てを止めない。
+fn write_build_log(app: &tauri::AppHandle, entry: &build_job::BuildLog) {
+    let Some(path) = default_log_dir(app).map(|d| d.join("build.jsonl")) else {
+        return;
+    };
+    if let Err(e) = build_job::append_build_log(&path, entry) {
+        eprintln!("[build] build.jsonl の追記に失敗: {e}");
+    }
+}
+
 /// `build_plan` の返り。`rejected` は最初の計画が受け付けられなかった理由 (立て直して通った
 /// ときだけ中身がある — 画面で「立て直しました」を言う材料)。
 #[derive(Serialize)]
@@ -1230,9 +1241,27 @@ async fn build_plan(
     let existing: Vec<String> = editor::list_files(&root).into_iter().map(|e| e.rel_path).collect();
     let ids = edit_assist::ids_table(&editor_vocab::build_vocabulary(&root));
     let (client, model) = editor_client(&app)?;
-    let planned = harness::package_build::make_plan(&client, &request, &existing, &ids)
-        .await
-        .map_err(|e| e.to_string())?;
+    let t0 = std::time::Instant::now();
+    let result = harness::package_build::make_plan(&client, &request, &existing, &ids).await;
+    let (items, rejected, error) = match &result {
+        Ok(p) => (p.items.clone(), p.rejected.clone(), None),
+        Err(e) => (vec![], vec![], Some(e.to_string())),
+    };
+    write_build_log(
+        &app,
+        &build_job::BuildLog::Plan {
+            root: root.display().to_string(),
+            model_id: model.clone(),
+            request: request.clone(),
+            items,
+            rejected,
+            strict: client.strict_active(),
+            usage: client.usage_ledger(),
+            elapsed_ms: t0.elapsed().as_millis() as u64,
+            error,
+        },
+    );
+    let planned = result.map_err(|e| e.to_string())?;
     Ok(BuildPlanView { items: planned.items, rejected: planned.rejected, model })
 }
 
@@ -1265,19 +1294,37 @@ async fn build_run(
     let mut progress = |line: String| {
         let _ = app.emit("edit-build-progress", line);
     };
-    let outcome =
-        match harness::package_build::run_build(&client, &request, &plan, &staging, &cancel.0, &mut progress).await {
-            Ok(o) => o,
-            Err(errs) => {
-                staging.discard();
-                return Err(format!("計画を受け付けられませんでした:\n{}", errs.join("\n")));
-            }
-        };
+    let t0 = std::time::Instant::now();
+    let result = harness::package_build::run_build(&client, &request, &plan, &staging, &cancel.0, &mut progress).await;
+    let head = || build_job::LogHead {
+        root: root.display().to_string(),
+        model_id: model.clone(),
+        request: request.clone(),
+    };
+    let elapsed_ms = t0.elapsed().as_millis() as u64;
+    let outcome = match result {
+        Ok(o) => o,
+        Err(errs) => {
+            let msg = format!("計画を受け付けられませんでした:\n{}", errs.join("\n"));
+            write_build_log(
+                &app,
+                &build_job::run_log(head(), &plan, None, client.usage_ledger(), elapsed_ms, Some(msg.clone())),
+            );
+            staging.discard();
+            return Err(msg);
+        }
+    };
     // 実行中に編集モードを出た・別のパッケージへ移った: 結果の行き先が無いので捨てる
-    // (frontend は実行中に編集モードを出させない — これは二層目)。
-    if editor_root.0.lock().await.as_deref() != Some(root.as_path()) {
+    // (frontend は実行中に編集モードを出させない — これは二層目)。トークンは使っているので記録は残す。
+    let left = (editor_root.0.lock().await.as_deref() != Some(root.as_path()))
+        .then(|| "組み立ての途中で編集モードを出たので、結果は捨てました".to_string());
+    write_build_log(
+        &app,
+        &build_job::run_log(head(), &plan, Some(&outcome), client.usage_ledger(), elapsed_ms, left.clone()),
+    );
+    if let Some(msg) = left {
         staging.discard();
-        return Err("組み立ての途中で編集モードを出たので、結果は捨てました".into());
+        return Err(msg);
     }
     let view = build_job::view_of(&outcome, &model);
     *job.0.lock().await = Some(build_job::BuildJob::new(root, staging, outcome.files));
@@ -1298,6 +1345,7 @@ struct BuildApplyView {
 /// 書かず、変更セットは残す。
 #[tauri::command]
 async fn build_apply(
+    app: tauri::AppHandle,
     paths: Vec<String>,
     fork: bool,
     session: tauri::State<'_, SharedSession>,
@@ -1318,6 +1366,16 @@ async fn build_apply(
     drop(slot);
     let root = j.root().to_path_buf();
     let report = j.apply(&paths, fork, update::SOURCE_META_FILES);
+    write_build_log(
+        &app,
+        &build_job::BuildLog::Apply {
+            root: root.display().to_string(),
+            written: report.written.clone(),
+            conflicts: report.conflicts.clone(),
+            errors: report.errors.clone(),
+            forked: report.forked,
+        },
+    );
     Ok(BuildApplyView { report, files: editor::list_files(&root) })
 }
 
@@ -5136,9 +5194,9 @@ async fn do_play_turn(
         )
     });
 
-    // 前ターンの伏線・判定結果・語りを取り出して注入し、pending を空にする。
-    let pending = std::mem::take(&mut sess.pending_lore);
-    let pending_checks = std::mem::take(&mut sess.pending_checks);
+    // 前ターンの伏線・判定結果・語りは借用で渡す。入れ替えるのは受理されたときだけ (下の
+    // Accepted の腕)。2026-11-24 までは伏線と判定結果を run_turn の前に取り出して空にして
+    // いたため、その 1 ターンが却下か LLM の失敗で終わると二度と GM に届かなかった。
     let outcome = run_turn(
         &sess.client,
         &mut sess.state,
@@ -5146,8 +5204,8 @@ async fn do_play_turn(
         action.trim(),
         MAX_ATTEMPTS,
         sess.lang,
-        &pending,
-        &pending_checks,
+        &sess.pending_lore,
+        &sess.pending_checks,
         // 借用のまま渡す (2026-09-13 まで `mem::take` していたため、却下ターンの次は継続文脈が空だった)。
         &sess.recent_narrations,
         &sess.history,
@@ -7038,6 +7096,36 @@ mod tests {
         // 警告そのものの中身は llm_client 側の PoC が固めている (ここは配線の表明)。
         let cfg = llm_client::LlmConfig::new("https://api.anthropic.com", "k", "claude-opus-5");
         assert!(cfg.warnings().is_empty(), "effort 未設定なら無音");
+    }
+
+    /// 【一度きりの持ち越しは受理されたときだけ入れ替える (2026-11-24)】発火で想起した伏線
+    /// (memoria) と直前の判定の結果は、次の 1 ターンにだけ GM へ渡す。`do_play_turn` は run_turn の
+    /// **前に**取り出して空にしていたので、その 1 ターンが却下 (全試行の失敗) か LLM の失敗で
+    /// 終わると、どちらも二度と GM に届かなかった (直前の語りの 2026-09-13 と同じ形)。
+    /// GameSession と AppHandle はテストで組めないので、ここは形の表明: 取り出さずに借用で渡し、
+    /// 入れ替えるのは受理の腕の中だけ。
+    #[test]
+    fn one_turn_carryovers_survive_a_rejected_turn() {
+        let src = include_str!("lib.rs");
+        let start = src.find("async fn do_play_turn(").expect("do_play_turn がある");
+        let body = &src[start..];
+        let end = body[1..].find("\nasync fn ").map(|i| i + 1).unwrap_or(body.len());
+        let body = &body[..end];
+        let accepted = body.find("TurnOutcome::Accepted {").expect("受理の腕");
+        let rejected = body.find("TurnOutcome::Rejected {").expect("却下の腕");
+        assert!(accepted < rejected);
+        let accepted_arm = &body[accepted..rejected];
+        for name in ["pending_lore", "pending_checks"] {
+            assert!(
+                !body.contains(&format!("mem::take(&mut sess.{name})")),
+                "{name} を run_turn の前に取り出すと、却下されたターンで失われる"
+            );
+            assert!(body.contains(&format!("&sess.{name},")), "{name} は借用で run_turn へ渡す");
+            assert!(
+                accepted_arm.contains(&format!("sess.{name} = ")),
+                "{name} は受理されたターンで入れ替える (入れ替えないと前の値が積み残る)"
+            );
+        }
     }
 
     /// 【`..` 畳み】asset protocol が拒否する `..` をパスから除去する (403 の原因対策)。

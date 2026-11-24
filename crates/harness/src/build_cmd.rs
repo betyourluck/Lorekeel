@@ -292,6 +292,17 @@ async fn body(
             head.push_str(" / 雛形のまま (埋められませんでした)");
         }
         println!("{head}");
+        for l in &f.loops {
+            println!(
+                "   {:?}: {} 周 / 入力 {} (キャッシュ読み {}) / 出力 {}{}",
+                l.kind,
+                l.iterations,
+                l.prompt_tokens,
+                l.cache_read,
+                l.completion_tokens,
+                l.stopped.map(|s| format!(" / 打ち切り: {s:?}")).unwrap_or_default(),
+            );
+        }
         if f.changed {
             println!("{}", edit_tools::unified_diff(&f.path, f.before.as_deref().unwrap_or(""), &f.after));
         } else {
@@ -426,6 +437,7 @@ mod tests {
             diagnostics: diags,
             iterations: 3,
             stopped,
+            loops: vec![],
             repaired: false,
             template_only: false,
         }

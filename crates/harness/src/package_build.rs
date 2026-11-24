@@ -270,8 +270,11 @@ pub trait Planner {
 }
 
 impl Planner for LlmClient {
+    /// strict 版で呼ぶ ([`plan_schema`] は strict の制約を満たす手書きの schema)。Anthropic で名指しの
+    /// 強制を断られたモデル (Opus 5.5 等) が auto へ降格した周に、入力が schema どおりに縛られる
+    /// (2026-11-24 実機: 縛らないと `files` の配列にツール呼び出しの書式を文字列で書いた)。
     async fn plan(&self, messages: Vec<ChatMessage>) -> Result<RawPlan, LlmError> {
-        self.generate_structured::<RawPlan>(
+        self.generate_structured_strict::<RawPlan>(
             messages,
             PLAN_TOOL,
             "パッケージを組む計画 (ファイルごとの作業の一覧) を出す",
@@ -307,19 +310,55 @@ pub async fn make_plan<P: Planner>(
     ids_table: &str,
 ) -> Result<Planned, PlanError> {
     let mut messages = plan_messages(request, existing, ids_table);
-    let raw = planner.plan(messages.clone()).await?;
-    let errs = match validate_plan(raw.files.clone(), existing) {
-        Ok(items) => return Ok(Planned { items, rejected: Vec::new() }),
-        Err(errs) => errs,
+    let (errs, retry) = match planner.plan(messages.clone()).await {
+        Ok(raw) => match validate_plan(raw.files.clone(), existing) {
+            Ok(items) => return Ok(Planned { items, rejected: Vec::new() }),
+            Err(errs) => {
+                let prev = serde_json::to_string(&raw.files).unwrap_or_default();
+                let retry = format!(
+                    "前の計画は次の理由で受け付けられません:\n{}\n\n前の計画: {prev}\n\n直した計画を、**全部の行を含めて** `emit_plan` で出し直してください。",
+                    errs.iter().map(|e| format!("- {e}")).collect::<Vec<_>>().join("\n")
+                );
+                (errs, retry)
+            }
+        },
+        // 出力が計画として読めなかった (欄の型が違う・JSON が壊れている・ツールを呼ばなかった)。
+        // 検査に落ちたのと同じく理由を言って 1 回だけ立て直す。前の出力そのものは積まない —
+        // 壊れた形 (実機ではツール呼び出しの書式が文字列に混ざった) をもう一度見せると、同じ形を
+        // 誘う。理由も型の不一致か構文かだけを言う (serde の文面は壊れた値を丸ごと引用する)。
+        Err(e @ (LlmError::Parse { .. } | LlmError::NoStructuredOutput)) => {
+            let reason = unreadable_reason(&e);
+            let retry = format!(
+                "前の出力は計画として読めませんでした ({reason})。`emit_plan` を呼び、引数 `files` には \
+                 {{\"path\", \"action\", \"instruction\"}} の object を並べた**配列**を入れてください。\
+                 ツール呼び出しの書式 (<invoke> など) を文字列の中に書かないでください。全部の行を含めて出し直してください。"
+            );
+            (vec![format!("出力が計画として読めませんでした ({reason})")], retry)
+        }
+        Err(e) => return Err(e.into()),
     };
-    let prev = serde_json::to_string(&raw.files).unwrap_or_default();
-    messages.push(ChatMessage::user(format!(
-        "前の計画は次の理由で受け付けられません:\n{}\n\n前の計画: {prev}\n\n直した計画を、**全部の行を含めて** `emit_plan` で出し直してください。",
-        errs.iter().map(|e| format!("- {e}")).collect::<Vec<_>>().join("\n")
-    )));
+    messages.push(ChatMessage::user(retry));
     let raw = planner.plan(messages).await?;
     let items = validate_plan(raw.files, existing).map_err(PlanError::Invalid)?;
     Ok(Planned { items, rejected: errs })
+}
+
+/// 計画が読めなかった理由を短く (立て直しの指示と計器のため)。serde の文面は壊れた値を丸ごと
+/// 引用するので使わず、型の不一致か構文か・どこかだけを言う。
+fn unreadable_reason(e: &LlmError) -> String {
+    match e {
+        LlmError::Parse { source, .. } => match source.classify() {
+            serde_json::error::Category::Data => format!(
+                "欄の型が schema と合いません — files が配列になっていない等 (行 {} 列 {})",
+                source.line(),
+                source.column()
+            ),
+            serde_json::error::Category::Eof => "JSON が途中で切れています".to_string(),
+            _ => format!("JSON として読めません (行 {} 列 {})", source.line(), source.column()),
+        },
+        LlmError::NoStructuredOutput => "emit_plan が呼ばれず、本文にも JSON がありません".to_string(),
+        other => other.to_string(),
+    }
 }
 
 // =============================================================================
@@ -439,6 +478,46 @@ impl Staging {
 // 組み立て (1 ファイルずつ)
 // =============================================================================
 
+/// 1 ファイルに回したループの種類 (2026-11-24)。
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LoopKind {
+    /// 計画の順に書く最初の回。
+    Main,
+    /// 雛形のまま終わった新規ファイルのやり直し (層 2 の指摘も持っていれば一緒に直す)。
+    Redo,
+    /// 層 2 の指摘の修復。
+    Repair,
+}
+
+/// ループ 1 本の周回とトークン (2026-11-24、実機 1 回目の後のユーザー要望)。後から「どのファイルの
+/// どの回に何トークン使ったか」を確かめるための記録 — 値は spec 29 のループの返りそのもの。
+/// 実機では組み立ての入力の約 7 割が 1 本の長いループに集まったのに、利用量ログ (`usage.jsonl`) には
+/// 役割 `editor` としか残らず、どのファイルの回だったか分からなかった。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct LoopUsage {
+    pub kind: LoopKind,
+    pub iterations: u32,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub cache_read: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<Stopped>,
+}
+
+impl LoopUsage {
+    fn of(kind: LoopKind, o: &EditOutcome) -> Self {
+        Self {
+            kind,
+            iterations: o.iterations,
+            prompt_tokens: o.prompt_tokens,
+            completion_tokens: o.completion_tokens,
+            cache_read: o.cache_read,
+            stopped: o.stopped,
+        }
+    }
+}
+
 /// 組み上がったファイル 1 つ (変更セットの 1 行)。本文はどちらも LF。
 #[derive(Debug, Clone, Serialize)]
 pub struct BuiltFile {
@@ -452,9 +531,13 @@ pub struct BuiltFile {
     pub summary: String,
     /// このファイル単体の診断 (層 1)。
     pub diagnostics: Vec<Diag>,
+    /// 全ループの周回の合計 (内訳は `loops`)。
     pub iterations: u32,
+    /// 最初の回 (`Main`) の打ち切り理由。やり直し・修復の回の打ち切りは `loops` に残る。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stopped: Option<Stopped>,
+    /// このファイルに回したループ (回した順)。周回とトークンの内訳。
+    pub loops: Vec<LoopUsage>,
     /// 層 2 の指摘で修復の周を回したか。
     pub repaired: bool,
     /// 新規なのに**雛形のまま**終わった (モデルが埋められなかった)。`changed` は新規なら常に真
@@ -619,6 +702,7 @@ pub async fn run_build<C: ToolChat>(
         match edit_one(chat, staging, &item.path, file_instruction(request, &plan, idx), cancel, progress).await {
             Ok(o) => {
                 out.add_usage(&o);
+                let main = LoopUsage::of(LoopKind::Main, &o);
                 let stop = o.stopped;
                 let before = staging.original(&item.path).map(str::to_string);
                 let template_only = templates.get(&item.path).is_some_and(|t| *t == o.text);
@@ -632,6 +716,7 @@ pub async fn run_build<C: ToolChat>(
                     diagnostics: o.diagnostics,
                     iterations: o.iterations,
                     stopped: o.stopped,
+                    loops: vec![main],
                     repaired: false,
                     template_only,
                 });
@@ -665,6 +750,7 @@ pub async fn run_build<C: ToolChat>(
             let mine: Vec<EditorIssue> = issues.iter().filter(|x| x.file.as_deref() == Some(path.as_str())).cloned().collect();
             // 雛形のまま終わったファイルも 1 回だけやり直す (新しい文脈で、最初の指示から)。
             let untouched = out.files[i].template_only;
+            let kind = if untouched { LoopKind::Redo } else { LoopKind::Repair };
             if mine.is_empty() && !untouched {
                 continue;
             }
@@ -688,6 +774,7 @@ pub async fn run_build<C: ToolChat>(
                 Ok(o) => {
                     out.add_usage(&o);
                     let f = &mut out.files[i];
+                    f.loops.push(LoopUsage::of(kind, &o));
                     f.template_only = templates.get(&path).is_some_and(|t| *t == o.text);
                     f.changed = f.before.as_deref() != Some(o.text.as_str());
                     f.after = o.text;
@@ -962,6 +1049,117 @@ mod tests {
         }
     }
 
+    /// 結果 (成功か失敗) を台本どおりに返す計画係。
+    struct ResultPlanner(Mutex<Vec<Result<RawPlan, LlmError>>>, Mutex<Vec<Vec<ChatMessage>>>);
+    impl Planner for ResultPlanner {
+        async fn plan(&self, messages: Vec<ChatMessage>) -> Result<RawPlan, LlmError> {
+            self.1.lock().unwrap().push(messages);
+            self.0.lock().unwrap().remove(0)
+        }
+    }
+
+    /// 【計画が読めなかったら 1 回だけ立て直す (2026-11-24 ユーザー実機、Opus 5.5)】Opus 5.5 が
+    /// `files` (object の配列) にツール呼び出しの書式を文字列で書き、`instruction` が上の階層へ漏れた。
+    /// 従来は検査に落ちた計画だけを立て直し、**読めなかった計画はそのまま失敗**にしていた。
+    /// 読めなかった理由 (型の不一致か構文か) を言って 1 回だけ立て直す。**壊れた出力そのものは積まない**
+    /// (同じ形をもう一度見せると同じ形を誘う)。ツールを呼ばなかったときも同じ。2 回目も読めなければ諦め、
+    /// 読めないこと以外の失敗 (HTTP・空の応答など) は立て直さない。
+    #[test]
+    fn an_unreadable_plan_is_retried_once_without_echoing_the_broken_output() {
+        // 実機の出力 (2026-11-24 のスクリーンショットから。instruction は短く切った)。
+        const RAW: &str = r#"{"files":"\n<invoke name=\"package.yaml\">\n<parameter name=\"action\">edit","instruction":"世界観 (world) を推理風中世ファンタジーとして厚くする。"}"#;
+        let parse = || LlmError::Parse { source: serde_json::from_str::<RawPlan>(RAW).unwrap_err(), raw: RAW.into() };
+        let good = || Ok(RawPlan { files: vec![item("package.yaml", PlanAction::Edit, "世界観を厚くする")] });
+        let existing = vec!["package.yaml".to_string()];
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+
+        let p = ResultPlanner(Mutex::new(vec![Err(parse()), good()]), Mutex::new(vec![]));
+        let plan = rt.block_on(make_plan(&p, "陰謀を防ぐ推理にして", &existing, "")).unwrap();
+        assert_eq!(plan.items.len(), 1);
+        assert!(plan.rejected[0].contains("読めませんでした") && plan.rejected[0].contains("配列"), "{:?}", plan.rejected);
+        let seen = p.1.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        let retry = &seen[1].last().unwrap().content;
+        assert!(retry.contains("配列") && retry.contains("emit_plan"), "何をすれば通るかを言う: {retry}");
+        assert!(!retry.contains("<invoke name="), "壊れた出力を積まない: {retry}");
+        assert!(!retry.contains("推理風中世"), "壊れた出力の中身を積まない: {retry}");
+        drop(seen);
+
+        // ツールを呼ばなかったときも立て直す。
+        let p = ResultPlanner(Mutex::new(vec![Err(LlmError::NoStructuredOutput), good()]), Mutex::new(vec![]));
+        let plan = rt.block_on(make_plan(&p, "x", &existing, "")).unwrap();
+        assert!(plan.rejected[0].contains("emit_plan が呼ばれず"), "{:?}", plan.rejected);
+
+        // 2 回目も読めなければ諦める (3 回目は呼ばない)。
+        let p = ResultPlanner(Mutex::new(vec![Err(parse()), Err(parse())]), Mutex::new(vec![]));
+        let err = rt.block_on(make_plan(&p, "x", &existing, "")).unwrap_err();
+        assert!(matches!(err, PlanError::Llm(LlmError::Parse { .. })), "{err}");
+        assert_eq!(p.1.lock().unwrap().len(), 2);
+
+        // 読めないこと以外の失敗は立て直さない (再送で直る類いは llm_client のリトライの領分)。
+        let p = ResultPlanner(Mutex::new(vec![Err(LlmError::EmptyResponse)]), Mutex::new(vec![]));
+        assert!(matches!(rt.block_on(make_plan(&p, "x", &existing, "")), Err(PlanError::Llm(LlmError::EmptyResponse))));
+        assert_eq!(p.1.lock().unwrap().len(), 1);
+    }
+
+    /// 【配線】計画係の実体 (`impl Planner for LlmClient`) が strict 版で呼んでいること。Opus 5.5 と同じ
+    /// 応答 (名指しの強制を 400) を返す台本サーバに当て、降格して再送した周の `emit_plan` に `strict: true`
+    /// が載るのを本文で確かめる。純関数のテストでは「strict 版を作ったが計画係が呼んでいない」が見えない
+    /// (2026-10-05 の #109 と同じ配線の穴)。
+    #[test]
+    fn the_planner_sends_emit_plan_as_strict_once_forcing_is_refused() {
+        use std::io::{Read, Write};
+        const REJECT: &str = r#"{"type":"error","error":{"type":"invalid_request_error","message":"tool_choice: type \"tool\" and \"any\" are not supported for this model."}}"#;
+        const PLAN: &str = r#"{"content":[{"type":"tool_use","id":"toolu_1","name":"emit_plan","input":{"files":[{"path":"package.yaml","action":"edit","instruction":"世界観を厚くする"}]}}],"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":20}}"#;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let bodies = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+        let bodies_w = bodies.clone();
+        std::thread::spawn(move || {
+            for (status, body) in [(400, REJECT), (200, PLAN)] {
+                let (mut s, _) = listener.accept().unwrap();
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let head_end = loop {
+                    let n = s.read(&mut chunk).unwrap();
+                    buf.extend_from_slice(&chunk[..n]);
+                    if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break i + 4;
+                    }
+                };
+                let head = String::from_utf8_lossy(&buf[..head_end]).to_ascii_lowercase();
+                let len: usize = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .map(|v| v.trim().parse().unwrap())
+                    .unwrap_or(0);
+                while buf.len() < head_end + len {
+                    let n = s.read(&mut chunk).unwrap();
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                bodies_w.lock().unwrap().push(String::from_utf8_lossy(&buf[head_end..head_end + len]).into_owned());
+                let resp = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                s.write_all(resp.as_bytes()).unwrap();
+            }
+        });
+        let mut cfg = llm_client::LlmConfig::new(format!("http://{addr}"), "sk-test", "claude-opus-5-5");
+        cfg.provider = llm_client::Provider::Anthropic;
+        cfg.max_retries = 1;
+        let client = LlmClient::new(cfg).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let plan = rt.block_on(make_plan(&client, "世界観を厚くして", &["package.yaml".to_string()], "")).unwrap();
+        assert_eq!(plan.items[0].path, "package.yaml");
+        let bodies = bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 2);
+        let resent: Value = serde_json::from_str(&bodies[1]).unwrap();
+        assert_eq!(resent["tool_choice"]["type"], "auto");
+        assert_eq!(resent["tools"][0]["name"], PLAN_TOOL);
+        assert_eq!(resent["tools"][0]["strict"], true, "降格した周の emit_plan は strict で縛る");
+    }
+
     #[test]
     fn a_rejected_plan_is_retried_once_with_the_reasons() {
         let existing = vec!["package.yaml".to_string()];
@@ -1088,6 +1286,14 @@ mod tests {
         assert!(last_user.contains("ghost") && !last_user.contains("old.yaml"), "{last_user}");
         // 持ち込みの指摘のファイル (計画外) は触っていない。
         assert!(out.files.iter().all(|f| f.path != "characters/old.yaml"));
+        // ループの内訳: 最初の回と修復の回が順に残り、合計が組み立ての合計と一致する (2026-11-24)。
+        let kinds: Vec<LoopKind> = f.loops.iter().map(|l| l.kind).collect();
+        assert_eq!(kinds, vec![LoopKind::Main, LoopKind::Repair]);
+        assert_eq!(f.loops.iter().map(|l| l.iterations).sum::<u32>(), f.iterations);
+        assert_eq!(f.loops.iter().map(|l| l.prompt_tokens).sum::<u64>(), out.prompt_tokens);
+        assert_eq!(f.loops.iter().map(|l| l.completion_tokens).sum::<u64>(), out.completion_tokens);
+        assert_eq!(f.loops.iter().map(|l| l.cache_read).sum::<u64>(), out.cache_read);
+        assert!(f.loops.iter().all(|l| l.prompt_tokens > 0), "どの回にもトークンが載る: {:?}", f.loops);
     }
 
     /// 【雛形のまま】spec 38 Phase B の実測 (2026-11-23、grok-4.3): 新しいキャラのファイルを 2 つとも
@@ -1108,6 +1314,8 @@ mod tests {
         let f = &out.files[0];
         assert!(lines.iter().any(|l| l.contains("やり直し: characters/alice.yaml")), "{lines:?}");
         assert!(!f.template_only && f.repaired, "やり直しで埋まった");
+        let kinds: Vec<LoopKind> = f.loops.iter().map(|l| l.kind).collect();
+        assert_eq!(kinds, vec![LoopKind::Main, LoopKind::Redo], "やり直しは修復と区別して残る");
         assert!(f.after.contains("司書"), "{}", f.after);
         let retry = chat.seen.lock().unwrap().iter().rev().find(|m| m.len() == 2).map(|m| m[1].content.clone()).unwrap();
         assert!(retry.contains("雛形のまま終わりました") && retry.contains("司書のアリス"), "最初の指示から: {retry}");

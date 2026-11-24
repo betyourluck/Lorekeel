@@ -26,11 +26,13 @@ fn tools() -> Vec<ToolSpec> {
             name: "read".into(),
             description: "パッケージ内のファイルを行番号つきで読む".into(),
             parameters: json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}),
+            strict: false,
         },
         ToolSpec {
             name: "grep".into(),
             description: "パッケージ内を正規表現で検索する".into(),
             parameters: json!({"type":"object","properties":{"pattern":{"type":"string"}},"required":["pattern"],"additionalProperties":false}),
+            strict: false,
         },
     ]
 }

@@ -168,6 +168,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
                 "properties": { "path": { "type": "string", "description": "相対パス。省略 = 編集対象" } },
                 "additionalProperties": false
             }),
+            strict: false,
         },
         ToolSpec {
             name: "grep".into(),
@@ -184,6 +185,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
                 "required": ["pattern"],
                 "additionalProperties": false
             }),
+            strict: false,
         },
         ToolSpec {
             name: "sd".into(),
@@ -199,11 +201,13 @@ pub fn tool_specs() -> Vec<ToolSpec> {
                 "required": ["pattern", "replacement"],
                 "additionalProperties": false
             }),
+            strict: false,
         },
         ToolSpec {
             name: "diff".into(),
             description: "編集を始めた時点の本文と現在の作業本文の差分 (unified diff)。自分の累積の変更を確かめる".into(),
             parameters: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            strict: false,
         },
         ToolSpec {
             name: "spec".into(),
@@ -214,6 +218,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
                 "required": ["topic"],
                 "additionalProperties": false
             }),
+            strict: false,
         },
     ]
 }

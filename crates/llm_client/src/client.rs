@@ -249,6 +249,15 @@ impl LlmClient {
         &self.role
     }
 
+    /// strict を名乗った道具を名指しすると `strict: true` が付く状態か (failures #118)。= Anthropic
+    /// ネイティブ経路で、名指しの強制を 400 で断られて auto へ降格した後。強制の 400 は課金されず
+    /// 利用量ログにも残らないので、「計画を strict で送ったか」を後から確かめる手がかりはこれだけ
+    /// (spec 38 の組み立ての記録が読む)。
+    pub fn strict_active(&self) -> bool {
+        self.config.provider == crate::config::Provider::Anthropic
+            && !self.anthropic_forced.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// spec 30: 累計のスナップショット。lock 毒化時は既定値。
     pub fn usage_ledger(&self) -> LlmLedger {
         self.usage.lock().map(|g| g.clone()).unwrap_or_default()
@@ -410,6 +419,31 @@ impl LlmClient {
         tool_description: &str,
         parameters: serde_json::Value,
     ) -> Result<T, LlmError> {
+        self.structured(messages, tool_name, tool_description, parameters, false).await
+    }
+
+    /// [`generate_structured`](Self::generate_structured) の strict 版。`parameters` が strict tool use の
+    /// 制約を満たす (全 object に `additionalProperties: false`・再帰なし・範囲制約なし) と確かめた
+    /// 手書きの schema にだけ使う。Anthropic で名指しの強制を断られて auto へ降格した周に限り、入力を
+    /// schema どおりに縛る (`ToolSpec.strict`)。それ以外の経路・モデルでは `generate_structured` と同じ。
+    pub async fn generate_structured_strict<T: DeserializeOwned>(
+        &self,
+        messages: Vec<ChatMessage>,
+        tool_name: &str,
+        tool_description: &str,
+        parameters: serde_json::Value,
+    ) -> Result<T, LlmError> {
+        self.structured(messages, tool_name, tool_description, parameters, true).await
+    }
+
+    async fn structured<T: DeserializeOwned>(
+        &self,
+        messages: Vec<ChatMessage>,
+        tool_name: &str,
+        tool_description: &str,
+        parameters: serde_json::Value,
+        strict: bool,
+    ) -> Result<T, LlmError> {
         let req = canonical::ChatRequest {
             model: self.config.model.clone(),
             messages,
@@ -417,6 +451,7 @@ impl LlmClient {
                 name: tool_name.to_string(),
                 description: tool_description.to_string(),
                 parameters,
+                strict,
             }],
             tool_choice: canonical::ToolChoice::Specific(tool_name.to_string()),
             // temperature は config 任せ (未設定なら送らない)。

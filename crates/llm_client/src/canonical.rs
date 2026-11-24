@@ -32,6 +32,12 @@ pub struct ToolSpec {
     pub name: String,
     pub description: String,
     pub parameters: Value,
+    /// 入力を schema どおりに縛ってよいか (Anthropic の strict tool use)。**schema 側が strict の
+    /// 制約を満たすと作者が確かめた道具だけ** true にする (全 object に `additionalProperties: false`・
+    /// 再帰なし・数値と文字列の範囲制約なし)。満たさない schema に付けると 400 になるので、型から
+    /// 機械生成する `emit_delta` には付けない。送るのは Anthropic 経路の「名指しの強制を断られて
+    /// auto へ降格した周」だけ (`anthropic::encode_with`)。他の adapter は見ない。
+    pub strict: bool,
 }
 
 /// ツール選択。Kataribe v1 は `None` (generate) と `Specific` (emit_delta 強制) のみ使う。

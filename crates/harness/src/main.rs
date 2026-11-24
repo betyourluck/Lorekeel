@@ -694,8 +694,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 Err(e) => eprintln!("[警告] 計器の記録を組めません: {e}"),
             }
         }
-        pending_lore = Vec::new(); // 注入済み。今ターンの発火で詰め直す。
-        pending_checks = Vec::new();
+        // 伏線と判定結果は受理されたときだけ入れ替える (下の Accepted の腕)。却下と LLM の失敗では
+        // ターンが進んでいないので、同じものを次の試みにも渡す (2026-11-24 まではここで空にしていた)。
         match outcome {
             Ok(TurnOutcome::Accepted {
                 narration,
@@ -710,6 +710,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 retries,
                 tags,
             }) => {
+                // 注入済みの伏線は捨て、このターンの発火で詰め直す (判定結果は下で入れ替える)。
+                pending_lore = Vec::new();
                 // literal `\n` を実改行へ (#16 の CLI 版。正本は触らない提示層の掃除)。
                 println!("\n{}", narration.replace("\\n", "\n"));
                 // 発火ビートを先に解決 (表示と GM への還流の素)。ビートは GM が見ていない
@@ -1030,5 +1032,36 @@ fn stats_line(state: &GameState, scenario: &Scenario) -> String {
             .filter(|line| !line.ends_with("()"))
             .collect::<Vec<_>>()
             .join(" / ")
+    }
+}
+
+
+#[cfg(test)]
+mod carryover_tests {
+    /// 【一度きりの持ち越しは受理されたときだけ入れ替える (2026-11-24)】アプリの
+    /// `one_turn_carryovers_survive_a_rejected_turn` の CLI 版。想起した伏線と直前の判定の結果を
+    /// run_turn の直後 (結果を見る前) に空にしていたので、却下か LLM の失敗で終わったターンで
+    /// 失われていた。ループは本物の LLM を要するので、ここは形の表明。
+    #[test]
+    fn one_turn_carryovers_are_replaced_only_on_accept() {
+        let src = include_str!("main.rs");
+        let call = src.find("let outcome = run_turn(").expect("run_turn の呼び出し");
+        let arms = call + src[call..].find("match outcome {").expect("結果の match");
+        let accepted = arms + src[arms..].find("Ok(TurnOutcome::Accepted {").expect("受理の腕");
+        let rejected = accepted + src[accepted..].find("Ok(TurnOutcome::Rejected {").expect("却下の腕");
+        let before_match = &src[call..arms];
+        let accepted_arm = &src[accepted..rejected];
+        for name in ["pending_lore", "pending_checks"] {
+            assert!(
+                !before_match.contains(&format!("{name} = ")),
+                "{name} を結果を見る前に空にすると、却下されたターンで失われる"
+            );
+        }
+        // 受理の腕には章の移り変わりでも空にする行があるので、「このターンの発火を積む前に空にする」
+        // まで見る (後ろの行に当たって緑になるのを防ぐ)。
+        let clear = accepted_arm.find("pending_lore = Vec::new()").expect("受理されたら伏線は入れ替える");
+        let push = accepted_arm.find("pending_lore.push(").expect("このターンの発火を積む");
+        assert!(clear < push, "伏線はこのターンの発火を積む前に空にする (空にしないと前の伏線が積み残る)");
+        assert!(accepted_arm.contains("pending_checks = checks"), "受理されたら判定の結果を入れ替える");
     }
 }

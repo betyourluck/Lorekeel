@@ -35,6 +35,7 @@ mod tests {
                     "properties": { "narration": { "type": "string" } },
                     "required": ["narration"]
                 }),
+                strict: false,
             }]
         } else {
             Vec::new()
