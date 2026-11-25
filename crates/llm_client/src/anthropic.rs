@@ -102,13 +102,37 @@ pub(crate) enum TurnContent {
 #[serde(tag = "type")]
 pub(crate) enum RequestBlock {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
     /// assistant がツールを呼んだ履歴 (`input` は最初からオブジェクト)。
     #[serde(rename = "tool_use")]
-    ToolUse { id: String, name: String, input: Value },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
     /// ツール結果。**Anthropic は `user` ロールに載せる** (OpenAI 互換の `role: "tool"` と構造が違う)。
     #[serde(rename = "tool_result")]
-    ToolResult { tool_use_id: String, content: String },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
+}
+
+impl RequestBlock {
+    fn set_cache_control(&mut self) {
+        let (RequestBlock::Text { cache_control, .. }
+        | RequestBlock::ToolUse { cache_control, .. }
+        | RequestBlock::ToolResult { cache_control, .. }) = self;
+        *cache_control = Some(CacheControl::ephemeral());
+    }
 }
 
 /// ネイティブ形のツール定義 (OpenAI 形と違い function 包みが無く、schema キーは `input_schema`)。
@@ -135,6 +159,7 @@ pub(crate) struct ToolChoice {
 /// canonical → ネイティブ Messages リクエスト (spec 12 Phase A/B の encode 純関数)。
 ///
 /// - 先頭の連続 system → `system` ブロック配列 (各ブロックに cache_control、先頭から 4 個まで)。
+///   `cache_tail` の周 (道具の往復のループ) は会話の最後のブロックにも置き、system は 3 個まで ([`mark_tail`])。
 /// - 先頭以外の system (万一混じった場合) → user に降格 (ネイティブは先頭 system のみ)。
 /// - tools があれば ToolDef + `{type: tool, name}` で強制 (ネイティブは tool_choice を確実に
 ///   尊重するので use_tools は関係ない = 常に tool-use)。**強制を受け付けないモデル**
@@ -182,6 +207,7 @@ pub(crate) fn encode_with(req: &canonical::ChatRequest, forced_ok: bool) -> Mess
                 TurnContent::Blocks(vec![RequestBlock::ToolResult {
                     tool_use_id: m.tool_call_id.clone().unwrap_or_default(),
                     content: m.content.clone(),
+                    cache_control: None,
                 }]),
             ),
             Role::Assistant if m.tool_calls.is_empty() => turns.push(TurnMessage {
@@ -193,13 +219,14 @@ pub(crate) fn encode_with(req: &canonical::ChatRequest, forced_ok: bool) -> Mess
             Role::Assistant => {
                 let mut blocks = Vec::new();
                 if !m.content.is_empty() {
-                    blocks.push(RequestBlock::Text { text: m.content.clone() });
+                    blocks.push(RequestBlock::Text { text: m.content.clone(), cache_control: None });
                 }
                 for c in &m.tool_calls {
                     blocks.push(RequestBlock::ToolUse {
                         id: c.id.clone(),
                         name: c.name.clone(),
                         input: c.args.clone(),
+                        cache_control: None,
                     });
                 }
                 turns.push(TurnMessage { role: "assistant", content: TurnContent::Blocks(blocks) });
@@ -210,7 +237,10 @@ pub(crate) fn encode_with(req: &canonical::ChatRequest, forced_ok: bool) -> Mess
     // 1 個、先頭から API 上限の 4 個まで。2 本目 (append-only synopsis) が章追加で失効しても
     // 1 本目 (静的) の breakpoint は生き残る = 大半のターンで synopsis までキャッシュが読まれる。
     // 可変な turns 側には置かない (毎ターン別内容 → 読まれないキャッシュ書込 1.25× の無駄)。
-    for block in system.iter_mut().take(4) {
+    // ただし道具の往復のループ (`cache_tail`) は例外で、末尾に 1 個置く ([`mark_tail`])。
+    // その分だけ system の印を 1 個減らす (1 リクエスト 4 個まで、超えると 400)。
+    let tail = req.cache_tail && !turns.is_empty();
+    for block in system.iter_mut().take(if tail { 3 } else { 4 }) {
         block.cache_control = Some(CacheControl::ephemeral());
     }
 
@@ -256,6 +286,12 @@ pub(crate) fn encode_with(req: &canonical::ChatRequest, forced_ok: bool) -> Mess
         }
     };
 
+    // 会話の末尾までキャッシュする (2026-11-25)。tool_choice の処理で最後の user ターンに
+    // 一行足すことがあるので、その後に置く。
+    if tail {
+        mark_tail(&mut turns);
+    }
+
     // effort は opt-in (None なら thinking/output_config ともキーごと送らない = 現行動作)。
     // 形は公式例に固定: thinking {type: adaptive} + output_config {effort} (spec 12 rev4)。
     let (thinking, output_config) = match req.effort {
@@ -276,6 +312,35 @@ pub(crate) fn encode_with(req: &canonical::ChatRequest, forced_ok: bool) -> Mess
         tool_choice,
         thinking,
         output_config,
+    }
+}
+
+/// 会話の末尾 (最後のターンの最後のブロック) に `cache_control` を置く (2026-11-25)。
+///
+/// 動機 (2026-11-24 実機、Opus 5.5 の組み立て): 道具の往復のループは毎周、履歴を丸ごと送り直す。
+/// 印が先頭の system にしか無いので、20 周のループで入力が 4 万から 12 万へ伸びる間、キャッシュ
+/// 読みは静的な 33,163 のまま動かず、伸びた履歴は毎周キャッシュなしで払っていた (入力の合計
+/// 約 171 万のうち約 108 万)。末尾に印を置けば、次の周は前の周までの全部を読み、新しく増えた
+/// 分だけを書く (Anthropic が推奨するエージェントループの形)。
+///
+/// **素の文字列の本文は、全ターンをブロック列へ揃える** — 前の周で末尾だった発話 (印つきの
+/// ブロック) が次の周では途中になる。末尾だけをブロックにすると、同じ発話が周ごとに文字列と
+/// ブロックで形を変え、「前の周の送信が次の周の先頭にそのまま現れる」が崩れる (文字列と
+/// ブロックが同じに描画されることを当てにしない)。空の本文はブロックにしない (空の text
+/// ブロックは 400)。印は周ごとに位置が動くが、動く印はキャッシュを壊さない (公式の説明)。
+fn mark_tail(turns: &mut [TurnMessage]) {
+    for t in turns.iter_mut() {
+        if let TurnContent::Text(s) = &mut t.content {
+            if !s.is_empty() {
+                let text = std::mem::take(s);
+                t.content = TurnContent::Blocks(vec![RequestBlock::Text { text, cache_control: None }]);
+            }
+        }
+    }
+    if let Some(TurnMessage { content: TurnContent::Blocks(blocks), .. }) = turns.last_mut() {
+        if let Some(last) = blocks.last_mut() {
+            last.set_cache_control();
+        }
     }
 }
 
@@ -305,7 +370,7 @@ fn push_user(turns: &mut Vec<TurnMessage>, content: TurnContent) {
 
 fn into_blocks(c: TurnContent) -> Vec<RequestBlock> {
     match c {
-        TurnContent::Text(text) => vec![RequestBlock::Text { text }],
+        TurnContent::Text(text) => vec![RequestBlock::Text { text, cache_control: None }],
         TurnContent::Blocks(b) => b,
     }
 }
@@ -318,7 +383,7 @@ fn append_to_last_user(turns: &mut Vec<TurnMessage>, text: String) {
             body.push_str(&text);
         }
         Some(TurnMessage { role: "user", content: TurnContent::Blocks(blocks) }) => {
-            blocks.push(RequestBlock::Text { text });
+            blocks.push(RequestBlock::Text { text, cache_control: None });
         }
         _ => turns.push(TurnMessage { role: "user", content: TurnContent::Text(text) }),
     }

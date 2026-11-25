@@ -364,6 +364,10 @@ impl LlmClient {
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
             effort: self.config.effort,
+            // 履歴が周ごとに伸びるので、末尾までキャッシュして次の周で読ませる (2026-11-25)。
+            // まとめの周 (chat_wrap_up) は tool_choice が変わり会話のキャッシュを読めず、その後に
+            // 読む周も無いので立てない。
+            cache_tail: true,
         };
         let resp = self.complete(req).await?;
         Ok(ChatTurn { text: resp.text, tool_calls: resp.tool_calls, finish: resp.finish, usage: resp.usage })
@@ -385,6 +389,7 @@ impl LlmClient {
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
             effort: self.config.effort,
+            cache_tail: false,
         };
         let resp = self.complete(req).await?;
         Ok(ChatTurn { text: resp.text, tool_calls: resp.tool_calls, finish: resp.finish, usage: resp.usage })
@@ -400,6 +405,7 @@ impl LlmClient {
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
             effort: self.config.effort,
+            cache_tail: false,
         };
         let resp = self.complete(req).await?;
         resp.text
@@ -458,6 +464,7 @@ impl LlmClient {
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
             effort: self.config.effort,
+            cache_tail: false,
         };
         let resp = self.complete(req).await?;
         parse::extract::<T>(&resp)

@@ -820,6 +820,7 @@ mod tests {
             temperature: None,
             max_tokens: 4096,
             effort: None,
+            cache_tail: false,
         });
         let body = serde_json::to_value(&req).unwrap();
 
@@ -862,6 +863,7 @@ mod tests {
                 temperature: None,
                 max_tokens: 4096,
                 effort: None,
+                cache_tail: false,
             }
         };
         let marks = |n: usize| -> Vec<bool> {
@@ -941,6 +943,7 @@ mod tests {
             temperature: None,
             max_tokens: 256,
             effort: None,
+            cache_tail: false,
         };
 
         let with_tools = openai_compat::encode(&req, ToolMode::Forced);
@@ -976,6 +979,7 @@ mod tests {
             temperature: None,
             max_tokens: 64000,
             effort: Some(Effort::XHigh),
+            cache_tail: false,
         };
         let body = serde_json::to_value(anthropic::encode(&req)).unwrap();
         assert_eq!(body["thinking"]["type"], "adaptive");
@@ -1090,6 +1094,7 @@ mod tests {
             temperature: None,
             max_tokens: 4096,
             effort: None,
+            cache_tail: false,
         };
         let body = serde_json::to_value(openai_compat::encode(&req, ToolMode::Forced)).unwrap();
         assert_eq!(body["reasoning_effort"], "none");
@@ -1122,6 +1127,7 @@ mod tests {
             temperature: None,
             max_tokens: 4096,
             effort: None,
+            cache_tail: false,
         }
     }
 
@@ -1356,6 +1362,7 @@ mod tests {
             temperature: None,
             max_tokens: 4096,
             effort: None,
+            cache_tail: false,
         };
         let req = mk(user_msgs());
 
@@ -1517,6 +1524,57 @@ mod tests {
             }
         });
         (format!("http://{addr}"), seen, bodies)
+    }
+
+    /// 【末尾の印を立てるのは道具の往復のループだけ (2026-11-25)】`chat` は会話の末尾まで
+    /// キャッシュする。まとめの周 (`chat_wrap_up`) は tool_choice が変わって会話のキャッシュを読めず
+    /// その後に読む周も無いので、GM のターン (`generate_structured`) は毎回 user を組み直すので、
+    /// どちらも印を置かない (置けば読まれない書き込みに割増を払うだけ)。配線ごと確かめるため
+    /// `complete()` を通す。
+    #[tokio::test]
+    async fn anthropic_marks_the_tail_only_in_the_tool_loop() {
+        use crate::config::Provider;
+        const TOOL: &str = r#"{"content":[{"type":"tool_use","id":"tu_1","name":"read","input":{"path":"x"}}],"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":5}}"#;
+        const TEXT: &str = r#"{"content":[{"type":"text","text":"まとめ"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}"#;
+        const PLAN: &str = r#"{"content":[{"type":"tool_use","id":"tu_2","name":"emit_plan","input":{"files":[]}}],"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":5}}"#;
+        let (base, _lines, bodies) = serve_scripted_full(vec![(200, TOOL), (200, TEXT), (200, PLAN)]);
+        let mut cfg = LlmConfig::new(base, "sk-test", "claude-opus-5-5");
+        cfg.provider = Provider::Anthropic;
+        cfg.max_retries = 1;
+        let c = LlmClient::new(cfg).unwrap();
+        let tools = vec![canonical::ToolSpec {
+            name: "read".into(),
+            description: "読む".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}}),
+            strict: false,
+        }];
+        c.chat(user_msgs(), tools.clone()).await.unwrap();
+        c.chat_wrap_up(user_msgs(), tools).await.unwrap();
+        #[derive(serde::Deserialize)]
+        struct Out {
+            #[allow(dead_code)]
+            files: Vec<serde_json::Value>,
+        }
+        let _: Out = c
+            .generate_structured(user_msgs(), "emit_plan", "d", serde_json::json!({"type": "object"}))
+            .await
+            .unwrap();
+
+        let bodies = bodies.lock().unwrap();
+        let sent: Vec<serde_json::Value> = bodies.iter().map(|b| serde_json::from_str(b).unwrap()).collect();
+        assert_eq!(sent.len(), 3);
+        let tail_mark = |v: &serde_json::Value| {
+            v["messages"].as_array().unwrap().last().unwrap()["content"]
+                .as_array()
+                .and_then(|b| b.last())
+                .and_then(|b| b.get("cache_control"))
+                .cloned()
+        };
+        assert_eq!(tail_mark(&sent[0]), Some(serde_json::json!({"type": "ephemeral"})), "chat は末尾に印: {}", sent[0]);
+        assert!(tail_mark(&sent[1]).is_none(), "まとめの周は印なし: {}", sent[1]);
+        assert_eq!(sent[1]["messages"][0]["content"], "引き出しを開ける", "まとめの周は従来どおり素の文字列");
+        assert!(tail_mark(&sent[2]).is_none(), "GM のターン (構造化出力) は印なし: {}", sent[2]);
+        assert_eq!(sent[2]["messages"][0]["content"], "引き出しを開ける", "印を立てない経路は従来どおり素の文字列");
     }
 
     /// 【Anthropic: 降格した周の計画の道具は strict で縛る (2026-11-24 ユーザー実機、Opus 5.5)】
@@ -1761,6 +1819,7 @@ mod tests {
             temperature: None,
             max_tokens: 4096,
             effort,
+            cache_tail: false,
         };
         let body = |effort| serde_json::to_value(gemini::encode(&mk(effort))).unwrap();
 
@@ -1813,6 +1872,7 @@ mod tests {
             temperature: None,
             max_tokens: 4096,
             effort: None,
+            cache_tail: false,
         };
         let body = serde_json::to_value(gemini::encode(&req)).unwrap();
 
@@ -1863,6 +1923,7 @@ mod tests {
             temperature: None,
             max_tokens: 4096,
             effort: None,
+            cache_tail: false,
         };
         let base = mk("GM_A", "gemini-3.5-flash", "d", "行動X");
         // 可変 user が違っても fingerprint は不変 (cache は静的プレフィックスだけを含む)。
@@ -1907,6 +1968,7 @@ mod tests {
             temperature: None,
             max_tokens: 4096,
             effort: None,
+            cache_tail: false,
         };
         // None = 従来 body と同一 (cached_content は skip される)。
         assert_eq!(
@@ -1953,6 +2015,7 @@ mod tests {
             temperature: None,
             max_tokens: 4096,
             effort: None,
+            cache_tail: false,
         };
         let req = mk("# これまでのあらすじ\n第一章: 村に着いた。");
 
@@ -2045,6 +2108,7 @@ mod tests {
             temperature: None,
             max_tokens: 4096,
             effort: None,
+            cache_tail: false,
         };
         let create = serde_json::to_value(gemini::build_create_request(&req, 900)).unwrap();
         assert_eq!(create["model"], "models/gemini-3.5-flash", "create は models/ プレフィックス必須");
@@ -2412,6 +2476,7 @@ mod tests {
             temperature: None,
             max_tokens: 256,
             effort: None,
+            cache_tail: false,
         });
         let body = serde_json::to_value(&req).unwrap();
         assert_eq!(body["system"].as_array().unwrap().len(), 2, "先頭連続 system は system ブロックへ");

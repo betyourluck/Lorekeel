@@ -48,6 +48,7 @@ mod tests {
             temperature: None,
             max_tokens: 4096,
             effort: None,
+            cache_tail: false,
         }
     }
 

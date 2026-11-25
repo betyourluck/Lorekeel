@@ -23,6 +23,14 @@ pub(crate) struct ChatRequest {
     /// 推論の深さ (spec 12 Phase B)。**None なら送らない** (opt-in)。方言への写像は adapter:
     /// Claude = `thinking: adaptive` + `output_config.effort` / Grok (Phase D) = `reasoning_effort`。
     pub effort: Option<Effort>,
+    /// 会話の末尾まで prompt cache に載せる (2026-11-25、道具の往復で履歴が伸びるループ用)。
+    /// ループは毎周、履歴を丸ごと送り直すので、末尾に印を置けば前の周までの全部が次の周で
+    /// キャッシュ読みになる。今は Anthropic だけが見る (`anthropic::encode_with` — 他の adapter は
+    /// 自動でプレフィックスを延ばすか、静的な部分だけを pin する)。立てるのは
+    /// [`crate::LlmClient::chat`] だけ: GM のターンは毎回 user を組み直すので、末尾に印を置くと
+    /// 読まれない書き込みに割増を払うだけになり、まとめの周は `tool_choice` が変わって
+    /// 会話のキャッシュを読めない上に、その後に読む周が無い。
+    pub cache_tail: bool,
 }
 
 /// ツール定義。`parameters` は JSON Schema (`emit_delta` は schemars 機械生成の単一真実源、

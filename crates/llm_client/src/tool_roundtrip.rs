@@ -55,6 +55,7 @@ mod tests {
             temperature: None,
             max_tokens: 1000,
             effort: None,
+            cache_tail: false,
         }
     }
 
@@ -88,6 +89,91 @@ mod tests {
         let auto = to_value(&openai_compat::encode(&request(roundtrip_messages(("c1", "c2"))), ToolMode::Auto));
         assert_eq!(auto["tool_choice"], "auto");
         assert_eq!(auto["messages"].as_array().unwrap().len(), 6);
+    }
+
+    fn count_marks(v: &Value) -> usize {
+        match v {
+            Value::Object(m) => usize::from(m.contains_key("cache_control")) + m.values().map(count_marks).sum::<usize>(),
+            Value::Array(a) => a.iter().map(count_marks).sum(),
+            _ => 0,
+        }
+    }
+
+    fn strip_marks(v: &mut Value) {
+        match v {
+            Value::Object(m) => {
+                m.remove("cache_control");
+                m.values_mut().for_each(strip_marks);
+            }
+            Value::Array(a) => a.iter_mut().for_each(strip_marks),
+            _ => {}
+        }
+    }
+
+    /// 【道具の往復のループは会話の末尾までキャッシュする (2026-11-25)】Opus 5.5 の組み立てで、
+    /// 20 周のループの入力が 4 万から 12 万へ伸びる間、キャッシュ読みは先頭の system の 33,163 のまま
+    /// だった (印が system にしか無い)。`cache_tail` の周は最後のブロックに印を置き、前の周の送信が
+    /// 次の周の先頭にそのまま現れること (動く印を除いて) を 3 周ぶん固定する — これが崩れると印を
+    /// 置いても読めない。印は 1 リクエスト 4 個まで (system は 3 個に減らす)。印を立てない経路
+    /// (GM のターン) は従来と同じ形。
+    #[test]
+    fn anthropic_tool_loop_caches_the_conversation_tail() {
+        let round1 = vec![
+            ChatMessage::system("静的 1"),
+            ChatMessage::system("静的 2"),
+            ChatMessage::system("静的 3"),
+            ChatMessage::system("静的 4"),
+            ChatMessage::user("hp を 12 にして"),
+        ];
+        let mut round2 = round1.clone();
+        round2.push(ChatMessage::assistant_tool_calls(
+            "",
+            vec![ToolCall { id: "tu_1".into(), name: "sd".into(), args: json!({"pattern": "hp: 10"}), thought_signature: None }],
+        ));
+        round2.push(ChatMessage::tool_result("tu_1", "sd", "preview: -hp: 10 +hp: 12"));
+        let mut round3 = round2.clone();
+        round3.push(ChatMessage::assistant_tool_calls(
+            "書き込みます。",
+            vec![ToolCall { id: "tu_2".into(), name: "sd".into(), args: json!({"pattern": "hp: 10", "apply": true}), thought_signature: None }],
+        ));
+        round3.push(ChatMessage::tool_result("tu_2", "sd", "適用済み"));
+        // 結果の後に積む指摘 (反復の注意など) は同じ user ターンにまとまる。
+        round3.push(ChatMessage::user("同じ結果が続いています。"));
+
+        let enc = |m: &[ChatMessage]| {
+            let mut r = request(m.to_vec());
+            r.cache_tail = true;
+            to_value(&anthropic::encode(&r))
+        };
+        let sent: Vec<Value> = [&round1, &round2, &round3].iter().map(|m| enc(m)).collect();
+        for v in &sent {
+            assert_eq!(count_marks(v), 4, "印は 4 個まで: {v}");
+            assert!(v["system"][3].get("cache_control").is_none(), "system の印は 3 個に減らす: {v}");
+            let last = v["messages"].as_array().unwrap().last().unwrap()["content"].as_array().unwrap().last().unwrap().clone();
+            assert_eq!(last["cache_control"], json!({"type": "ephemeral"}), "最後のブロックに印: {v}");
+        }
+        let stripped: Vec<Value> = sent
+            .iter()
+            .map(|v| {
+                let mut v = v.clone();
+                strip_marks(&mut v);
+                v
+            })
+            .collect();
+        for pair in stripped.windows(2) {
+            let (prev, next) = (&pair[0], &pair[1]);
+            assert_eq!(prev["system"], next["system"]);
+            assert_eq!(prev["tools"], next["tools"]);
+            let p = prev["messages"].as_array().unwrap();
+            let n = next["messages"].as_array().unwrap();
+            assert_eq!(&n[..p.len()], &p[..], "前の周の送信が次の周の先頭に現れない");
+        }
+
+        // 印を立てない経路は従来どおり: 本文は素の文字列・会話に印なし・system の印は 4 個。
+        let off = to_value(&anthropic::encode(&request(round3)));
+        assert_eq!(off["messages"][0]["content"], "hp を 12 にして");
+        assert_eq!(count_marks(&off["messages"]), 0);
+        assert_eq!(count_marks(&off["system"]), 4);
     }
 
     #[test]
