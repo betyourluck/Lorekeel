@@ -45,6 +45,18 @@ function openPreview(name: string): void {
 function closePreview(): void {
   previewing.value = null;
 }
+// 書き出し (spec 37 追補)。保存ダイアログが開いている間に押し直すと二枚目のダイアログが
+// 重なりうるので、終わるまでボタンを止める (ダイアログはアプリの窓に対してモーダルではない)。
+const exporting = ref(false);
+async function exportOne(name: string): Promise<void> {
+  if (exporting.value) return;
+  exporting.value = true;
+  try {
+    await game.exportImageHistoryEntry(name);
+  } finally {
+    exporting.value = false;
+  }
+}
 async function remove(name: string): Promise<void> {
   const ok = await game.askConfirm(t("image.historyDeleteConfirm"), t("image.historyDeleteOk"));
   if (!ok) return;
@@ -130,18 +142,34 @@ watch(
             <span class="truncate" :title="e.file_name">{{ whenOf(e.created_ms) }}</span>
             <span class="shrink-0">{{ sizeOf(e.bytes) }}</span>
           </div>
-          <!-- 削除はホバーで浮き出る (常設すると誤爆しやすい)。確認を挟む。 -->
-          <button
-            type="button"
-            class="absolute top-1 right-1 p-1 rounded-full bg-ink/70 text-parchment/70 hover:text-warn
-                   opacity-0 group-hover/card:opacity-100 focus:opacity-100 transition-opacity"
-            :title="t('image.historyDelete')"
-            :aria-label="t('image.historyDelete')"
-            data-testid="history-delete"
-            @click.stop="remove(e.file_name)"
+          <!-- 書き出しと削除はホバーで浮き出る (常設すると誤爆しやすい)。書き出しはゴミ箱の左
+               (ユーザー指定, 2026-11-26)。削除は確認を挟む。 -->
+          <div
+            class="absolute top-1 right-1 flex items-center gap-1
+                   opacity-0 group-hover/card:opacity-100 focus-within:opacity-100 transition-opacity"
           >
-            <Icon name="trash" :size="13" />
-          </button>
+            <button
+              type="button"
+              class="flex p-1 rounded-full bg-ink/70 text-parchment/70 hover:text-ember disabled:opacity-50"
+              :title="t('image.historyExport')"
+              :aria-label="t('image.historyExport')"
+              :disabled="exporting"
+              data-testid="history-export"
+              @click.stop="exportOne(e.file_name)"
+            >
+              <Icon name="save" :size="13" />
+            </button>
+            <button
+              type="button"
+              class="flex p-1 rounded-full bg-ink/70 text-parchment/70 hover:text-warn"
+              :title="t('image.historyDelete')"
+              :aria-label="t('image.historyDelete')"
+              data-testid="history-delete"
+              @click.stop="remove(e.file_name)"
+            >
+              <Icon name="trash" :size="13" />
+            </button>
+          </div>
         </li>
       </ul>
     </div>
@@ -156,6 +184,17 @@ watch(
       <div class="flex items-center justify-between px-4 py-2 text-xs text-parchment/80 shrink-0">
         <span>{{ whenOf(previewEntry.created_ms) }} · {{ sizeOf(previewEntry.bytes) }} · {{ previewEntry.file_name }}</span>
         <div class="flex items-center gap-1">
+          <button
+            type="button"
+            class="p-1.5 rounded-full hover:text-ember hover:bg-glow/10 disabled:opacity-50"
+            :title="t('image.historyExport')"
+            :aria-label="t('image.historyExport')"
+            :disabled="exporting"
+            data-testid="history-preview-export"
+            @click="exportOne(previewEntry.file_name)"
+          >
+            <Icon name="save" :size="15" />
+          </button>
           <button
             type="button"
             class="p-1.5 rounded-full hover:text-warn hover:bg-glow/10"

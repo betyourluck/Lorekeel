@@ -88,7 +88,8 @@ defineProps<{
     <template v-else-if="name === 'folder'">
       <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
     </template>
-    <!-- セーブ (手動スロット): トレイに↓ (データをしまう) -->
+    <!-- セーブ (手動スロット): トレイに↓ (データをしまう)。挿絵の履歴の「書き出し」も同じ絵
+         (spec 37 追補 = ダウンロードの形) -->
     <template v-else-if="name === 'save'">
       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
       <path d="M7 10l5 5 5-5" />

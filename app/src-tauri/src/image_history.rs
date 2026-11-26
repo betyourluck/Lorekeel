@@ -109,6 +109,61 @@ pub fn delete(dir: &Path, stem: &str, file_name: &str) -> Result<(), String> {
     }
 }
 
+/// 書き出し先の名前を**中身に正直な拡張子**へ揃える (spec 37 追補, 2026-11-26)。
+///
+/// ダイアログで選ばれた名前の拡張子が元のもの (大小は問わず・jpg と jpeg は同じ) ならそのまま、
+/// 違うか無ければ元の拡張子を**後ろに足す** (`foo.png` + webp → `foo.png.webp`)。置き換えないのは
+/// `scene.v2` のような点を含む名前を壊さないため。中身を変換しないのに拡張子だけ変えると、名前が
+/// 中身について嘘をつく (エディタのメディアの改名で拡張子を変えさせないのと同じ線)。
+pub fn export_dest(chosen: &Path, ext: &str) -> PathBuf {
+    let same = |a: &str| {
+        let a = a.to_ascii_lowercase();
+        a == ext || (matches!(ext, "jpg" | "jpeg") && matches!(a.as_str(), "jpg" | "jpeg"))
+    };
+    match chosen.extension().and_then(|e| e.to_str()) {
+        Some(e) if same(e) => chosen.to_path_buf(),
+        _ => {
+            let mut name = chosen.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+            name.push(".");
+            name.push(ext);
+            chosen.with_file_name(name)
+        }
+    }
+}
+
+/// 履歴の 1 枚を `chosen` (保存ダイアログで選ばれたパス) へ**コピー**する (spec 37 追補)。
+/// 元のファイルは残す (移動しない)。返りは実際に書いたパス。
+///
+/// - 読むのは**この stem の履歴ファイル**だけ (`delete` と同じ検査 = 履歴フォルダの外も
+///   他パッケージの絵も読ませない)。
+/// - 拡張子を足した結果がダイアログで選ばれた名前と違い、かつ既に在るなら書かない — ダイアログの
+///   上書き確認はユーザーが選んだ名前にしか掛かっていないので、足した名前の既存ファイルを黙って
+///   上書きしない。
+/// - 書き出し先が元のファイルそのものなら何もしない (コピーは書き先を切り詰めてから書くので、
+///   同じファイルへのコピーは元の絵を空にしうる)。
+pub fn export(dir: &Path, stem: &str, file_name: &str, chosen: &Path) -> Result<PathBuf, String> {
+    if parse(stem, file_name).is_none() {
+        return Err(format!("この盤面の履歴ではありません: {file_name}"));
+    }
+    let src = dir.join(file_name);
+    if !src.is_file() {
+        return Err(format!("書き出す挿絵が見つかりません: {file_name}"));
+    }
+    let ext = file_name.rsplit_once('.').map(|(_, e)| e).unwrap_or("png");
+    let dest = export_dest(chosen, ext);
+    if dest != chosen && dest.exists() {
+        return Err(format!("同じ名前のファイルが既にあります: {}", dest.display()));
+    }
+    let same_file = match (std::fs::canonicalize(&src), std::fs::canonicalize(&dest)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    };
+    if !same_file {
+        std::fs::copy(&src, &dest).map_err(|e| format!("書き出しに失敗しました: {e}"))?;
+    }
+    Ok(dest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,5 +246,68 @@ mod tests {
         delete(&dir, mine, "0123456789abcdef_200.jpg").unwrap();
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 【書き出しの名前】拡張子が元と同じ (大小・jpg/jpeg を問わず) ならそのまま、違うか無ければ
+    /// 元の拡張子を後ろに足す (置き換えない = 点を含む名前を壊さない)。
+    #[test]
+    fn export_dest_keeps_the_source_extension_honest() {
+        let p = |s: &str| PathBuf::from(s);
+        assert_eq!(export_dest(&p("C:/out/a.webp"), "webp"), p("C:/out/a.webp"));
+        assert_eq!(export_dest(&p("C:/out/A.WEBP"), "webp"), p("C:/out/A.WEBP"));
+        assert_eq!(export_dest(&p("C:/out/a.jpeg"), "jpg"), p("C:/out/a.jpeg"));
+        assert_eq!(export_dest(&p("C:/out/a"), "png"), p("C:/out/a.png"));
+        assert_eq!(export_dest(&p("C:/out/a.png"), "webp"), p("C:/out/a.png.webp"));
+        assert_eq!(export_dest(&p("C:/out/scene.v2"), "webp"), p("C:/out/scene.v2.webp"));
+    }
+
+    /// 【書き出し】この stem の履歴ファイルだけを、選ばれた場所へコピーする。元は残る・中身は同じ・
+    /// 他 stem / 無関係な名前 / パス要素 / 無いファイルは拒否 / 足した名前の既存ファイルは上書きしない /
+    /// 元のファイルそのものへの書き出しは元を壊さない。
+    #[test]
+    fn export_copies_only_own_history_files_and_never_clobbers_silently() {
+        let dir = tmp("export_src");
+        let out = tmp("export_out");
+        std::fs::create_dir_all(&out).unwrap();
+        let mine = "0123456789abcdef";
+        let other = "fedcba9876543210";
+        save(&dir, mine, 100, "image/webp", b"webp-bytes").unwrap();
+        save(&dir, other, 200, "image/png", b"other").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"not an image").unwrap();
+        let name = "0123456789abcdef_100.webp";
+
+        // 選ばれた名前そのままへ。元は残り、中身は同じ。
+        let w = export(&dir, mine, name, &out.join("気に入った一枚.webp")).unwrap();
+        assert_eq!(w, out.join("気に入った一枚.webp"));
+        assert_eq!(std::fs::read(&w).unwrap(), b"webp-bytes");
+        assert!(dir.join(name).is_file(), "移動ではなくコピー");
+
+        // ダイアログで選ばれた名前の上書きは確認済みなので書く。
+        std::fs::write(out.join("over.webp"), b"old").unwrap();
+        export(&dir, mine, name, &out.join("over.webp")).unwrap();
+        assert_eq!(std::fs::read(out.join("over.webp")).unwrap(), b"webp-bytes");
+
+        // 拡張子を足した名前は確認されていないので、既にあれば書かない。
+        std::fs::write(out.join("x.png.webp"), b"keep me").unwrap();
+        assert!(export(&dir, mine, name, &out.join("x.png")).is_err());
+        assert_eq!(std::fs::read(out.join("x.png.webp")).unwrap(), b"keep me");
+        // 無ければ足した名前で書く。
+        let w = export(&dir, mine, name, &out.join("y")).unwrap();
+        assert_eq!(w, out.join("y.webp"));
+
+        // 他 stem・無関係・パス要素・無いファイルは読まない。
+        assert!(export(&dir, mine, "fedcba9876543210_200.png", &out.join("o.png")).is_err());
+        assert!(!out.join("o.png").exists());
+        assert!(export(&dir, mine, "notes.txt", &out.join("n.txt")).is_err());
+        assert!(export(&dir, mine, "../0123456789abcdef_100.webp", &out.join("p.webp")).is_err());
+        assert!(export(&dir, mine, "0123456789abcdef_999.webp", &out.join("q.webp")).is_err());
+
+        // 元のファイルそのものへ書き出しても元は壊れない (コピーしない)。
+        let w = export(&dir, mine, name, &dir.join(name)).unwrap();
+        assert_eq!(w, dir.join(name));
+        assert_eq!(std::fs::read(dir.join(name)).unwrap(), b"webp-bytes");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&out);
     }
 }

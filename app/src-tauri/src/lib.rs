@@ -1922,6 +1922,54 @@ async fn delete_generated_image(
     Ok(image_history::list(&dir, &stem))
 }
 
+/// 履歴の 1 枚を OS の保存ダイアログで選んだ場所へ**コピー**する (spec 37 追補, 2026-11-26
+/// ユーザー要望「ゴミ箱の左にダウンロードマーク → 保存先を選んでコピー」)。元のファイルは残す。
+///
+/// 名前の検査 (この盤面の履歴ファイルだけ) はダイアログを開く**前**に済ませ、読めない名前では
+/// ダイアログを出さない。stem はセッションから取るので async にし、ダイアログだけを
+/// `run_on_main_thread` でメインスレッドへ渡す (`pick_package_folder` が同期 command にしている
+/// のと同じ理由 = モーダルのメッセージポンプ。同期 command にするとセッションのロックを
+/// メインスレッドで待つことになり、ターンの処理中は画面ごと固まる)。
+/// 返りは書いたパス、キャンセルなら None。
+#[tauri::command]
+async fn export_generated_image(
+    app: tauri::AppHandle,
+    folder: Option<String>,
+    file_name: String,
+    session: tauri::State<'_, SharedSession>,
+) -> Result<Option<String>, String> {
+    let stem = {
+        let guard = session.lock().await;
+        let sess = guard.as_ref().ok_or("ゲームが開始されていません")?;
+        package_save_stem(&sess.package_root)
+    };
+    let dir = image_history::dir_under(&resolve_log_dir(&app, folder.as_deref().unwrap_or_default())?);
+    if image_history::parse(&stem, &file_name).is_none() {
+        return Err(format!("この盤面の履歴ではありません: {file_name}"));
+    }
+    if !dir.join(&file_name).is_file() {
+        return Err(format!("書き出す挿絵が見つかりません: {file_name}"));
+    }
+    let ext = file_name.rsplit_once('.').map(|(_, e)| e.to_string()).unwrap_or_else(|| "png".into());
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<PathBuf>>();
+    let default_name = file_name.clone();
+    app.run_on_main_thread(move || {
+        let exts: Vec<&str> = if ext == "jpg" { vec!["jpg", "jpeg"] } else { vec![ext.as_str()] };
+        let chosen = rfd::FileDialog::new()
+            .set_title("挿絵を書き出す")
+            .set_file_name(&default_name)
+            .add_filter(format!("{} 画像", ext.to_uppercase()), &exts)
+            .save_file();
+        let _ = tx.send(chosen);
+    })
+    .map_err(|e| format!("保存ダイアログを開けません: {e}"))?;
+    let Some(chosen) = rx.await.map_err(|_| "保存ダイアログから応答がありません".to_string())? else {
+        return Ok(None);
+    };
+    let written = image_history::export(&dir, &stem, &file_name, &chosen)?;
+    Ok(Some(written.to_string_lossy().into_owned()))
+}
+
 /// セッションの参照フォルダを返す (無ければ**初回だけ**パッケージの種を写す、spec 27 決定 3)。
 /// 写し取りは「フォルダが存在しないとき」だけで、ファイル数は見ない (全削除で空になっても
 /// 初期化済み) — 判定材料をフォルダの存在ひとつに寄せ、マーカーという第二の真実源を作らない。
@@ -6138,6 +6186,7 @@ pub fn run() {
             save_generated_image,
             list_generated_images,
             delete_generated_image,
+            export_generated_image,
             list_settings_sheets,
             set_reference_slot,
             put_reference_bytes,

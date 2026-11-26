@@ -1118,6 +1118,19 @@ export const useGameStore = defineStore("game", {
         this.logToast = t("store.imageHistoryDeleteFailed", { error: String(e) });
       }
     },
+    /** 1 枚を好きな場所へ書き出す (spec 37 追補)。保存先は backend が OS の保存ダイアログで選ばせ、
+     *  元のファイルは残す (コピー)。キャンセル (null) なら何も言わない。 */
+    async exportImageHistoryEntry(fileName: string): Promise<void> {
+      try {
+        const path = await invoke<string | null>("export_generated_image", {
+          folder: this.logDir,
+          fileName,
+        });
+        if (path) this.logToast = t("store.imageHistoryExported", { path });
+      } catch (e) {
+        this.logToast = t("store.imageHistoryExportFailed", { error: String(e) });
+      }
+    },
     /**
      * 挿絵まわりの**揮発物**を一括で捨てる (spec 24 の挿絵 + spec 27 の「この一枚への指示」)。
      *
